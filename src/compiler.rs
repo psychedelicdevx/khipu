@@ -1,0 +1,939 @@
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+use crate::error::Error;
+use crate::parser::{Block, Expr, Import, Op, Stmt};
+use crate::value::Value;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Check {
+    If,
+    While,
+    And,
+    Or,
+}
+
+impl Check {
+    pub fn label(self) -> &'static str {
+        match self {
+            Check::If => "if",
+            Check::While => "while",
+            Check::And => "'&&'",
+            Check::Or => "'||'",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Code {
+    Constant(u32),
+    None,
+    True,
+    False,
+    Pop,
+    PopN(u32),
+    GetLocal(u32),
+    SetLocal(u32),
+    MakeCell(u32),
+    GetCell(u32),
+    SetCell(u32),
+    GetCaptured(u32),
+    SetCaptured(u32),
+    GetGlobal(u32),
+    SetGlobal(u32),
+    DefineGlobal(u32),
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+    Negate,
+    Not,
+    Jump(u32),
+    JumpIfFalse(u32, Check),
+    JumpUnlessLess(u32),
+    JumpUnlessLessEqual(u32),
+    JumpUnlessGreater(u32),
+    JumpUnlessGreaterEqual(u32),
+    JumpUnlessEqual(u32),
+    JumpUnlessNotEqual(u32),
+    JumpUnlessLessConst(u32, u32),
+    JumpUnlessLessEqualConst(u32, u32),
+    JumpUnlessGreaterConst(u32, u32),
+    JumpUnlessGreaterEqualConst(u32, u32),
+    JumpUnlessEqualConst(u32, u32),
+    JumpUnlessNotEqualConst(u32, u32),
+    AddConst(u32),
+    SubConst(u32),
+    UpdateGlobal(u32, Op),
+    UpdateGlobalConst(u32, Op, u32),
+    UpdateLocal(u32, Op),
+    UpdateLocalConst(u32, Op, u32),
+    JumpIfFalseKeep(u32, Check),
+    JumpIfTrueKeep(u32, Check),
+    CheckBool(Check),
+    JumpIfNotNoneKeep(u32),
+    JumpIfNoneKeep(u32),
+    Call(u32),
+    CallGlobal(u32, u32),
+    Return,
+    Closure(u32),
+    List(u32),
+    Record(u32),
+    Index,
+    SetIndex,
+    GetField(u32),
+    SetField(u32),
+    Concat(u32),
+    IterInit,
+    ForNext(u32, u32),
+    Import(u32),
+    ImportName(u32, u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Capture {
+    Local(u32),
+    Outer(u32),
+}
+
+pub struct Proto {
+    pub name: Rc<str>,
+    pub arity: u32,
+    pub code: Vec<Code>,
+    pub lines: Vec<u32>,
+    pub constants: Vec<Value>,
+    pub protos: Vec<Rc<Proto>>,
+    pub shapes: Vec<Rc<[Rc<str>]>>,
+    pub captures: Vec<Capture>,
+}
+
+impl Proto {
+    fn new(name: &str, arity: usize) -> Self {
+        Proto {
+            name: Rc::from(name),
+            arity: arity as u32,
+            code: Vec::new(),
+            lines: Vec::new(),
+            constants: Vec::new(),
+            protos: Vec::new(),
+            shapes: Vec::new(),
+            captures: Vec::new(),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        if self.name.is_empty() {
+            "anonymous"
+        } else {
+            &self.name
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Globals {
+    slots: HashMap<String, u32>,
+    pub names: Vec<String>,
+}
+
+impl Globals {
+    pub fn slot(&mut self, name: &str) -> u32 {
+        if let Some(slot) = self.slots.get(name) {
+            return *slot;
+        }
+        let slot = self.names.len() as u32;
+        self.slots.insert(name.to_string(), slot);
+        self.names.push(name.to_string());
+        slot
+    }
+}
+
+struct Local {
+    name: String,
+    depth: usize,
+    cell: bool,
+}
+
+struct Loop {
+    start: usize,
+    locals: usize,
+    breaks: Vec<usize>,
+}
+
+struct FnState {
+    proto: Proto,
+    locals: Vec<Local>,
+    depth: usize,
+    captured: HashSet<String>,
+    capture_names: Vec<String>,
+    loops: Vec<Loop>,
+    label: usize,
+}
+
+impl FnState {
+    fn new(name: &str, arity: usize, captured: HashSet<String>) -> Self {
+        FnState {
+            proto: Proto::new(name, arity),
+            locals: Vec::new(),
+            depth: 0,
+            captured,
+            capture_names: Vec::new(),
+            loops: Vec::new(),
+            label: usize::MAX,
+        }
+    }
+
+    fn find_local(&self, name: &str) -> Option<(u32, bool)> {
+        self.locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, local)| local.name == name)
+            .map(|(slot, local)| (slot as u32, local.cell))
+    }
+}
+
+enum Var {
+    Local(u32),
+    Cell(u32),
+    Captured(u32),
+    Global(u32),
+}
+
+pub struct Compiler<'g> {
+    fns: Vec<FnState>,
+    globals: &'g mut Globals,
+    line: u32,
+    promote: bool,
+}
+
+pub fn compile_script(
+    program: &Block,
+    globals: &mut Globals,
+    promote: bool,
+) -> Result<(Proto, bool), Error> {
+    let mut compiler = Compiler {
+        fns: vec![FnState::new("", 0, captured_names(program))],
+        globals,
+        line: 1,
+        promote,
+    };
+    let ends_with_value = matches!(program.last(), Some((_, Stmt::Expr(_))));
+
+    for (index, (line, stmt)) in program.iter().enumerate() {
+        compiler.line = *line as u32;
+        match stmt {
+            Stmt::Expr(expr) if index + 1 == program.len() => {
+                compiler.expression(expr)?;
+                compiler.emit(Code::Return);
+            }
+            _ => compiler.statement(stmt)?,
+        }
+    }
+    if !ends_with_value {
+        compiler.emit(Code::None);
+        compiler.emit(Code::Return);
+    }
+
+    let state = compiler
+        .fns
+        .pop()
+        .expect("the script function always exists");
+    Ok((state.proto, ends_with_value))
+}
+
+impl Compiler<'_> {
+    fn current(&mut self) -> &mut FnState {
+        self.fns
+            .last_mut()
+            .expect("there is always a function being compiled")
+    }
+
+    fn emit(&mut self, code: Code) -> usize {
+        let line = self.line;
+        let proto = &mut self.current().proto;
+        proto.code.push(code);
+        proto.lines.push(line);
+        proto.code.len() - 1
+    }
+
+    fn here(&mut self) -> u32 {
+        self.current().proto.code.len() as u32
+    }
+
+    fn patch(&mut self, at: usize) {
+        let target = self.here();
+        self.current().label = target as usize;
+        let code = &mut self.current().proto.code[at];
+        *code = match *code {
+            Code::Jump(_) => Code::Jump(target),
+            Code::JumpIfFalse(_, check) => Code::JumpIfFalse(target, check),
+            Code::JumpUnlessLess(_) => Code::JumpUnlessLess(target),
+            Code::JumpUnlessLessEqual(_) => Code::JumpUnlessLessEqual(target),
+            Code::JumpUnlessGreater(_) => Code::JumpUnlessGreater(target),
+            Code::JumpUnlessGreaterEqual(_) => Code::JumpUnlessGreaterEqual(target),
+            Code::JumpUnlessEqual(_) => Code::JumpUnlessEqual(target),
+            Code::JumpUnlessNotEqual(_) => Code::JumpUnlessNotEqual(target),
+            Code::JumpUnlessLessConst(c, _) => Code::JumpUnlessLessConst(c, target),
+            Code::JumpUnlessLessEqualConst(c, _) => Code::JumpUnlessLessEqualConst(c, target),
+            Code::JumpUnlessGreaterConst(c, _) => Code::JumpUnlessGreaterConst(c, target),
+            Code::JumpUnlessGreaterEqualConst(c, _) => Code::JumpUnlessGreaterEqualConst(c, target),
+            Code::JumpUnlessEqualConst(c, _) => Code::JumpUnlessEqualConst(c, target),
+            Code::JumpUnlessNotEqualConst(c, _) => Code::JumpUnlessNotEqualConst(c, target),
+            Code::JumpIfFalseKeep(_, check) => Code::JumpIfFalseKeep(target, check),
+            Code::JumpIfTrueKeep(_, check) => Code::JumpIfTrueKeep(target, check),
+            Code::JumpIfNotNoneKeep(_) => Code::JumpIfNotNoneKeep(target),
+            Code::JumpIfNoneKeep(_) => Code::JumpIfNoneKeep(target),
+            Code::ForNext(slot, _) => Code::ForNext(slot, target),
+            other => other,
+        };
+    }
+
+    fn jump_unless(&mut self, check: Check) -> usize {
+        let state = self.current();
+        let here = state.proto.code.len();
+        let last_two = match state.proto.code[..] {
+            [.., Code::Constant(c), compare] if state.label != here && state.label != here - 1 => {
+                match compare {
+                    Code::Less => Some(Code::JumpUnlessLessConst(c, 0)),
+                    Code::LessEqual => Some(Code::JumpUnlessLessEqualConst(c, 0)),
+                    Code::Greater => Some(Code::JumpUnlessGreaterConst(c, 0)),
+                    Code::GreaterEqual => Some(Code::JumpUnlessGreaterEqualConst(c, 0)),
+                    Code::Equal => Some(Code::JumpUnlessEqualConst(c, 0)),
+                    Code::NotEqual => Some(Code::JumpUnlessNotEqualConst(c, 0)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(code) = last_two {
+            state.proto.code.truncate(here - 2);
+            let line = state.proto.lines[here - 1];
+            state.proto.lines.truncate(here - 2);
+            state.proto.code.push(code);
+            state.proto.lines.push(line);
+            return here - 2;
+        }
+        let fused = match state.proto.code.last() {
+            _ if state.label == here => None,
+            Some(Code::Less) => Some(Code::JumpUnlessLess(0)),
+            Some(Code::LessEqual) => Some(Code::JumpUnlessLessEqual(0)),
+            Some(Code::Greater) => Some(Code::JumpUnlessGreater(0)),
+            Some(Code::GreaterEqual) => Some(Code::JumpUnlessGreaterEqual(0)),
+            Some(Code::Equal) => Some(Code::JumpUnlessEqual(0)),
+            Some(Code::NotEqual) => Some(Code::JumpUnlessNotEqual(0)),
+            _ => None,
+        };
+        match fused {
+            Some(code) => {
+                let line = state.proto.lines.pop().expect("the comparison has a line");
+                state.proto.code.pop();
+                state.proto.code.push(code);
+                state.proto.lines.push(line);
+                here - 1
+            }
+            None => self.emit(Code::JumpIfFalse(0, check)),
+        }
+    }
+
+    fn constant(&mut self, value: Value) -> u32 {
+        let constants = &mut self.current().proto.constants;
+        if let Value::Str(text) = &value
+            && let Some(index) = constants
+                .iter()
+                .position(|c| matches!(c, Value::Str(existing) if existing == text))
+        {
+            return index as u32;
+        }
+        constants.push(value);
+        (constants.len() - 1) as u32
+    }
+
+    fn name_constant(&mut self, name: &str) -> u32 {
+        self.constant(Value::str(name))
+    }
+
+    fn at_global_level(&self) -> bool {
+        self.fns.len() == 1 && self.fns[0].depth == 0
+    }
+
+    fn defines_global(&self, name: &str) -> bool {
+        self.at_global_level() && (!self.promote || self.fns[0].captured.contains(name))
+    }
+
+    fn begin_scope(&mut self) {
+        self.current().depth += 1;
+    }
+
+    fn end_scope(&mut self) {
+        let state = self.current();
+        state.depth -= 1;
+        let depth = state.depth;
+        let keep = state
+            .locals
+            .iter()
+            .position(|local| local.depth > depth)
+            .unwrap_or(state.locals.len());
+        let removed = state.locals.len() - keep;
+        state.locals.truncate(keep);
+        if removed > 0 {
+            self.emit(Code::PopN(removed as u32));
+        }
+    }
+
+    fn scoped(&mut self, block: &Block) -> Result<(), Error> {
+        self.begin_scope();
+        self.statements(block)?;
+        self.end_scope();
+        Ok(())
+    }
+
+    fn declare_local(&mut self, name: &str, cell: bool) -> u32 {
+        let state = self.current();
+        state.locals.push(Local {
+            name: name.to_string(),
+            depth: state.depth,
+            cell,
+        });
+        (state.locals.len() - 1) as u32
+    }
+
+    fn define(&mut self, name: &str) {
+        if self.defines_global(name) {
+            let slot = self.globals.slot(name);
+            self.emit(Code::DefineGlobal(slot));
+        } else {
+            let boxed = self.current().captured.contains(name);
+            let slot = self.declare_local(name, boxed);
+            if boxed {
+                self.emit(Code::MakeCell(slot));
+            }
+        }
+    }
+
+    fn resolve(&mut self, name: &str) -> Result<Var, Error> {
+        let top = self.fns.len() - 1;
+        if let Some((slot, cell)) = self.fns[top].find_local(name) {
+            return Ok(if cell {
+                Var::Cell(slot)
+            } else {
+                Var::Local(slot)
+            });
+        }
+        if let Some(index) = self.resolve_capture(top, name)? {
+            return Ok(Var::Captured(index));
+        }
+        Ok(Var::Global(self.globals.slot(name)))
+    }
+
+    fn resolve_capture(&mut self, fn_index: usize, name: &str) -> Result<Option<u32>, Error> {
+        if fn_index == 0 {
+            return Ok(None);
+        }
+        let enclosing = fn_index - 1;
+        if let Some((slot, cell)) = self.fns[enclosing].find_local(name) {
+            if !cell {
+                return Err(Error {
+                    line: self.line as usize,
+                    message: format!("internal error: '{name}' is captured but not boxed"),
+                });
+            }
+            return Ok(Some(self.add_capture(fn_index, Capture::Local(slot), name)));
+        }
+        match self.resolve_capture(enclosing, name)? {
+            Some(outer) => Ok(Some(self.add_capture(
+                fn_index,
+                Capture::Outer(outer),
+                name,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    fn add_capture(&mut self, fn_index: usize, capture: Capture, name: &str) -> u32 {
+        let state = &mut self.fns[fn_index];
+        if let Some(index) = state.capture_names.iter().position(|n| n == name) {
+            return index as u32;
+        }
+        state.capture_names.push(name.to_string());
+        state.proto.captures.push(capture);
+        (state.proto.captures.len() - 1) as u32
+    }
+
+    fn get_variable(&mut self, name: &str) -> Result<(), Error> {
+        let code = match self.resolve(name)? {
+            Var::Local(slot) => Code::GetLocal(slot),
+            Var::Cell(slot) => Code::GetCell(slot),
+            Var::Captured(index) => Code::GetCaptured(index),
+            Var::Global(slot) => Code::GetGlobal(slot),
+        };
+        self.emit(code);
+        Ok(())
+    }
+
+    fn set_variable(&mut self, name: &str) -> Result<(), Error> {
+        let code = match self.resolve(name)? {
+            Var::Local(slot) => Code::SetLocal(slot),
+            Var::Cell(slot) => Code::SetCell(slot),
+            Var::Captured(index) => Code::SetCaptured(index),
+            Var::Global(slot) => Code::SetGlobal(slot),
+        };
+        self.emit(code);
+        Ok(())
+    }
+
+    fn statements(&mut self, block: &Block) -> Result<(), Error> {
+        for (line, stmt) in block {
+            self.line = *line as u32;
+            self.statement(stmt)?;
+        }
+        Ok(())
+    }
+
+    fn statement(&mut self, stmt: &Stmt) -> Result<(), Error> {
+        match stmt {
+            Stmt::Let(name, expr @ Expr::Function { .. }) if !self.defines_global(name) => {
+                self.emit(Code::None);
+                let boxed = self.current().captured.contains(name);
+                let slot = self.declare_local(name, boxed);
+                if boxed {
+                    self.emit(Code::MakeCell(slot));
+                }
+                self.expression(expr)?;
+                self.emit(if boxed {
+                    Code::SetCell(slot)
+                } else {
+                    Code::SetLocal(slot)
+                });
+            }
+            Stmt::Let(name, expr) => {
+                self.expression(expr)?;
+                self.define(name);
+            }
+            Stmt::Assign(name, expr @ Expr::Binary(left, op @ (Op::Add | Op::Sub), right)) if matches!(&**left, Expr::Variable(target) if target == name) =>
+            {
+                let constant = match **right {
+                    Expr::Number(n) => Some(self.constant(Value::Number(n))),
+                    _ => None,
+                };
+                let code = match (self.resolve(name)?, constant) {
+                    (Var::Global(slot), Some(c)) => Some(Code::UpdateGlobalConst(slot, *op, c)),
+                    (Var::Local(slot), Some(c)) => Some(Code::UpdateLocalConst(slot, *op, c)),
+                    (Var::Global(slot), None) => Some(Code::UpdateGlobal(slot, *op)),
+                    (Var::Local(slot), None) => Some(Code::UpdateLocal(slot, *op)),
+                    _ => None,
+                };
+                match code {
+                    Some(code @ (Code::UpdateGlobalConst(..) | Code::UpdateLocalConst(..))) => {
+                        self.emit(code);
+                    }
+                    Some(code) => {
+                        self.expression(right)?;
+                        self.emit(code);
+                    }
+                    None => {
+                        self.expression(expr)?;
+                        self.set_variable(name)?;
+                    }
+                }
+            }
+            Stmt::Assign(name, expr) => {
+                self.expression(expr)?;
+                self.set_variable(name)?;
+            }
+            Stmt::SetIndex(target, index, value) => {
+                self.expression(target)?;
+                self.expression(index)?;
+                self.expression(value)?;
+                self.emit(Code::SetIndex);
+            }
+            Stmt::SetField(target, name, value) => {
+                self.expression(target)?;
+                self.expression(value)?;
+                let name = self.name_constant(name);
+                self.emit(Code::SetField(name));
+            }
+            Stmt::If(condition, then_block, else_block) => {
+                self.expression(condition)?;
+                let to_else = self.jump_unless(Check::If);
+                self.scoped(then_block)?;
+                match else_block {
+                    Some(else_block) => {
+                        let to_end = self.emit(Code::Jump(0));
+                        self.patch(to_else);
+                        self.scoped(else_block)?;
+                        self.patch(to_end);
+                    }
+                    None => self.patch(to_else),
+                }
+            }
+            Stmt::While(condition, body) => {
+                let start = self.here();
+                self.expression(condition)?;
+                let exit = self.jump_unless(Check::While);
+                self.begin_loop(start);
+                self.scoped(body)?;
+                self.emit(Code::Jump(start));
+                self.patch(exit);
+                self.end_loop();
+            }
+            Stmt::For(name, iterable, body) => {
+                self.begin_scope();
+                self.expression(iterable)?;
+                self.emit(Code::IterInit);
+                let items = self.declare_local("", false);
+                let zero = self.constant(Value::Number(0.0));
+                self.emit(Code::Constant(zero));
+                self.declare_local("", false);
+
+                let start = self.here();
+                let next = self.emit(Code::ForNext(items, 0));
+                self.begin_loop(start);
+                self.begin_scope();
+                let boxed = self.current().captured.contains(name);
+                let slot = self.declare_local(name, boxed);
+                if boxed {
+                    self.emit(Code::MakeCell(slot));
+                }
+                self.statements(body)?;
+                self.end_scope();
+                self.emit(Code::Jump(start));
+                self.patch(next);
+                self.end_loop();
+                self.end_scope();
+            }
+            Stmt::Break | Stmt::Continue => {
+                let state = self.current();
+                let loop_state = state
+                    .loops
+                    .last()
+                    .expect("the parser only allows loops here");
+                let extra = state.locals.len() - loop_state.locals;
+                let start = loop_state.start as u32;
+                if extra > 0 {
+                    self.emit(Code::PopN(extra as u32));
+                }
+                if matches!(stmt, Stmt::Break) {
+                    let jump = self.emit(Code::Jump(0));
+                    self.current()
+                        .loops
+                        .last_mut()
+                        .expect("still inside the loop")
+                        .breaks
+                        .push(jump);
+                } else {
+                    self.emit(Code::Jump(start));
+                }
+            }
+            Stmt::Return(expr) => {
+                match expr {
+                    Some(expr) => self.expression(expr)?,
+                    None => {
+                        self.emit(Code::None);
+                    }
+                }
+                self.emit(Code::Return);
+            }
+            Stmt::Import(path, binding) => {
+                let path = self.name_constant(path);
+                match binding {
+                    Import::Module(name) => {
+                        self.emit(Code::Import(path));
+                        self.define(name);
+                    }
+                    Import::Names(names) => {
+                        for name in names {
+                            let field = self.name_constant(name);
+                            self.emit(Code::Import(path));
+                            self.emit(Code::ImportName(path, field));
+                            self.define(name);
+                        }
+                    }
+                }
+            }
+            Stmt::Expr(expr) => {
+                self.expression(expr)?;
+                self.emit(Code::Pop);
+            }
+        }
+        Ok(())
+    }
+
+    fn begin_loop(&mut self, start: u32) {
+        let state = self.current();
+        let locals = state.locals.len();
+        state.loops.push(Loop {
+            start: start as usize,
+            locals,
+            breaks: Vec::new(),
+        });
+    }
+
+    fn end_loop(&mut self) {
+        let finished = self.current().loops.pop().expect("a loop was started");
+        for jump in finished.breaks {
+            self.patch(jump);
+        }
+    }
+
+    fn expression(&mut self, expr: &Expr) -> Result<(), Error> {
+        match expr {
+            Expr::Number(n) => {
+                let index = self.constant(Value::Number(*n));
+                self.emit(Code::Constant(index));
+            }
+            Expr::Bool(true) => {
+                self.emit(Code::True);
+            }
+            Expr::Bool(false) => {
+                self.emit(Code::False);
+            }
+            Expr::None => {
+                self.emit(Code::None);
+            }
+            Expr::Str(text) => {
+                let index = self.name_constant(text);
+                self.emit(Code::Constant(index));
+            }
+            Expr::Template(parts) => {
+                for part in parts {
+                    self.expression(part)?;
+                }
+                self.emit(Code::Concat(parts.len() as u32));
+            }
+            Expr::List(items) => {
+                for item in items {
+                    self.expression(item)?;
+                }
+                self.emit(Code::List(items.len() as u32));
+            }
+            Expr::Record(fields) => {
+                for (_, value) in fields {
+                    self.expression(value)?;
+                }
+                let shape: Rc<[Rc<str>]> = fields
+                    .iter()
+                    .map(|(name, _)| Rc::from(name.as_str()))
+                    .collect();
+                let shapes = &mut self.current().proto.shapes;
+                shapes.push(shape);
+                let index = (shapes.len() - 1) as u32;
+                self.emit(Code::Record(index));
+            }
+            Expr::Index(target, index) => {
+                self.expression(target)?;
+                self.expression(index)?;
+                self.emit(Code::Index);
+            }
+            Expr::Field(target, name) => {
+                self.expression(target)?;
+                let name = self.name_constant(name);
+                self.emit(Code::GetField(name));
+            }
+            Expr::OptionalField(target, name) => {
+                self.expression(target)?;
+                let skip = self.emit(Code::JumpIfNoneKeep(0));
+                let name = self.name_constant(name);
+                self.emit(Code::GetField(name));
+                self.patch(skip);
+            }
+            Expr::Variable(name) => self.get_variable(name)?,
+            Expr::Negate(inner) => {
+                self.expression(inner)?;
+                self.emit(Code::Negate);
+            }
+            Expr::Not(inner) => {
+                self.expression(inner)?;
+                self.emit(Code::Not);
+            }
+            Expr::Binary(left, Op::And, right) => {
+                self.expression(left)?;
+                let skip = self.emit(Code::JumpIfFalseKeep(0, Check::And));
+                self.expression(right)?;
+                self.emit(Code::CheckBool(Check::And));
+                self.patch(skip);
+            }
+            Expr::Binary(left, Op::Or, right) => {
+                self.expression(left)?;
+                let skip = self.emit(Code::JumpIfTrueKeep(0, Check::Or));
+                self.expression(right)?;
+                self.emit(Code::CheckBool(Check::Or));
+                self.patch(skip);
+            }
+            Expr::Binary(left, Op::Coalesce, right) => {
+                self.expression(left)?;
+                let skip = self.emit(Code::JumpIfNotNoneKeep(0));
+                self.expression(right)?;
+                self.patch(skip);
+            }
+            Expr::Binary(left, op @ (Op::Add | Op::Sub), right)
+                if matches!(**right, Expr::Number(_)) =>
+            {
+                let Expr::Number(n) = **right else {
+                    unreachable!("checked by the guard")
+                };
+                self.expression(left)?;
+                let index = self.constant(Value::Number(n));
+                self.emit(if matches!(op, Op::Add) {
+                    Code::AddConst(index)
+                } else {
+                    Code::SubConst(index)
+                });
+            }
+            Expr::Binary(left, op, right) => {
+                self.expression(left)?;
+                self.expression(right)?;
+                self.emit(match op {
+                    Op::Add => Code::Add,
+                    Op::Sub => Code::Sub,
+                    Op::Mul => Code::Mul,
+                    Op::Div => Code::Div,
+                    Op::Rem => Code::Rem,
+                    Op::Less => Code::Less,
+                    Op::LessEqual => Code::LessEqual,
+                    Op::Greater => Code::Greater,
+                    Op::GreaterEqual => Code::GreaterEqual,
+                    Op::Equal => Code::Equal,
+                    Op::NotEqual => Code::NotEqual,
+                    Op::And | Op::Or | Op::Coalesce => unreachable!("handled above"),
+                });
+            }
+            Expr::Function { name, params, body } => self.function(name, params, body)?,
+            Expr::Call(callee, args) => {
+                if let Expr::Variable(name) = &**callee
+                    && let Var::Global(slot) = self.resolve(name)?
+                {
+                    for arg in args {
+                        self.expression(arg)?;
+                    }
+                    self.emit(Code::CallGlobal(slot, args.len() as u32));
+                    return Ok(());
+                }
+                self.expression(callee)?;
+                for arg in args {
+                    self.expression(arg)?;
+                }
+                self.emit(Code::Call(args.len() as u32));
+            }
+        }
+        Ok(())
+    }
+
+    fn function(&mut self, name: &str, params: &[String], body: &Block) -> Result<(), Error> {
+        let line = self.line;
+        let captured = captured_names(body);
+        self.fns.push(FnState::new(name, params.len(), captured));
+        self.current().depth = 1;
+        for param in params {
+            let boxed = self.current().captured.contains(param);
+            let slot = self.declare_local(param, boxed);
+            if boxed {
+                self.emit(Code::MakeCell(slot));
+            }
+        }
+        self.statements(body)?;
+        self.emit(Code::None);
+        self.emit(Code::Return);
+
+        let finished = self.fns.pop().expect("the function was pushed above");
+        self.line = line;
+        let protos = &mut self.current().proto.protos;
+        protos.push(Rc::new(finished.proto));
+        let index = (protos.len() - 1) as u32;
+        self.emit(Code::Closure(index));
+        Ok(())
+    }
+}
+
+fn captured_names(block: &Block) -> HashSet<String> {
+    let mut names = HashSet::new();
+    walk_block(block, false, &mut names);
+    names
+}
+
+fn walk_block(block: &Block, inside: bool, names: &mut HashSet<String>) {
+    for (_, stmt) in block {
+        walk_stmt(stmt, inside, names);
+    }
+}
+
+fn walk_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Let(_, expr) | Stmt::Expr(expr) => walk_expr(expr, inside, names),
+        Stmt::Assign(name, expr) => {
+            if inside {
+                names.insert(name.clone());
+            }
+            walk_expr(expr, inside, names);
+        }
+        Stmt::SetIndex(a, b, c) => {
+            walk_expr(a, inside, names);
+            walk_expr(b, inside, names);
+            walk_expr(c, inside, names);
+        }
+        Stmt::SetField(a, _, b) => {
+            walk_expr(a, inside, names);
+            walk_expr(b, inside, names);
+        }
+        Stmt::If(condition, then_block, else_block) => {
+            walk_expr(condition, inside, names);
+            walk_block(then_block, inside, names);
+            if let Some(else_block) = else_block {
+                walk_block(else_block, inside, names);
+            }
+        }
+        Stmt::While(condition, body) | Stmt::For(_, condition, body) => {
+            walk_expr(condition, inside, names);
+            walk_block(body, inside, names);
+        }
+        Stmt::Return(expr) => {
+            if let Some(expr) = expr {
+                walk_expr(expr, inside, names);
+            }
+        }
+        Stmt::Break | Stmt::Continue | Stmt::Import(..) => {}
+    }
+}
+
+fn walk_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
+    match expr {
+        Expr::Variable(name) => {
+            if inside {
+                names.insert(name.clone());
+            }
+        }
+        Expr::Function { body, .. } => walk_block(body, true, names),
+        Expr::Number(_) | Expr::Bool(_) | Expr::Str(_) | Expr::None => {}
+        Expr::Template(items) | Expr::List(items) => {
+            for item in items {
+                walk_expr(item, inside, names);
+            }
+        }
+        Expr::Record(fields) => {
+            for (_, value) in fields {
+                walk_expr(value, inside, names);
+            }
+        }
+        Expr::Index(a, b) | Expr::Binary(a, _, b) => {
+            walk_expr(a, inside, names);
+            walk_expr(b, inside, names);
+        }
+        Expr::Field(inner, _)
+        | Expr::OptionalField(inner, _)
+        | Expr::Negate(inner)
+        | Expr::Not(inner) => walk_expr(inner, inside, names),
+        Expr::Call(callee, args) => {
+            walk_expr(callee, inside, names);
+            for arg in args {
+                walk_expr(arg, inside, names);
+            }
+        }
+    }
+}

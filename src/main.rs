@@ -1,7 +1,10 @@
+mod compiler;
 mod error;
 mod interpreter;
 mod lexer;
 mod parser;
+mod value;
+mod vm;
 
 use std::fs;
 use std::io::{self, Write};
@@ -31,10 +34,8 @@ fn main() {
     }
 }
 
-fn run_source(source: &str, interpreter: &mut Interpreter) -> Result<Option<Value>, Error> {
-    let tokens = lexer::lex(source)?;
-    let program = Parser::new(tokens).parse_program()?;
-    interpreter.run(&program)
+fn parse(source: &str) -> Result<parser::Block, Error> {
+    Parser::new(lexer::lex(source)?).parse_program()
 }
 
 fn run_file(path: &str) {
@@ -47,7 +48,9 @@ fn run_file(path: &str) {
     };
 
     let dir = Path::new(path).parent().unwrap_or(Path::new("."));
-    if let Err(error) = run_source(&source, &mut Interpreter::in_dir(dir)) {
+    if let Err(error) =
+        parse(&source).and_then(|program| Interpreter::in_dir(dir).run_main(&program))
+    {
         eprintln!("Error on line {}: {}", error.line, error.message);
         process::exit(1);
     }
@@ -74,7 +77,7 @@ fn repl() {
             continue;
         }
 
-        match run_source(&source, &mut interpreter) {
+        match parse(&source).and_then(|program| interpreter.run(&program)) {
             Ok(Some(Value::None)) | Ok(None) => {}
             Ok(Some(value)) => println!("= {value}"),
             Err(error) => println!("Error: {}", error.message),

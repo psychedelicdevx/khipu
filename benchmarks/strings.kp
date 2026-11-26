@@ -1,0 +1,6 @@
+let count = 0
+for i in range(200000) {
+    let line = "item ${i}: " + "ok"
+    count = count + len(line)
+}
+print(count)

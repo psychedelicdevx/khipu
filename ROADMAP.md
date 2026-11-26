@@ -6,14 +6,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
-| 2. Speed | `░░░░░░░░░░` 0 / 7 |
+| 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `░░░░░░░░░░` 0 / 7 |
 | 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Benchmark suite, with timings shown in the README
+**Next up:** Type annotations: `let age: number = 36`
 
 ---
 
@@ -45,15 +45,15 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] `none` instead of `null` and `undefined`
 - [x] Modules: `import` other `.kp` files
 
-## Phase 2: Speed
+## Phase 2: Speed ✅
 
-- [ ] Benchmark suite, with timings shown in the README
-- [ ] Resolve variables to slots before running
-- [ ] Skip scopes for blocks that declare nothing
-- [ ] Strings that are cheap to share
-- [ ] Bytecode compiler
-- [ ] Virtual machine that runs the bytecode
-- [ ] Faster than Python on every benchmark
+- [x] Benchmark suite, with timings shown in the README
+- [x] Resolve variables to slots before running
+- [x] Skip scopes for blocks that declare nothing
+- [x] Strings that are cheap to share
+- [x] Bytecode compiler
+- [x] Virtual machine that runs the bytecode
+- [x] Faster than Python on every benchmark
 
 ## Phase 3: Types (the C# feel)
 

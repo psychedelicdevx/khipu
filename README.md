@@ -87,16 +87,31 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
-| 2. Speed | `░░░░░░░░░░` 0 / 7 |
+| 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `░░░░░░░░░░` 0 / 7 |
 | 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Benchmark suite, with timings shown in the README
+**Next up:** Type annotations: `let age: number = 36`
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
+
+## Performance
+
+| Benchmark | Khipu | Python | Node | vs Python | vs Node |
+|---|---|---|---|---|---|
+| closures | 19 ms | 37 ms | 24 ms | **2.0× faster** | **1.3× faster** |
+| fib | 17 ms | 25 ms | 25 ms | **1.4× faster** | **1.4× faster** |
+| lists | 14 ms | 39 ms | 30 ms | **2.7× faster** | **2.1× faster** |
+| loop | 34 ms | 198 ms | 35 ms | **5.9× faster** | **1.0× faster** |
+| records | 23 ms | 43 ms | 24 ms | **1.9× faster** | **1.1× faster** |
+| strings | 25 ms | 41 ms | 26 ms | **1.7× faster** | **1.0× faster** |
+
+Best of 5 runs, including start-up, on Apple M5. Run `python3 scripts/bench.py` to measure again.
+
+Every benchmark in `benchmarks/` exists in Khipu, Python and JavaScript, and the script checks that all three print the same answer before it reports a time.
 
 ## Editor support
 
@@ -108,8 +123,12 @@ The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselve
 |---|---|
 | `src/lexer.rs` | Turns source text into tokens |
 | `src/parser.rs` | Turns tokens into a syntax tree |
-| `src/interpreter.rs` | Runs the tree: values, scopes, errors |
+| `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
+| `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
+| `src/value.rs` | Runtime values, operators and built-in functions |
+| `src/interpreter.rs` | Ties it together, plus the language test suite |
 | `src/main.rs` | The `khipu` command: run a file or open the prompt |
+| `benchmarks/` | The same programs in Khipu, Python and JavaScript |
 | `examples/` | Example Khipu programs |
 | `editors/vscode/` | VS Code extension |
 | `scripts/` | Repository tooling, like the roadmap sync |

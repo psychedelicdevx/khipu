@@ -1,0 +1,9 @@
+fn point(x, y) {
+    return { x: x, y: y }
+}
+let total = 0
+for i in range(200000) {
+    let p = point(i, i + 1)
+    total = total + p.x * p.y
+}
+print(total)

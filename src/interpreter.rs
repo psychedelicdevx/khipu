@@ -1,130 +1,16 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
+use crate::compiler::{Globals, compile_script};
 use crate::error::Error;
-use crate::lexer::lex;
-use crate::parser::{Block, Expr, Import, Op, Parser, Stmt};
-
-const MAX_CALL_DEPTH: usize = 1000;
-
-type NativeFn = fn(&[Value]) -> Result<Value, String>;
-type Fields = Vec<(String, Value)>;
-
-#[derive(Clone)]
-pub enum Value {
-    Number(f64),
-    Bool(bool),
-    Str(String),
-    List(Rc<RefCell<Vec<Value>>>),
-    Record(Rc<RefCell<Fields>>),
-    Function(Rc<Function>),
-    Native(&'static str, NativeFn),
-    None,
-}
-
-pub struct Function {
-    name: String,
-    params: Vec<String>,
-    body: Rc<Block>,
-    closure: Env,
-}
-
-type Env = Rc<RefCell<Scope>>;
-
-struct Scope {
-    vars: HashMap<String, Value>,
-    parent: Option<Env>,
-}
-
-impl Scope {
-    fn new(parent: Option<Env>) -> Env {
-        Rc::new(RefCell::new(Scope {
-            vars: HashMap::new(),
-            parent,
-        }))
-    }
-}
-
-enum Exit {
-    Error(Error),
-    Return(Value),
-    Break,
-    Continue,
-}
-
-impl Value {
-    fn type_name(&self) -> &'static str {
-        match self {
-            Value::Number(_) => "number",
-            Value::Bool(_) => "bool",
-            Value::Str(_) => "string",
-            Value::List(_) => "list",
-            Value::Record(_) => "record",
-            Value::Function(_) | Value::Native(..) => "function",
-            Value::None => "none",
-        }
-    }
-}
-
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Value::Number(n) => write!(f, "{n}"),
-            Value::Bool(b) => write!(f, "{b}"),
-            Value::Str(s) => write!(f, "{s}"),
-            Value::List(items) => {
-                let items: Vec<String> = items
-                    .borrow()
-                    .iter()
-                    .map(|item| format!("{item:?}"))
-                    .collect();
-                write!(f, "[{}]", items.join(", "))
-            }
-            Value::Record(fields) => {
-                let fields: Vec<String> = fields
-                    .borrow()
-                    .iter()
-                    .map(|(name, value)| format!("{name}: {value:?}"))
-                    .collect();
-                write!(f, "{{{}}}", fields.join(", "))
-            }
-            Value::Function(function) => write!(f, "<fn {}>", function_label(function)),
-            Value::Native(name, _) => write!(f, "<fn {name}>"),
-            Value::None => write!(f, "none"),
-        }
-    }
-}
-
-impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Value::Str(s) => write!(f, "{s:?}"),
-            other => write!(f, "{other}"),
-        }
-    }
-}
-
-fn function_label(function: &Function) -> &str {
-    if function.name.is_empty() {
-        "anonymous"
-    } else {
-        &function.name
-    }
-}
-
-type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Fields>>>>>;
+use crate::parser::Block;
+pub use crate::value::Value;
+use crate::value::{Fields, NATIVES};
+use crate::vm::{Loading, Modules, Vm};
 
 pub struct Interpreter {
-    env: Env,
-    line: usize,
-    depth: usize,
-    dir: PathBuf,
-    modules: Modules,
-    loading: Rc<RefCell<Vec<PathBuf>>>,
+    globals: Globals,
+    vm: Vm,
 }
 
 impl Interpreter {
@@ -133,647 +19,48 @@ impl Interpreter {
     }
 
     pub fn in_dir(dir: &Path) -> Self {
-        Interpreter {
-            env: globals(),
-            line: 1,
-            depth: 0,
-            dir: dir.to_path_buf(),
-            modules: Rc::default(),
-            loading: Rc::default(),
+        Interpreter::with_modules(dir, Rc::default(), Rc::default())
+    }
+
+    pub fn with_modules(dir: &Path, modules: Modules, loading: Loading) -> Self {
+        let mut globals = Globals::default();
+        let mut vm = Vm::new(dir, modules, loading);
+        for native in &NATIVES {
+            let slot = globals.slot(native.name) as usize;
+            vm.sync_globals(&globals.names);
+            vm.globals.borrow_mut().values[slot] = Some(Value::Native(native));
         }
+        Interpreter { globals, vm }
     }
 
     pub fn run(&mut self, program: &Block) -> Result<Option<Value>, Error> {
-        match self.run_statements(program) {
-            Ok(value) => Ok(value),
-            Err(Exit::Error(error)) => Err(error),
-            Err(Exit::Return(_)) => Err(self.error("'return' can only be used inside a function")),
-            Err(Exit::Break) | Err(Exit::Continue) => {
-                Err(self.error("'break' and 'continue' can only be used inside a loop"))
-            }
-        }
+        self.execute(program, false)
     }
 
-    fn run_statements(&mut self, block: &Block) -> Result<Option<Value>, Exit> {
-        let mut last = None;
-        for (line, stmt) in block {
-            self.line = *line;
-            last = self.execute(stmt)?;
-        }
-        Ok(last)
+    pub fn run_main(&mut self, program: &Block) -> Result<Option<Value>, Error> {
+        self.execute(program, true)
     }
 
-    fn run_in(&mut self, env: Env, block: &Block) -> Result<Option<Value>, Exit> {
-        let previous = std::mem::replace(&mut self.env, env);
-        let line = self.line;
-        let result = self.run_statements(block);
-        self.env = previous;
-        self.line = line;
-        result
+    fn execute(&mut self, program: &Block, promote: bool) -> Result<Option<Value>, Error> {
+        let (proto, ends_with_value) = compile_script(program, &mut self.globals, promote)?;
+        self.vm.sync_globals(&self.globals.names);
+        let value = self.vm.run(Rc::new(proto))?;
+        Ok(ends_with_value.then_some(value))
     }
 
-    fn run_block(&mut self, block: &Block) -> Result<(), Exit> {
-        let env = Scope::new(Some(self.env.clone()));
-        self.run_in(env, block).map(|_| ())
-    }
-
-    fn execute(&mut self, stmt: &Stmt) -> Result<Option<Value>, Exit> {
-        match stmt {
-            Stmt::Let(name, expr) => {
-                let value = self.eval(expr)?;
-                self.env.borrow_mut().vars.insert(name.clone(), value);
-                Ok(None)
-            }
-            Stmt::Assign(name, expr) => {
-                let value = self.eval(expr)?;
-                self.assign(name, value)?;
-                Ok(None)
-            }
-            Stmt::If(condition, then_block, else_block) => {
-                if self.eval_bool(condition, "if")? {
-                    self.run_block(then_block)?;
-                } else if let Some(block) = else_block {
-                    self.run_block(block)?;
-                }
-                Ok(None)
-            }
-            Stmt::SetIndex(target, index, value) => {
-                let target = self.eval(target)?;
-                let index = self.eval(index)?;
-                let value = self.eval(value)?;
-                match target {
-                    Value::List(items) => {
-                        let position = self.position(&index, items.borrow().len())?;
-                        items.borrow_mut()[position] = value;
-                        Ok(None)
-                    }
-                    Value::Record(fields) => match index {
-                        Value::Str(name) => self.set_field(&fields, &name, value),
-                        other => Err(self.fail(format!(
-                            "record fields are named with strings, got {}",
-                            other.type_name()
-                        ))),
-                    },
-                    Value::Str(_) => Err(self.fail("strings can't be changed in place")),
-                    other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
-                }
-            }
-            Stmt::SetField(target, name, value) => {
-                let target = self.eval(target)?;
-                let value = self.eval(value)?;
-                match target {
-                    Value::Record(fields) => self.set_field(&fields, name, value),
-                    other => Err(self.fail(format!(
-                        "cannot set field '{name}' on {}",
-                        other.type_name()
-                    ))),
-                }
-            }
-            Stmt::While(condition, body) => {
-                while self.eval_bool(condition, "while")? {
-                    match self.run_block(body) {
-                        Ok(()) | Err(Exit::Continue) => {}
-                        Err(Exit::Break) => break,
-                        Err(other) => return Err(other),
-                    }
-                }
-                Ok(None)
-            }
-            Stmt::For(name, iterable, body) => {
-                let items = match self.eval(iterable)? {
-                    Value::List(items) => items.borrow().clone(),
-                    Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
-                    Value::Record(_) => {
-                        return Err(self.fail(
-                            "for needs a list or a string, got record, try 'for key in keys(record)'",
-                        ));
-                    }
-                    other => {
-                        return Err(self.fail(format!(
-                            "for needs a list or a string, got {}",
-                            other.type_name()
-                        )));
-                    }
-                };
-                for item in items {
-                    let env = Scope::new(Some(self.env.clone()));
-                    env.borrow_mut().vars.insert(name.clone(), item);
-                    match self.run_in(env, body) {
-                        Ok(_) | Err(Exit::Continue) => {}
-                        Err(Exit::Break) => break,
-                        Err(other) => return Err(other),
-                    }
-                }
-                Ok(None)
-            }
-            Stmt::Import(path, binding) => {
-                let module = self.load_module(path)?;
-                match binding {
-                    Import::Module(name) => {
-                        self.env
-                            .borrow_mut()
-                            .vars
-                            .insert(name.clone(), Value::Record(module));
-                    }
-                    Import::Names(names) => {
-                        for name in names {
-                            let value = module
-                                .borrow()
-                                .iter()
-                                .find(|(field, _)| field == name)
-                                .map(|(_, value)| value.clone());
-                            match value {
-                                Some(value) => {
-                                    self.env.borrow_mut().vars.insert(name.clone(), value);
-                                }
-                                None => {
-                                    return Err(self.fail(format!("{path} has no '{name}'")));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(None)
-            }
-            Stmt::Break => Err(Exit::Break),
-            Stmt::Continue => Err(Exit::Continue),
-            Stmt::Return(expr) => {
-                let value = match expr {
-                    Some(expr) => self.eval(expr)?,
-                    None => Value::None,
-                };
-                Err(Exit::Return(value))
-            }
-            Stmt::Expr(expr) => Ok(Some(self.eval(expr)?)),
-        }
-    }
-
-    fn lookup(&self, name: &str) -> Option<Value> {
-        let mut scope = Some(self.env.clone());
-        while let Some(env) = scope {
-            if let Some(value) = env.borrow().vars.get(name) {
-                return Some(value.clone());
-            }
-            scope = env.borrow().parent.clone();
-        }
-        None
-    }
-
-    fn assign(&mut self, name: &str, value: Value) -> Result<(), Exit> {
-        let mut scope = Some(self.env.clone());
-        while let Some(env) = scope {
-            if let Some(slot) = env.borrow_mut().vars.get_mut(name) {
-                *slot = value;
-                return Ok(());
-            }
-            scope = env.borrow().parent.clone();
-        }
-        Err(self.fail(format!(
-            "'{name}' is not defined, use 'let {name} = ...' first"
-        )))
-    }
-
-    fn eval(&mut self, expr: &Expr) -> Result<Value, Exit> {
-        match expr {
-            Expr::Number(n) => Ok(Value::Number(*n)),
-            Expr::Bool(b) => Ok(Value::Bool(*b)),
-            Expr::None => Ok(Value::None),
-            Expr::Str(s) => Ok(Value::Str(s.clone())),
-            Expr::Template(parts) => {
-                let mut text = String::new();
-                for part in parts {
-                    text.push_str(&self.eval(part)?.to_string());
-                }
-                Ok(Value::Str(text))
-            }
-            Expr::List(items) => {
-                let mut values = Vec::with_capacity(items.len());
-                for item in items {
-                    values.push(self.eval(item)?);
-                }
-                Ok(Value::List(Rc::new(RefCell::new(values))))
-            }
-            Expr::Index(target, index) => {
-                let target = self.eval(target)?;
-                let index = self.eval(index)?;
-                match target {
-                    Value::List(items) => {
-                        let items = items.borrow();
-                        let position = self.position(&index, items.len())?;
-                        Ok(items[position].clone())
-                    }
-                    Value::Str(s) => {
-                        let chars: Vec<char> = s.chars().collect();
-                        let position = self.position(&index, chars.len())?;
-                        Ok(Value::Str(chars[position].to_string()))
-                    }
-                    Value::Record(fields) => match index {
-                        Value::Str(name) => self.get_field(&fields, &name),
-                        other => Err(self.fail(format!(
-                            "record fields are named with strings, got {}",
-                            other.type_name()
-                        ))),
-                    },
-                    other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
-                }
-            }
-            Expr::Record(fields) => {
-                let mut values = Vec::with_capacity(fields.len());
-                for (name, expr) in fields {
-                    values.push((name.clone(), self.eval(expr)?));
-                }
-                Ok(Value::Record(Rc::new(RefCell::new(values))))
-            }
-            Expr::Field(target, name) => match self.eval(target)? {
-                Value::Record(fields) => self.get_field(&fields, name),
-                Value::None => Err(self.fail(format!(
-                    "cannot read field '{name}' of none, use '?.{name}' if it might be none"
-                ))),
-                other => Err(self.fail(format!(
-                    "cannot read field '{name}' of {}",
-                    other.type_name()
-                ))),
-            },
-            Expr::OptionalField(target, name) => match self.eval(target)? {
-                Value::None => Ok(Value::None),
-                Value::Record(fields) => self.get_field(&fields, name),
-                other => Err(self.fail(format!(
-                    "cannot read field '{name}' of {}",
-                    other.type_name()
-                ))),
-            },
-            Expr::Variable(name) => match self.lookup(name) {
-                Some(value) => Ok(value),
-                None => Err(self.fail(format!("'{name}' is not defined"))),
-            },
-            Expr::Negate(inner) => match self.eval(inner)? {
-                Value::Number(n) => Ok(Value::Number(-n)),
-                other => Err(self.fail(format!("'-' needs a number, got {}", other.type_name()))),
-            },
-            Expr::Not(inner) => Ok(Value::Bool(!self.eval_bool(inner, "'!'")?)),
-            Expr::Binary(left, Op::And, right) => Ok(Value::Bool(
-                self.eval_bool(left, "'&&'")? && self.eval_bool(right, "'&&'")?,
-            )),
-            Expr::Binary(left, Op::Or, right) => Ok(Value::Bool(
-                self.eval_bool(left, "'||'")? || self.eval_bool(right, "'||'")?,
-            )),
-            Expr::Binary(left, Op::Coalesce, right) => match self.eval(left)? {
-                Value::None => self.eval(right),
-                value => Ok(value),
-            },
-            Expr::Binary(left, op, right) => {
-                let a = self.eval(left)?;
-                let b = self.eval(right)?;
-                binary(*op, a, b).map_err(|message| self.fail(message))
-            }
-            Expr::Function { name, params, body } => Ok(Value::Function(Rc::new(Function {
-                name: name.clone(),
-                params: params.clone(),
-                body: Rc::clone(body),
-                closure: self.env.clone(),
-            }))),
-            Expr::Call(callee, args) => {
-                let callee = self.eval(callee)?;
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args {
-                    values.push(self.eval(arg)?);
-                }
-                self.call(callee, values)
-            }
-        }
-    }
-
-    fn call(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, Exit> {
-        let function = match callee {
-            Value::Function(function) => function,
-            Value::Native(_, native) => {
-                return native(&args).map_err(|message| self.fail(message));
-            }
-            other => {
-                return Err(self.fail(format!("{} is not a function", other.type_name())));
-            }
-        };
-
-        if args.len() != function.params.len() {
-            let expected = function.params.len();
-            return Err(self.fail(format!(
-                "{} expects {expected} argument{}, got {}",
-                function_label(&function),
-                if expected == 1 { "" } else { "s" },
-                args.len()
-            )));
-        }
-        if self.depth >= MAX_CALL_DEPTH {
-            return Err(self.fail(format!(
-                "too much recursion: more than {MAX_CALL_DEPTH} calls deep"
-            )));
-        }
-
-        let env = Scope::new(Some(function.closure.clone()));
-        for (param, arg) in function.params.iter().zip(args) {
-            env.borrow_mut().vars.insert(param.clone(), arg);
-        }
-
-        self.depth += 1;
-        let result = self.run_in(env, &function.body);
-        self.depth -= 1;
-
-        match result {
-            Ok(_) => Ok(Value::None),
-            Err(Exit::Return(value)) => Ok(value),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, Exit> {
-        let file = self
-            .dir
-            .join(path)
-            .canonicalize()
-            .map_err(|_| self.fail(format!("cannot find {path}")))?;
-
-        if let Some(module) = self.modules.borrow().get(&file) {
-            return Ok(Rc::clone(module));
-        }
-        if self.loading.borrow().contains(&file) {
-            return Err(self.fail(format!("{path} is part of an import loop")));
-        }
-
-        let source = fs::read_to_string(&file)
-            .map_err(|error| self.fail(format!("cannot read {path}: {error}")))?;
-        self.loading.borrow_mut().push(file.clone());
-        let result = self.run_module(&file, &source);
-        self.loading.borrow_mut().pop();
-
-        let fields = result.map_err(|error| {
-            self.fail(format!("in {path}, line {}: {}", error.line, error.message))
-        })?;
-        let module = Rc::new(RefCell::new(fields));
-        self.modules.borrow_mut().insert(file, Rc::clone(&module));
-        Ok(module)
-    }
-
-    fn run_module(&self, file: &Path, source: &str) -> Result<Fields, Error> {
-        let program = Parser::new(lex(source)?).parse_program()?;
-        let mut module = Interpreter {
-            env: globals(),
-            line: 1,
-            depth: self.depth,
-            dir: file.parent().unwrap_or(Path::new(".")).to_path_buf(),
-            modules: Rc::clone(&self.modules),
-            loading: Rc::clone(&self.loading),
-        };
-        module.run(&program)?;
-
-        let mut fields: Fields = module
-            .env
-            .borrow()
-            .vars
+    pub fn exports(&self) -> Fields {
+        let globals = self.vm.globals.borrow();
+        let mut fields: Fields = globals
+            .names
             .iter()
-            .filter(|(_, value)| !matches!(value, Value::Native(..)))
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .zip(&globals.values)
+            .filter_map(|(name, value)| match value {
+                Some(Value::Native(..)) | None => None,
+                Some(value) => Some((Rc::from(name.as_str()), value.clone())),
+            })
             .collect();
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(fields)
-    }
-
-    fn get_field(&self, fields: &RefCell<Fields>, name: &str) -> Result<Value, Exit> {
-        match fields.borrow().iter().find(|(field, _)| field == name) {
-            Some((_, value)) => Ok(value.clone()),
-            None => Err(self.fail(format!("record has no field '{name}'"))),
-        }
-    }
-
-    fn set_field(
-        &self,
-        fields: &RefCell<Fields>,
-        name: &str,
-        value: Value,
-    ) -> Result<Option<Value>, Exit> {
-        match fields
-            .borrow_mut()
-            .iter_mut()
-            .find(|(field, _)| field == name)
-        {
-            Some((_, slot)) => {
-                *slot = value;
-                Ok(None)
-            }
-            None => Err(self.fail(format!(
-                "record has no field '{name}', fields can only be added when the record is created"
-            ))),
-        }
-    }
-
-    fn position(&self, index: &Value, len: usize) -> Result<usize, Exit> {
-        match index {
-            Value::Number(n) if n.fract() != 0.0 => {
-                Err(self.fail(format!("index must be a whole number, got {n}")))
-            }
-            Value::Number(n) if *n >= 0.0 && (*n as usize) < len => Ok(*n as usize),
-            Value::Number(n) => {
-                Err(self.fail(format!("index {n} is out of range, the length is {len}")))
-            }
-            other => Err(self.fail(format!("index must be a number, got {}", other.type_name()))),
-        }
-    }
-
-    fn eval_bool(&mut self, expr: &Expr, what: &str) -> Result<bool, Exit> {
-        match self.eval(expr)? {
-            Value::Bool(b) => Ok(b),
-            other => Err(self.fail(format!(
-                "{what} needs true or false, got {}",
-                other.type_name()
-            ))),
-        }
-    }
-
-    fn error(&self, message: impl Into<String>) -> Error {
-        Error {
-            line: self.line,
-            message: message.into(),
-        }
-    }
-
-    fn fail(&self, message: impl Into<String>) -> Exit {
-        Exit::Error(self.error(message))
-    }
-}
-
-fn globals() -> Env {
-    let globals = Scope::new(None);
-    for (name, native) in [
-        ("print", print as NativeFn),
-        ("len", len),
-        ("push", push),
-        ("range", range),
-        ("keys", keys),
-    ] {
-        globals
-            .borrow_mut()
-            .vars
-            .insert(name.to_string(), Value::Native(name, native));
-    }
-    globals
-}
-
-fn print(args: &[Value]) -> Result<Value, String> {
-    let parts: Vec<String> = args.iter().map(Value::to_string).collect();
-    println!("{}", parts.join(" "));
-    Ok(Value::None)
-}
-
-fn arguments<'a, const N: usize>(name: &str, args: &'a [Value]) -> Result<&'a [Value; N], String> {
-    args.try_into().map_err(|_| {
-        format!(
-            "{name} expects {N} argument{}, got {}",
-            if N == 1 { "" } else { "s" },
-            args.len()
-        )
-    })
-}
-
-fn len(args: &[Value]) -> Result<Value, String> {
-    match arguments::<1>("len", args)? {
-        [Value::List(items)] => Ok(Value::Number(items.borrow().len() as f64)),
-        [Value::Str(s)] => Ok(Value::Number(s.chars().count() as f64)),
-        [Value::Record(fields)] => Ok(Value::Number(fields.borrow().len() as f64)),
-        [other] => Err(format!(
-            "len needs a list, a string or a record, got {}",
-            other.type_name()
-        )),
-    }
-}
-
-fn push(args: &[Value]) -> Result<Value, String> {
-    match arguments::<2>("push", args)? {
-        [Value::List(items), value] => {
-            items.borrow_mut().push(value.clone());
-            Ok(Value::None)
-        }
-        [other, _] => Err(format!("push needs a list, got {}", other.type_name())),
-    }
-}
-
-fn range(args: &[Value]) -> Result<Value, String> {
-    let (start, end) = match args {
-        [Value::Number(end)] => (0.0, *end),
-        [Value::Number(start), Value::Number(end)] => (*start, *end),
-        _ => {
-            return Err(
-                "range expects one or two numbers: range(end) or range(start, end)".to_string(),
-            );
-        }
-    };
-    if start.fract() != 0.0 || end.fract() != 0.0 {
-        return Err("range needs whole numbers".to_string());
-    }
-    let items = (start as i64..end as i64)
-        .map(|n| Value::Number(n as f64))
-        .collect();
-    Ok(Value::List(Rc::new(RefCell::new(items))))
-}
-
-fn keys(args: &[Value]) -> Result<Value, String> {
-    match arguments::<1>("keys", args)? {
-        [Value::Record(fields)] => {
-            let names = fields
-                .borrow()
-                .iter()
-                .map(|(name, _)| Value::Str(name.clone()))
-                .collect();
-            Ok(Value::List(Rc::new(RefCell::new(names))))
-        }
-        [other] => Err(format!("keys needs a record, got {}", other.type_name())),
-    }
-}
-
-fn equal(a: &Value, b: &Value) -> Option<bool> {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => Some(x == y),
-        (Value::Bool(x), Value::Bool(y)) => Some(x == y),
-        (Value::Str(x), Value::Str(y)) => Some(x == y),
-        (Value::List(x), Value::List(y)) => {
-            let (x, y) = (x.borrow(), y.borrow());
-            Some(
-                x.len() == y.len()
-                    && x.iter()
-                        .zip(y.iter())
-                        .all(|(a, b)| equal(a, b).unwrap_or(false)),
-            )
-        }
-        (Value::Record(x), Value::Record(y)) => {
-            let (x, y) = (x.borrow(), y.borrow());
-            Some(
-                x.len() == y.len()
-                    && x.iter().all(|(name, a)| {
-                        y.iter()
-                            .find(|(other, _)| other == name)
-                            .is_some_and(|(_, b)| equal(a, b).unwrap_or(false))
-                    }),
-            )
-        }
-        (Value::None, other) | (other, Value::None) => Some(matches!(other, Value::None)),
-        _ => None,
-    }
-}
-
-fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
-    use Value::{Bool, Number, Str};
-
-    if let Op::Equal | Op::NotEqual = op {
-        return match equal(&a, &b) {
-            Some(same) => Ok(Bool(same == matches!(op, Op::Equal))),
-            None => Err(format!(
-                "cannot use '{}' on {} and {}",
-                symbol(op),
-                a.type_name(),
-                b.type_name()
-            )),
-        };
-    }
-
-    match (op, a, b) {
-        (Op::Add, Number(x), Number(y)) => Ok(Number(x + y)),
-        (Op::Add, Str(x), Str(y)) => Ok(Str(x + &y)),
-        (Op::Add, a @ Str(_), b) | (Op::Add, a, b @ Str(_)) => Err(format!(
-            "cannot use '+' on {} and {}, use \"${{...}}\" to put values inside a string",
-            a.type_name(),
-            b.type_name()
-        )),
-        (Op::Sub, Number(x), Number(y)) => Ok(Number(x - y)),
-        (Op::Mul, Number(x), Number(y)) => Ok(Number(x * y)),
-        (Op::Div, Number(x), Number(y)) => Ok(Number(x / y)),
-        (Op::Rem, Number(x), Number(y)) => Ok(Number(x % y)),
-        (Op::Less, Number(x), Number(y)) => Ok(Bool(x < y)),
-        (Op::LessEqual, Number(x), Number(y)) => Ok(Bool(x <= y)),
-        (Op::Greater, Number(x), Number(y)) => Ok(Bool(x > y)),
-        (Op::GreaterEqual, Number(x), Number(y)) => Ok(Bool(x >= y)),
-        (op, a, b) => Err(format!(
-            "cannot use '{}' on {} and {}",
-            symbol(op),
-            a.type_name(),
-            b.type_name()
-        )),
-    }
-}
-
-fn symbol(op: Op) -> &'static str {
-    match op {
-        Op::Add => "+",
-        Op::Sub => "-",
-        Op::Mul => "*",
-        Op::Div => "/",
-        Op::Rem => "%",
-        Op::Equal => "==",
-        Op::NotEqual => "!=",
-        Op::Less => "<",
-        Op::LessEqual => "<=",
-        Op::Greater => ">",
-        Op::GreaterEqual => ">=",
-        Op::And => "&&",
-        Op::Or => "||",
-        Op::Coalesce => "??",
+        fields
     }
 }
 
@@ -785,7 +72,7 @@ mod tests {
 
     fn run(source: &str) -> Result<Option<Value>, Error> {
         let program = Parser::new(lex(source)?).parse_program()?;
-        Interpreter::new().run(&program)
+        Interpreter::new().run_main(&program)
     }
 
     fn number(source: &str) -> f64 {
@@ -877,7 +164,7 @@ mod tests {
 
     fn string(source: &str) -> String {
         match run(source).unwrap() {
-            Some(Value::Str(s)) => s,
+            Some(Value::Str(s)) => s.to_string(),
             other => panic!("expected a string, got {other:?}"),
         }
     }
@@ -1304,6 +591,57 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("a.kp is part of an import loop")
+        );
+    }
+
+    #[test]
+    fn updates_variables_in_place_safely() {
+        assert_eq!(
+            number("let i = 0\ni = i + 1\ni = i - 3\ni = i + 10\ni"),
+            8.0
+        );
+        assert_eq!(
+            number("fn f() {\n  let n = 5\n  n = n + 2\n  n = n - 1\n  return n\n}\nf()"),
+            6.0
+        );
+        assert_eq!(
+            string("let s = \"a\"\nlet t = s\ns = s + \"b\"\nt + \"/\" + s"),
+            "a/ab"
+        );
+        assert_eq!(
+            string(
+                "fn f() {\n  let s = \"x\"\n  let keep = s\n  s = s + \"y\"\n  return keep + s\n}\nf()"
+            ),
+            "xxy"
+        );
+        let source = "fn counter() {\n  let c = 0\n  return fn() {\n    c = c + 1\n    return c\n  }\n}\nlet next = counter()\nnext()\nnext()";
+        assert_eq!(number(source), 2.0);
+    }
+
+    #[test]
+    fn failed_updates_keep_the_old_value() {
+        let mut interpreter = Interpreter::new();
+        let setup = Parser::new(lex("let x = 1").unwrap())
+            .parse_program()
+            .unwrap();
+        interpreter.run(&setup).unwrap();
+        let bad = Parser::new(lex("x = x + true").unwrap())
+            .parse_program()
+            .unwrap();
+        assert!(interpreter.run(&bad).is_err());
+        let read = Parser::new(lex("x").unwrap()).parse_program().unwrap();
+        assert!(matches!(interpreter.run(&read).unwrap(), Some(Value::Number(n)) if n == 1.0));
+    }
+
+    #[test]
+    fn prints_numbers_like_before() {
+        assert_eq!(
+            string("\"${12} ${-7} ${0} ${2.5} ${1 / 3} ${-0.5}\""),
+            "12 -7 0 2.5 0.3333333333333333 -0.5"
+        );
+        assert_eq!(
+            string("\"${1000000000000000} ${0 - 0}\""),
+            "1000000000000000 0"
         );
     }
 }
