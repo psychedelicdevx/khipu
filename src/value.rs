@@ -318,7 +318,7 @@ impl Nesting {
 
 impl Drop for Nesting {
     fn drop(&mut self) {
-        DEPTH.set(DEPTH.get() - 1);
+        DEPTH.set(DEPTH.get().saturating_sub(1));
     }
 }
 
@@ -328,11 +328,10 @@ impl fmt::Display for Value {
             self,
             Value::List(_) | Value::Record(_) | Value::Instance(_) | Value::Enum(_)
         );
-        let _guard = match Nesting::enter() {
-            Some(guard) => guard,
-            None if nested => return write!(f, "..."),
-            None => Nesting,
-        };
+        let guard = Nesting::enter();
+        if guard.is_none() && nested {
+            return write!(f, "...");
+        }
         match self {
             Value::Number(n) => write_number(f, *n),
             Value::Bool(b) => write!(f, "{b}"),

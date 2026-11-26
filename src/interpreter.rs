@@ -663,6 +663,8 @@ mod tests {
         );
         let shown = string("let a: list = []\npush(a, a)\n\"${a}\"");
         assert!(shown.starts_with("[[[") && shown.contains("..."));
+        let deep_scalar = string("let a: list = [1]\npush(a, a)\n\"${a} ${[2]}\"");
+        assert!(deep_scalar.ends_with(" [2]"), "{deep_scalar}");
     }
 
     #[test]
