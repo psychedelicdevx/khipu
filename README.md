@@ -5,7 +5,7 @@
 <h1 align="center">Khipu</h1>
 
 <p align="center">
-  <strong>JavaScript, minus the bad parts, plus real types and real multi-core.</strong>
+  <strong>The smart adapt to the world. The fool tries to change it.</strong>
 </p>
 
 <p align="center">
@@ -16,7 +16,11 @@
 
 ---
 
-Khipu is a programming language that keeps the feel of JavaScript and drops the parts people complain about: no silent type coercion, no truthiness, no `null` *and* `undefined`. It has static types that catch mistakes before anything runs, and its signature feature: safe parallelism across every CPU core with lightweight tasks and channels.
+Every tool you trust was a fool's idea first. The smart see the world as it is and fit themselves to it. The fool decides the world is wrong, tries to fix it, fails in front of everyone, and tries again. That is the only way anything new has ever been made, and it is what this repository is for.
+
+Khipu is a programming language and a laboratory. The language is typed, runs on every core, compiles to native code and WebAssembly, and is written in Rust. The laboratory is the [Experimental section of the roadmap](ROADMAP.md#experimental): ideas that should not work, each written down with the experiment that will prove it or kill it. Shaw wrote that all progress depends on the unreasonable man. Here we try to be unreasonable on purpose, and to measure it.
+
+In daily use, Khipu keeps the feel of JavaScript and drops the parts people complain about: no silent type coercion, no truthiness, no `null` *and* `undefined`. Static types catch mistakes before anything runs, and lightweight tasks with channels give safe parallelism across every CPU core.
 
 The name comes from the **khipu**, the knotted cords the Inca used to record numbers and data: many strings working side by side, which is the idea behind Khipu's concurrency.
 
