@@ -147,16 +147,21 @@ pub use server::{accept, fetch, listen, respond};
 #[cfg(not(target_arch = "wasm32"))]
 mod server {
     use std::collections::HashMap;
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{headers, record, text};
     use crate::value::Value;
 
     const MAX_BODY: usize = 10 * 1024 * 1024;
+    const MAX_REQUEST_HEAD: usize = 16 * 1024;
+    const MAX_HEADER_LINE: usize = 8 * 1024;
+    const MAX_HEADERS: usize = 100;
+    const READ_TIMEOUT: Duration = Duration::from_secs(10);
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static LISTENERS: Mutex<Option<HashMap<u64, TcpListener>>> = Mutex::new(None);
@@ -257,37 +262,86 @@ mod server {
 
     type Incoming = (String, String, Vec<(String, String)>, String);
 
-    fn read_request(stream: &TcpStream) -> Option<Incoming> {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .ok()?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).ok()?;
-        let mut parts = line.split_whitespace();
+    fn find_head_end(received: &[u8]) -> Option<(usize, usize)> {
+        let find = |needle: &[u8]| received.windows(needle.len()).position(|w| w == needle);
+        find(b"\r\n\r\n")
+            .map(|at| (at, 4))
+            .or_else(|| find(b"\n\n").map(|at| (at, 2)))
+    }
+
+    fn read_request(mut stream: &TcpStream) -> Option<Incoming> {
+        stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let mut buf = [0u8; 4096];
+        let mut received = Vec::new();
+        let (head_len, term_len) = loop {
+            if let Some(found) = find_head_end(&received) {
+                break found;
+            }
+            if received.len() > MAX_REQUEST_HEAD || Instant::now() > deadline {
+                return None;
+            }
+            let read = stream.read(&mut buf).ok()?;
+            if read == 0 {
+                return None;
+            }
+            received.extend_from_slice(&buf[..read]);
+        };
+        let head = std::str::from_utf8(&received[..head_len]).ok()?;
+        let mut body = received[head_len + term_len..].to_vec();
+        let mut lines = head.split('\n');
+        let raw_request_line = lines.next()?;
+        let request_line = raw_request_line
+            .strip_suffix('\r')
+            .unwrap_or(raw_request_line);
+        let mut parts = request_line.split_whitespace();
         let method = parts.next()?.to_string();
         let target = parts.next()?.to_string();
         let mut found = Vec::new();
-        let mut length = 0;
-        loop {
-            let mut header = String::new();
-            reader.read_line(&mut header).ok()?;
-            let header = header.trim_end();
-            if header.is_empty() {
-                break;
+        let mut length = 0usize;
+        let mut seen_length = false;
+        let mut count = 0usize;
+        for raw in lines {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            if line.is_empty() {
+                continue;
             }
-            let (name, value) = header.split_once(':')?;
-            let (name, value) = (name.trim().to_lowercase(), value.trim().to_string());
+            count += 1;
+            if count > MAX_HEADERS || line.len() > MAX_HEADER_LINE {
+                return None;
+            }
+            let (name, value) = line.split_once(':')?;
+            let name = name.trim().to_lowercase();
+            let value = value.trim();
+            if name.is_empty() || !valid_header_name(&name) {
+                return None;
+            }
+            if name == "transfer-encoding" && !value.eq_ignore_ascii_case("identity") {
+                return None;
+            }
             if name == "content-length" {
+                if seen_length || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                seen_length = true;
                 length = value.parse().ok()?;
+                if length > MAX_BODY {
+                    return None;
+                }
             }
-            found.push((name, value));
+            found.push((name, value.to_string()));
         }
-        if length > MAX_BODY {
-            return None;
+        while body.len() < length {
+            if Instant::now() > deadline {
+                return None;
+            }
+            let read = stream.read(&mut buf).ok()?;
+            if read == 0 {
+                return None;
+            }
+            body.extend_from_slice(&buf[..read]);
         }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).ok()?;
+        body.truncate(length);
         Some((
             method,
             target,
@@ -338,6 +392,14 @@ mod server {
         result
     }
 
+    fn valid_header_name(name: &str) -> bool {
+        const TOKEN: &str = "!#$%&'*+-.^_`|~";
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || TOKEN.as_bytes().contains(&b))
+    }
+
     fn reason(status: u16) -> &'static str {
         match status {
             200 => "OK",
@@ -374,6 +436,15 @@ mod server {
             if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
                 return Err(format!("header '{}' contains a line break", name.trim()));
             }
+            if !valid_header_name(&name) {
+                return Err(format!("header '{name}' is not a valid header name"));
+            }
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "content-length" | "connection" | "transfer-encoding"
+            ) {
+                continue;
+            }
             typed |= name.eq_ignore_ascii_case("content-type");
             head.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -384,9 +455,263 @@ mod server {
             "content-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         ));
-        let _ = stream
-            .write_all(head.as_bytes())
-            .and_then(|_| stream.write_all(body.as_bytes()));
+        let mut response = head.into_bytes();
+        response.extend_from_slice(body.as_bytes());
+        let _ = stream.write_all(&response);
         Ok(Value::None)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::io::{Read, Write};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::rc::Rc;
+
+        use super::Incoming;
+        use super::read_request;
+        use super::{
+            CONNECTIONS, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS, MAX_REQUEST_HEAD, respond, store,
+        };
+        use crate::value::Value;
+
+        fn pair() -> (TcpStream, TcpStream) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let client = TcpStream::connect(address).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            (client, server)
+        }
+
+        fn read_request_bytes(raw: &[u8]) -> Option<Incoming> {
+            let (mut client, server) = pair();
+            let owned = raw.to_vec();
+            let writer = std::thread::spawn(move || {
+                let _ = client.write_all(&owned);
+                let _ = client.shutdown(Shutdown::Write);
+            });
+            let result = read_request(&server);
+            let _ = writer.join();
+            result
+        }
+
+        #[test]
+        fn reads_a_well_formed_request() {
+            let raw = b"POST /submit?a=1&b=2 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nX-Test: yes\r\n\r\nhello";
+            let (method, target, headers, body) = read_request_bytes(raw).unwrap();
+            assert_eq!(method, "POST");
+            assert_eq!(target, "/submit?a=1&b=2");
+            assert_eq!(body, "hello");
+            assert!(headers.contains(&("host".to_string(), "localhost".to_string())));
+            assert!(headers.contains(&("x-test".to_string(), "yes".to_string())));
+            assert!(headers.contains(&("content-length".to_string(), "5".to_string())));
+        }
+
+        #[test]
+        fn reads_headers_and_body_arriving_together_and_in_pieces() {
+            let (mut client, server) = pair();
+            let server_thread = std::thread::spawn(move || read_request(&server));
+            let raw = b"GET /x HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc";
+            for byte in raw {
+                client.write_all(&[*byte]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            client.shutdown(Shutdown::Write).unwrap();
+            let (method, target, _, body) = server_thread.join().unwrap().unwrap();
+            assert_eq!(
+                (method.as_str(), target.as_str(), body.as_str()),
+                ("GET", "/x", "abc")
+            );
+        }
+
+        #[test]
+        fn accepts_lf_only_line_endings() {
+            let raw = b"GET /x HTTP/1.1\nHost: h\nContent-Length: 3\n\nabc";
+            let (_, _, _, body) = read_request_bytes(raw).unwrap();
+            assert_eq!(body, "abc");
+        }
+
+        #[test]
+        fn a_truncated_request_is_rejected() {
+            assert!(read_request_bytes(b"GET / HTTP/1.1\r\nHost: h\r\n\r").is_none());
+            assert!(read_request_bytes(b"").is_none());
+            assert!(read_request_bytes(b"GET / HTTP/1.1\r\nHost: h\r\n").is_none());
+            let raw = b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nab";
+            assert!(read_request_bytes(raw).is_none());
+        }
+
+        #[test]
+        fn a_malformed_request_is_rejected_never_a_crash() {
+            for raw in [
+                &b"garbage\r\n\r\n"[..],
+                b"GET\r\n\r\n",
+                b"GET / HTTP/1.1\r\nNoColonHere\r\n\r\n",
+                b"GET / HTTP/1.1\r\n: value\r\n\r\n",
+                b"GET / HTTP/1.1\r\nHost h\r\n\r\n",
+            ] {
+                assert!(read_request_bytes(raw).is_none(), "{raw:?}");
+            }
+        }
+
+        #[test]
+        fn invalid_utf8_in_headers_is_rejected_but_not_a_crash() {
+            let mut raw = b"GET / HTTP/1.1\r\nX-Bad: ".to_vec();
+            raw.push(0xff);
+            raw.extend_from_slice(b"\r\n\r\n");
+            assert!(read_request_bytes(&raw).is_none());
+        }
+
+        #[test]
+        fn request_smuggling_is_rejected() {
+            let base = b"POST / HTTP/1.1\r\nHost: h\r\n";
+            for head in [
+                &b"Content-Length: 3\r\nContent-Length: 3\r\n"[..],
+                b"Content-Length: 3\r\nContent-Length: 4\r\n",
+                b"Content-Length: 3x\r\n",
+                b"Content-Length: -1\r\n",
+                b"Content-Length: \r\n",
+                b"Content-Length: 3,3\r\n",
+                b"Content-Length: +3\r\n",
+                b"Transfer-Encoding: chunked\r\n",
+                b"Transfer-Encoding: chunked\r\nContent-Length: 3\r\n",
+                b"Transfer-Encoding: gzip\r\n",
+            ] {
+                let mut raw = base.to_vec();
+                raw.extend_from_slice(head);
+                raw.extend_from_slice(b"\r\nabc");
+                assert!(read_request_bytes(&raw).is_none(), "{head:?}");
+            }
+        }
+
+        #[test]
+        fn transfer_encoding_identity_with_content_length_is_allowed() {
+            let raw =
+                b"POST / HTTP/1.1\r\nTransfer-Encoding: identity\r\nContent-Length: 3\r\n\r\nabc";
+            let (_, _, _, body) = read_request_bytes(raw).unwrap();
+            assert_eq!(body, "abc");
+        }
+
+        #[test]
+        fn body_past_content_length_is_left_aside() {
+            let raw = b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcEXTRA";
+            let (_, _, _, body) = read_request_bytes(raw).unwrap();
+            assert_eq!(body, "abc");
+        }
+
+        #[test]
+        fn header_size_line_and_count_are_bounded() {
+            let mut huge_head = b"GET / HTTP/1.1\r\n".to_vec();
+            huge_head.extend(std::iter::repeat_n(b'a', MAX_REQUEST_HEAD + 1));
+            assert!(read_request_bytes(&huge_head).is_none());
+
+            let mut long_line = b"GET / HTTP/1.1\r\nX-Long: ".to_vec();
+            long_line.extend(std::iter::repeat_n(b'a', MAX_HEADER_LINE + 1));
+            long_line.extend_from_slice(b"\r\n\r\n");
+            assert!(read_request_bytes(&long_line).is_none());
+
+            let mut many = b"GET / HTTP/1.1\r\n".to_vec();
+            for index in 0..MAX_HEADERS + 1 {
+                many.extend_from_slice(format!("X-H{index}: v\r\n").as_bytes());
+            }
+            many.extend_from_slice(b"\r\n");
+            assert!(read_request_bytes(&many).is_none());
+        }
+
+        #[test]
+        fn body_length_is_bounded() {
+            let raw = format!(
+                "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY + 1
+            );
+            assert!(read_request_bytes(raw.as_bytes()).is_none());
+        }
+
+        #[test]
+        fn a_slow_or_stalled_client_is_cut_off() {
+            let (mut client, server) = pair();
+            let server_thread = std::thread::spawn(move || read_request(&server));
+            client.write_all(b"GET / HTTP/1.1\r\nHost:").unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+            assert!(server_thread.join().unwrap().is_none());
+        }
+
+        fn respond_once(
+            status: f64,
+            body: &str,
+            headers: Vec<(Rc<str>, Value)>,
+        ) -> Result<Vec<u8>, String> {
+            let (mut client, server) = pair();
+            let id = store(&CONNECTIONS, server);
+            let result = respond(&[
+                Value::Number(id as f64),
+                Value::Number(status),
+                Value::str(body),
+                Value::record(headers),
+            ]);
+            let mut out = Vec::new();
+            let _ = client.read_to_end(&mut out);
+            result.map(|_| out)
+        }
+
+        #[test]
+        fn a_response_is_one_well_formed_message_with_safe_headers() {
+            let out = respond_once(
+                200.0,
+                "hi",
+                vec![
+                    (Rc::from("x-test"), Value::str("1")),
+                    (Rc::from("content-length"), Value::str("999")),
+                    (Rc::from("connection"), Value::str("keep-alive")),
+                    (Rc::from("transfer-encoding"), Value::str("chunked")),
+                ],
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+            assert!(text.contains("x-test: 1\r\n"), "{text}");
+            assert!(!text.contains("999"), "{text}");
+            assert!(!text.to_lowercase().contains("keep-alive"), "{text}");
+            assert!(!text.to_lowercase().contains("transfer-encoding"), "{text}");
+            assert!(text.contains("connection: close\r\n"), "{text}");
+            assert_eq!(text.matches("content-length:").count(), 1, "{text}");
+            assert!(text.contains("content-length: 2\r\n"), "{text}");
+            assert!(
+                text.contains("content-type: text/plain; charset=utf-8\r\n"),
+                "{text}"
+            );
+            assert!(text.ends_with("\r\n\r\nhi"), "{text}");
+        }
+
+        #[test]
+        fn response_header_injection_and_bad_names_are_rejected() {
+            assert!(respond_once(200.0, "", vec![(Rc::from("x"), Value::str("a\r\nb"))]).is_err());
+            assert!(respond_once(200.0, "", vec![(Rc::from("x\r\ny"), Value::str("a"))]).is_err());
+            assert!(respond_once(200.0, "", vec![(Rc::from("x y"), Value::str("a"))]).is_err());
+            assert!(respond_once(200.0, "", vec![(Rc::from("x:"), Value::str("a"))]).is_err());
+            assert!(respond_once(200.0, "", vec![(Rc::from(""), Value::str("a"))]).is_err());
+        }
+
+        #[test]
+        fn content_type_is_kept_and_status_is_checked() {
+            let out = respond_once(
+                201.0,
+                "{}",
+                vec![(Rc::from("Content-Type"), Value::str("application/json"))],
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with("HTTP/1.1 201 Created\r\n"), "{text}");
+            assert_eq!(
+                text.to_lowercase().matches("content-type").count(),
+                1,
+                "{text}"
+            );
+            assert!(
+                text.contains("Content-Type: application/json\r\n"),
+                "{text}"
+            );
+            assert!(!text.contains("text/plain"), "{text}");
+            assert!(respond_once(99.0, "", vec![]).is_err());
+            assert!(respond_once(600.0, "", vec![]).is_err());
+        }
     }
 }
