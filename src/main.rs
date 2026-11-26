@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::process;
 
 use error::Error;
-use interpreter::Interpreter;
+use interpreter::{Interpreter, Value};
 use parser::Parser;
 
 fn main() {
@@ -20,7 +20,7 @@ fn main() {
     }
 }
 
-fn run_source(source: &str, interpreter: &mut Interpreter) -> Result<Option<f64>, Error> {
+fn run_source(source: &str, interpreter: &mut Interpreter) -> Result<Option<Value>, Error> {
     let tokens = lexer::lex(source)?;
     let program = Parser::new(tokens).parse_program()?;
     interpreter.run(&program)
@@ -44,20 +44,29 @@ fn run_file(path: &str) {
 fn repl() {
     let stdin = io::stdin();
     let mut interpreter = Interpreter::new();
+    let mut source = String::new();
 
     loop {
-        print!("> ");
+        print!("{}", if source.is_empty() { "> " } else { "... " });
         io::stdout().flush().unwrap();
 
         let mut line = String::new();
         if stdin.read_line(&mut line).unwrap() == 0 {
             break;
         }
+        source.push_str(&line);
 
-        match run_source(&line, &mut interpreter) {
+        let open = source.matches('{').count();
+        let close = source.matches('}').count();
+        if open > close {
+            continue;
+        }
+
+        match run_source(&source, &mut interpreter) {
             Ok(Some(value)) => println!("= {value}"),
             Ok(None) => {}
             Err(error) => println!("Error: {}", error.message),
         }
+        source.clear();
     }
 }

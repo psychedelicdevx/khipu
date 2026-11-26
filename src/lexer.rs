@@ -6,13 +6,30 @@ pub enum Token {
     Ident(String),
     Let,
     Print,
+    If,
+    Else,
+    While,
+    True,
+    False,
     Equals,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    AndAnd,
+    OrOr,
+    Bang,
     Plus,
     Minus,
     Star,
     Slash,
+    Percent,
     LeftParen,
     RightParen,
+    LeftBrace,
+    RightBrace,
     Newline,
 }
 
@@ -24,11 +41,27 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
 
     while pos < chars.len() {
         let c = chars[pos];
+        let next = chars.get(pos + 1).copied();
 
-        if c == '/' && chars.get(pos + 1) == Some(&'/') {
+        if c == '/' && next == Some('/') {
             while pos < chars.len() && chars[pos] != '\n' {
                 pos += 1;
             }
+            continue;
+        }
+
+        let double = match (c, next) {
+            ('=', Some('=')) => Some(Token::EqualEqual),
+            ('!', Some('=')) => Some(Token::BangEqual),
+            ('<', Some('=')) => Some(Token::LessEqual),
+            ('>', Some('=')) => Some(Token::GreaterEqual),
+            ('&', Some('&')) => Some(Token::AndAnd),
+            ('|', Some('|')) => Some(Token::OrOr),
+            _ => None,
+        };
+        if let Some(token) = double {
+            tokens.push((token, line));
+            pos += 2;
             continue;
         }
 
@@ -37,9 +70,15 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             '-' => Some(Token::Minus),
             '*' => Some(Token::Star),
             '/' => Some(Token::Slash),
+            '%' => Some(Token::Percent),
             '(' => Some(Token::LeftParen),
             ')' => Some(Token::RightParen),
+            '{' => Some(Token::LeftBrace),
+            '}' => Some(Token::RightBrace),
             '=' => Some(Token::Equals),
+            '<' => Some(Token::Less),
+            '>' => Some(Token::Greater),
+            '!' => Some(Token::Bang),
             '\n' => Some(Token::Newline),
             _ => None,
         };
@@ -79,6 +118,11 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                 let token = match word.as_str() {
                     "let" => Token::Let,
                     "print" => Token::Print,
+                    "if" => Token::If,
+                    "else" => Token::Else,
+                    "while" => Token::While,
+                    "true" => Token::True,
+                    "false" => Token::False,
                     _ => Token::Ident(word),
                 };
                 tokens.push((token, line));
@@ -138,6 +182,29 @@ mod tests {
                 (Token::Ident("x".to_string()), 2),
                 (Token::Newline, 2),
                 (Token::Ident("y".to_string()), 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_two_character_operators() {
+        assert_eq!(
+            tokens("a <= b == !c && d != e || f >= g"),
+            vec![
+                Token::Ident("a".to_string()),
+                Token::LessEqual,
+                Token::Ident("b".to_string()),
+                Token::EqualEqual,
+                Token::Bang,
+                Token::Ident("c".to_string()),
+                Token::AndAnd,
+                Token::Ident("d".to_string()),
+                Token::BangEqual,
+                Token::Ident("e".to_string()),
+                Token::OrOr,
+                Token::Ident("f".to_string()),
+                Token::GreaterEqual,
+                Token::Ident("g".to_string()),
             ]
         );
     }

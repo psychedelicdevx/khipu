@@ -1,0 +1,40 @@
+{
+  "name": "khipu",
+  "displayName": "Khipu",
+  "description": "Syntax highlighting and file icon for the Khipu programming language",
+  "version": "0.1.0",
+  "publisher": "psychedelicdevx",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "icon": "icons/khipu.png",
+  "contributes": {
+    "languages": [
+      {
+        "id": "khipu",
+        "aliases": [
+          "Khipu",
+          "khipu"
+        ],
+        "extensions": [
+          ".kp"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/khipu.svg",
+          "dark": "./icons/khipu.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "khipu",
+        "scopeName": "source.khipu",
+        "path": "./syntaxes/khipu.tmLanguage.json"
+      }
+    ]
+  }
+}
