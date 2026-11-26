@@ -875,10 +875,22 @@ fn run_worker(index: usize) {
 #[cfg(not(target_arch = "wasm32"))]
 fn report(mut error: Error) {
     error.message = format!("in a spawned task: {}", error.message);
-    let shown = match PROGRAM.get() {
+    eprintln!("{}", render(&error));
+    std::process::exit(1);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn render(error: &Error) -> String {
+    match PROGRAM.get() {
         Some((path, source)) => error.render(path, source),
         None => format!("error: {}", error.message),
-    };
-    eprintln!("{shown}");
-    std::process::exit(1);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn program_dir() -> PathBuf {
+    PROGRAM
+        .get()
+        .and_then(|(path, _)| std::path::Path::new(path).parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
 }

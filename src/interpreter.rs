@@ -361,6 +361,43 @@ mod tests {
     }
 
     #[test]
+    fn a_throwing_handler_answers_500_and_the_server_keeps_serving() {
+        let port = 20000 + std::process::id() % 20000 + 4;
+        let server = format!(
+            "fn handle(request: Request) -> Response {{\n    if request.path == \"/boom\" {{\n        nope()\n    }}\n    return Response.text(\"ok\")\n}}\nHttp.serve({port}, handle)"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&server);
+        });
+        let send = |path: &str| -> String {
+            use std::io::{Read, Write};
+            for _ in 0..50 {
+                if let Ok(mut stream) = std::net::TcpStream::connect(format!("localhost:{port}")) {
+                    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                    let _ = stream.write_all(request.as_bytes());
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                    let mut out = Vec::new();
+                    let _ = stream.read_to_end(&mut out);
+                    if !out.is_empty() {
+                        return String::from_utf8_lossy(&out).into_owned();
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            String::new()
+        };
+        let boom = send("/boom");
+        assert!(
+            boom.starts_with("HTTP/1.1 500 Internal Server Error"),
+            "{boom}"
+        );
+        assert!(boom.ends_with("internal server error"), "{boom}");
+        let good = send("/");
+        assert!(good.starts_with("HTTP/1.1 200 OK"), "{good}");
+        assert!(good.ends_with("ok"), "{good}");
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);

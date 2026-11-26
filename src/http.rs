@@ -4,7 +4,11 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 6] = [
+pub static NATIVES: [Native; 7] = [
+    Native {
+        name: "serve#",
+        function: serve,
+    },
     Native {
         name: "fetch#",
         function: fetch,
@@ -140,21 +144,26 @@ use unavailable as listen;
 use unavailable as accept;
 #[cfg(target_arch = "wasm32")]
 use unavailable as respond;
+#[cfg(target_arch = "wasm32")]
+use unavailable as serve;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use server::{accept, fetch, listen, respond};
+pub use server::{accept, fetch, listen, respond, serve};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod server {
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::rc::Rc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use super::{headers, record, text};
-    use crate::value::Value;
+    use crate::value::{GlobalStore, Instance, StructDef, Value};
+    use crate::vm::Vm;
 
     const MAX_BODY: usize = 10 * 1024 * 1024;
     const MAX_REQUEST_HEAD: usize = 16 * 1024;
@@ -430,9 +439,19 @@ mod server {
             }
         };
         let body = text(&args[2], "Response")?;
+        write_response(&mut stream, status, &body, &args[3])?;
+        Ok(Value::None)
+    }
+
+    fn write_response(
+        stream: &mut TcpStream,
+        status: u16,
+        body: &str,
+        headers_value: &Value,
+    ) -> Result<(), String> {
         let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
         let mut typed = false;
-        for (name, value) in headers(&args[3]) {
+        for (name, value) in headers(headers_value) {
             if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
                 return Err(format!("header '{}' contains a line break", name.trim()));
             }
@@ -458,7 +477,137 @@ mod server {
         let mut response = head.into_bytes();
         response.extend_from_slice(body.as_bytes());
         let _ = stream.write_all(&response);
-        Ok(Value::None)
+        Ok(())
+    }
+
+    const INTERNAL_ERROR: &str = "internal server error";
+
+    fn struct_def(globals: &GlobalStore, name: &str) -> Option<Rc<StructDef>> {
+        let store = globals.borrow();
+        let slot = store.names.iter().position(|n| n == name)?;
+        match store.values.get(slot)? {
+            Some(Value::StructDef(def)) => Some(Rc::clone(def)),
+            _ => None,
+        }
+    }
+
+    fn response_parts(value: &Value) -> Result<(u16, String, Value), String> {
+        let Value::Instance(instance) = value else {
+            return Err(format!(
+                "a handler must return a Response, got {}",
+                value.type_name()
+            ));
+        };
+        let field = |name: &str| -> Option<Value> {
+            instance
+                .def
+                .fields
+                .iter()
+                .position(|f| &**f == name)
+                .and_then(|at| instance.fields.borrow().get(at).cloned())
+        };
+        let Some(Value::Number(status)) = field("status") else {
+            return Err("a handler must return a Response with a number status".to_string());
+        };
+        if !(100.0..=599.0).contains(&status) || status.fract() != 0.0 {
+            return Err(format!(
+                "a response status must be from 100 to 599, got {status}"
+            ));
+        }
+        let Some(Value::Str(body)) = field("body") else {
+            return Err("a handler must return a Response with a string body".to_string());
+        };
+        let headers = field("headers").unwrap_or_else(|| Value::record(Vec::new()));
+        Ok((status as u16, body.to_string(), headers))
+    }
+
+    pub fn serve(args: &[Value]) -> Result<Value, String> {
+        let port = match &args[0] {
+            Value::Number(n) if n.fract() == 0.0 && (1.0..=65535.0).contains(n) => *n as u16,
+            other => {
+                return Err(format!(
+                    "Http.serve needs a port from 1 to 65535, got {other}"
+                ));
+            }
+        };
+        let handler = args
+            .get(1)
+            .cloned()
+            .ok_or("Http.serve needs a handler".to_string())?;
+        let handler_globals = match &handler {
+            Value::Function(closure) => Some(Rc::clone(&closure.globals)),
+            Value::Native(_) => None,
+            _ => return Err("Http.serve needs a function to handle requests".to_string()),
+        };
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
+        println!("listening on http://localhost:{port}");
+        let dir = crate::task::program_dir();
+        let request_def = handler_globals
+            .as_ref()
+            .and_then(|g| struct_def(g, "Request"));
+        loop {
+            let (mut stream, _) = listener
+                .accept()
+                .map_err(|error| format!("the server stopped: {error}"))?;
+            match read_request(&stream) {
+                None => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    );
+                }
+                Some((method, target, found, body)) => {
+                    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                    let headers_record = Value::record(
+                        found
+                            .into_iter()
+                            .map(|(name, value)| (Rc::from(name.as_str()), Value::str(&value)))
+                            .collect(),
+                    );
+                    let given = [
+                        ("method", Value::str(&method)),
+                        ("path", Value::str(path)),
+                        ("query", Value::str(query)),
+                        ("headers", headers_record),
+                        ("body", Value::str(&body)),
+                    ];
+                    let request = match &request_def {
+                        Some(def) => {
+                            let mut fields = vec![Value::None; def.fields.len()];
+                            for (name, value) in given {
+                                if let Some(at) = def.fields.iter().position(|f| &**f == name) {
+                                    fields[at] = value;
+                                }
+                            }
+                            Value::instance(Instance {
+                                def: Rc::clone(def),
+                                fields: RefCell::new(fields),
+                            })
+                        }
+                        None => Value::record(
+                            given
+                                .into_iter()
+                                .map(|(name, value)| (Rc::from(name), value))
+                                .collect(),
+                        ),
+                    };
+                    let mut vm = Vm::task(&dir);
+                    vm.preemptive = false;
+                    if let Some(globals) = &handler_globals {
+                        vm.globals = Rc::clone(globals);
+                    }
+                    let (status, response_body, response_headers) =
+                        match vm.call(handler.clone(), vec![request]) {
+                            Ok(value) => response_parts(&value)?,
+                            Err(error) => {
+                                eprintln!("{}", crate::task::render(&error));
+                                (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
+                            }
+                        };
+                    write_response(&mut stream, status, &response_body, &response_headers)?;
+                }
+            }
+        }
     }
 
     #[cfg(test)]

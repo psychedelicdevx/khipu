@@ -452,19 +452,6 @@ struct Http {
     }
 
     fn serve(port: number, handler: fn(Request) -> Response) {
-        let server = listen#(port)
-        print("listening on http://localhost:${port}")
-        while true {
-            let incoming = accept#(server)
-            let request = Request {
-                method: incoming[1],
-                path: incoming[2],
-                query: incoming[3],
-                headers: incoming[4],
-                body: incoming[5],
-            }
-            let response = handler(request)
-            respond#(incoming[0], response.status, response.body, response.headers)
-        }
+        serve#(port, handler)
     }
 }
