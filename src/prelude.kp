@@ -416,6 +416,10 @@ struct Response {
         return Response { status: 200, body: json_stringify#(value), headers: { "content-type": "application/json" } }
     }
 
+    fn file(path: string) -> Response {
+        return Response { status: 200, body: read_file#(path), headers: { "content-type": "application/octet-stream" } }
+    }
+
     fn error(status: number, message: string) -> Response {
         return Response { status: status, body: message, headers: { "content-type": "text/plain; charset=utf-8" } }
     }
@@ -425,6 +429,7 @@ struct Request {
     method: string,
     path: string,
     query: string,
+    query_params: record,
     headers: record,
     body: string,
 

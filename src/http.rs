@@ -528,6 +528,65 @@ mod server {
         stream: TcpStream,
     }
 
+    fn percent_decode(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'+' => {
+                    out.push(b' ');
+                    at += 1;
+                }
+                b'%' => {
+                    let hex = |b: u8| -> Option<u8> {
+                        match b {
+                            b'0'..=b'9' => Some(b - b'0'),
+                            b'a'..=b'f' => Some(b - b'a' + 10),
+                            b'A'..=b'F' => Some(b - b'A' + 10),
+                            _ => None,
+                        }
+                    };
+                    match (
+                        bytes.get(at + 1).and_then(|h| hex(*h)),
+                        bytes.get(at + 2).and_then(|h| hex(*h)),
+                    ) {
+                        (Some(hi), Some(lo)) => {
+                            out.push(hi * 16 + lo);
+                            at += 3;
+                        }
+                        _ => {
+                            out.push(bytes[at]);
+                            at += 1;
+                        }
+                    }
+                }
+                byte => {
+                    out.push(byte);
+                    at += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn parse_query(query: &str) -> Vec<(Rc<str>, Value)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let mut pairs: Vec<(Rc<str>, Value)> = Vec::new();
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            let name = Rc::from(percent_decode(name).as_str());
+            let value = Value::str(&percent_decode(value));
+            match pairs.iter().position(|(existing, _)| *existing == name) {
+                Some(at) => pairs[at] = (name, value),
+                None => pairs.push((name, value)),
+            }
+        }
+        pairs
+    }
+
     fn build_request(
         request_def: Option<&Rc<StructDef>>,
         method: &str,
@@ -546,6 +605,7 @@ mod server {
             ("method", Value::str(method)),
             ("path", Value::str(path)),
             ("query", Value::str(query)),
+            ("query_params", Value::record(parse_query(query))),
             ("headers", headers_record),
             ("body", Value::str(body)),
         ];

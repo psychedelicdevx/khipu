@@ -543,6 +543,42 @@ mod tests {
     }
 
     #[test]
+    fn request_exposes_parsed_query_parameters_and_the_raw_query() {
+        let port = 20000 + std::process::id() % 20000 + 9;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    let p = request.query_params\n    return Response.text(\"raw=${request.query}|a=${p.a ?? \"\"}|b=${p.b ?? \"\"}|c=${p.c ?? \"\"}|d=${p.d ?? \"X\"}|e=${p.e ?? \"\"}|bad=${p.bad ?? \"\"}|space=${p.space ?? \"\"}|has_missing=${keys(p).contains(\"missing\")}\")\n}",
+        );
+        let response = raw_get(
+            port,
+            "/search?a=1&b=hello+world&c=%41&d&e=x%3Dy&bad=%zz&space=a+b%20c",
+        );
+        assert!(response.ends_with("raw=a=1&b=hello+world&c=%41&d&e=x%3Dy&bad=%zz&space=a+b%20c|a=1|b=hello world|c=A|d=|e=x=y|bad=%zz|space=a b c|has_missing=false"), "{response}");
+    }
+
+    #[test]
+    fn response_file_serves_a_file() {
+        let dir = std::env::temp_dir().join(format!("khipu-response-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("served.txt");
+        std::fs::write(&path, "file-contents").unwrap();
+        let port = 20000 + std::process::id() % 20000 + 10;
+        let handler = format!(
+            "fn handle(request: Request) -> Response {{\n    return Response.file(\"{}\")\n}}",
+            path.display()
+        );
+        start_server(port, &handler);
+        let response = raw_get(port, "/");
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(
+            response.contains("content-type: application/octet-stream"),
+            "{response}"
+        );
+        assert!(response.ends_with("file-contents"), "{response}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);
