@@ -2,5 +2,10 @@
 name = "khipu"
 version = "0.1.0"
 edition = "2024"
+description = "JavaScript minus the bad parts, plus real types and real multi-core"
+repository = "https://github.com/psychedelicdevx/khipu"
+readme = "README.md"
+keywords = ["programming-language", "interpreter", "compiler", "concurrency"]
+categories = ["compilers", "development-tools"]
 
 [dependencies]

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+python3 scripts/sync-roadmap.py
+git add ROADMAP.md README.md
+
+cargo fmt --check
+cargo clippy --quiet --all-targets -- -D warnings
+cargo test --quiet

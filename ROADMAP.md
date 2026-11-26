@@ -7,12 +7,12 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `░░░░░░░░░░` 0 / 10 |
 | 2. Types | `░░░░░░░░░░` 0 / 7 |
-| 3. Tooling | `█░░░░░░░░░` 2 / 9 |
+| 3. Tooling | `██░░░░░░░░` 2 / 9 |
 | 4. Speed | `░░░░░░░░░░` 0 / 5 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 
-**Next up:** strings, then functions.
+**Next up:** Strings, joining with `+`, escapes like `\n`
 
 ---
 
