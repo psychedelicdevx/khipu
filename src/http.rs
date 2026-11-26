@@ -172,6 +172,63 @@ mod server {
     const READ_TIMEOUT: Duration = Duration::from_secs(10);
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+    #[derive(Clone, Copy)]
+    struct Limits {
+        max_body: usize,
+        max_request_head: usize,
+        max_header_line: usize,
+        max_headers: usize,
+        max_requests: usize,
+        read_timeout: Duration,
+        request_timeout: Duration,
+    }
+
+    impl Default for Limits {
+        fn default() -> Self {
+            Limits {
+                max_body: MAX_BODY,
+                max_request_head: MAX_REQUEST_HEAD,
+                max_header_line: MAX_HEADER_LINE,
+                max_headers: MAX_HEADERS,
+                max_requests: usize::MAX,
+                read_timeout: READ_TIMEOUT,
+                request_timeout: REQUEST_TIMEOUT,
+            }
+        }
+    }
+
+    fn num(record: &crate::value::Record, name: &str, current: usize) -> usize {
+        match record.get(name) {
+            Some(Value::Number(n)) if n.fract() == 0.0 && n >= 0.0 => n as usize,
+            _ => current,
+        }
+    }
+
+    fn secs(record: &crate::value::Record, name: &str, current: Duration) -> Duration {
+        match record.get(name) {
+            Some(Value::Number(n)) if n >= 0.0 && n.is_finite() => Duration::from_secs_f64(n),
+            _ => current,
+        }
+    }
+
+    fn limits_from(value: Option<&Value>) -> Limits {
+        let base = Limits::default();
+        let Some(Value::Record(record)) = value else {
+            return base;
+        };
+        let record = record.borrow();
+        let record = &*record;
+        Limits {
+            max_body: num(record, "max_body", base.max_body),
+            max_request_head: num(record, "max_request_head", base.max_request_head),
+            max_header_line: num(record, "max_header_line", base.max_header_line),
+            max_headers: num(record, "max_headers", base.max_headers),
+            max_requests: num(record, "max_requests", base.max_requests),
+            read_timeout: secs(record, "read_timeout", base.read_timeout),
+            request_timeout: secs(record, "request_timeout", base.request_timeout),
+        }
+    }
+
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static LISTENERS: Mutex<Option<HashMap<u64, TcpListener>>> = Mutex::new(None);
     static CONNECTIONS: Mutex<Option<HashMap<u64, TcpStream>>> = Mutex::new(None);
@@ -370,15 +427,15 @@ mod server {
         Bad,
     }
 
-    fn read_request_conn(conn: &mut Conn) -> ReadReq {
-        let _ = conn.stream.set_read_timeout(Some(READ_TIMEOUT));
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
+    fn read_request_conn(conn: &mut Conn, limits: Limits) -> ReadReq {
+        let _ = conn.stream.set_read_timeout(Some(limits.read_timeout));
+        let deadline = Instant::now() + limits.request_timeout;
         let mut scratch = [0u8; 4096];
         let (head_len, term_len) = loop {
             if let Some(found) = find_head_end(&conn.buf) {
                 break found;
             }
-            if conn.buf.len() > MAX_REQUEST_HEAD || Instant::now() > deadline {
+            if conn.buf.len() > limits.max_request_head || Instant::now() > deadline {
                 return ReadReq::Bad;
             }
             match conn.stream.read(&mut scratch) {
@@ -432,7 +489,7 @@ mod server {
                 continue;
             }
             count += 1;
-            if count > MAX_HEADERS || line.len() > MAX_HEADER_LINE {
+            if count > limits.max_headers || line.len() > limits.max_header_line {
                 return ReadReq::Bad;
             }
             let Some((name, value)) = line.split_once(':') else {
@@ -455,7 +512,7 @@ mod server {
                     Ok(length) => length,
                     Err(_) => return ReadReq::Bad,
                 };
-                if length > MAX_BODY {
+                if length > limits.max_body {
                     return ReadReq::Bad;
                 }
             }
@@ -810,13 +867,15 @@ mod server {
         vm: &mut Vm,
         handler: &Value,
         request_def: Option<&Rc<StructDef>>,
+        limits: Limits,
     ) {
         let mut conn = Conn {
             stream,
             buf: Vec::new(),
         };
+        let mut served = 0usize;
         loop {
-            match read_request_conn(&mut conn) {
+            match read_request_conn(&mut conn, limits) {
                 ReadReq::Closed => break,
                 ReadReq::Bad => {
                     let _ = conn.stream.write_all(
@@ -826,8 +885,10 @@ mod server {
                 }
                 ReadReq::Request((method, target, found, body), keep_alive) => {
                     let request = build_request(request_def, &method, &target, found, &body);
-                    answer(vm, handler, request, &mut conn.stream, keep_alive);
-                    if !keep_alive {
+                    let more = keep_alive && served + 1 < limits.max_requests;
+                    answer(vm, handler, request, &mut conn.stream, more);
+                    served += 1;
+                    if !more {
                         break;
                     }
                 }
@@ -839,6 +900,7 @@ mod server {
         packed: crate::task::Graph,
         receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<TcpStream>>>,
         dir: std::path::PathBuf,
+        limits: Limits,
     ) {
         let handler = crate::task::unpack(packed).remove(0);
         let handler_globals = match &handler {
@@ -859,7 +921,7 @@ mod server {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .recv();
             let Ok(stream) = stream else { break };
-            serve_connection(stream, &mut vm, &handler, request_def.as_ref());
+            serve_connection(stream, &mut vm, &handler, request_def.as_ref(), limits);
         }
     }
 
@@ -888,6 +950,7 @@ mod server {
             .map_or(4, |n| n.get())
             .max(1);
         let bound = workers.saturating_mul(2).max(1);
+        let limits = limits_from(args.get(2));
         let (sender, receiver) = std::sync::mpsc::sync_channel::<TcpStream>(bound);
         let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
         for _ in 0..workers {
@@ -897,7 +960,7 @@ mod server {
             std::thread::Builder::new()
                 .name("khipu-http".to_string())
                 .stack_size(WORKER_STACK)
-                .spawn(move || http_worker(packed, receiver, dir))
+                .spawn(move || http_worker(packed, receiver, dir, limits))
                 .expect("could not start a request worker");
         }
         loop {

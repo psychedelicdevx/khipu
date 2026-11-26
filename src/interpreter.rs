@@ -656,6 +656,33 @@ mod tests {
     }
 
     #[test]
+    fn limits_are_changeable_from_the_program() {
+        let port = 20000 + std::process::id() % 20000 + 13;
+        let source = format!(
+            "fn handle(request: Request) -> Response {{\n    return Response.text(\"ok\")\n}}\nHttp.serve_with({port}, handle, {{ max_body: 4, max_headers: 100 }})"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+        use std::io::{Read, Write};
+        let _ = raw_get(port, "/");
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")
+            .unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out);
+        assert!(
+            String::from_utf8_lossy(&out).starts_with("HTTP/1.1 400 Bad Request"),
+            "{out:?}"
+        );
+        let ok = raw_get(port, "/");
+        assert!(ok.starts_with("HTTP/1.1 200 OK"), "{ok}");
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);

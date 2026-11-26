@@ -459,4 +459,8 @@ struct Http {
     fn serve(port: number, handler: fn(Request) -> Response) {
         serve#(port, handler)
     }
+
+    fn serve_with(port: number, handler: fn(Request) -> Response, options: record) {
+        serve#(port, handler, options)
+    }
 }
