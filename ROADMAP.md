@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `██░░░░░░░░` 3 / 15 |
+| 9. HTTP without limits | `███░░░░░░░` 4 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -145,7 +145,7 @@ Today `Http.serve` answers one request at a time on one thread. A backend should
 
 Throughput
 - [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
-- [ ] Keep-alive and pipelining, so a connection serves many requests without reconnecting
+- [x] Keep-alive and pipelining, so a connection serves many requests without reconnecting
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
 - [ ] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
 - [ ] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file

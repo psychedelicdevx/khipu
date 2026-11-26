@@ -95,7 +95,7 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `██░░░░░░░░` 3 / 15 |
+| 9. HTTP without limits | `███░░░░░░░` 4 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)

@@ -359,6 +359,143 @@ mod server {
         ))
     }
 
+    struct Conn {
+        stream: TcpStream,
+        buf: Vec<u8>,
+    }
+
+    enum ReadReq {
+        Request(Incoming, bool),
+        Closed,
+        Bad,
+    }
+
+    fn read_request_conn(conn: &mut Conn) -> ReadReq {
+        let _ = conn.stream.set_read_timeout(Some(READ_TIMEOUT));
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let mut scratch = [0u8; 4096];
+        let (head_len, term_len) = loop {
+            if let Some(found) = find_head_end(&conn.buf) {
+                break found;
+            }
+            if conn.buf.len() > MAX_REQUEST_HEAD || Instant::now() > deadline {
+                return ReadReq::Bad;
+            }
+            match conn.stream.read(&mut scratch) {
+                Ok(0) => {
+                    return if conn.buf.is_empty() {
+                        ReadReq::Closed
+                    } else {
+                        ReadReq::Bad
+                    };
+                }
+                Ok(read) => conn.buf.extend_from_slice(&scratch[..read]),
+                Err(_) => {
+                    return if conn.buf.is_empty() {
+                        ReadReq::Closed
+                    } else {
+                        ReadReq::Bad
+                    };
+                }
+            }
+        };
+        let head = match std::str::from_utf8(&conn.buf[..head_len]) {
+            Ok(head) => head.to_string(),
+            Err(_) => return ReadReq::Bad,
+        };
+        let mut lines = head.split('\n');
+        let raw_request_line = match lines.next() {
+            Some(line) => line,
+            None => return ReadReq::Bad,
+        };
+        let request_line = raw_request_line
+            .strip_suffix('\r')
+            .unwrap_or(raw_request_line);
+        let mut parts = request_line.split_whitespace();
+        let method = match parts.next() {
+            Some(method) => method.to_string(),
+            None => return ReadReq::Bad,
+        };
+        let target = match parts.next() {
+            Some(target) => target.to_string(),
+            None => return ReadReq::Bad,
+        };
+        let version = parts.next().unwrap_or("HTTP/1.1").to_string();
+        let mut found = Vec::new();
+        let mut length = 0usize;
+        let mut seen_length = false;
+        let mut count = 0usize;
+        let mut connection = String::new();
+        for raw in lines {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            if line.is_empty() {
+                continue;
+            }
+            count += 1;
+            if count > MAX_HEADERS || line.len() > MAX_HEADER_LINE {
+                return ReadReq::Bad;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                return ReadReq::Bad;
+            };
+            let name = name.trim().to_lowercase();
+            let value = value.trim();
+            if name.is_empty() || !valid_header_name(&name) {
+                return ReadReq::Bad;
+            }
+            if name == "transfer-encoding" && !value.eq_ignore_ascii_case("identity") {
+                return ReadReq::Bad;
+            }
+            if name == "content-length" {
+                if seen_length || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return ReadReq::Bad;
+                }
+                seen_length = true;
+                length = match value.parse() {
+                    Ok(length) => length,
+                    Err(_) => return ReadReq::Bad,
+                };
+                if length > MAX_BODY {
+                    return ReadReq::Bad;
+                }
+            }
+            if name == "connection" {
+                connection = value.to_lowercase();
+            }
+            found.push((name, value.to_string()));
+        }
+        let body_start = head_len + term_len;
+        let total = body_start + length;
+        while conn.buf.len() < total {
+            if Instant::now() > deadline {
+                return ReadReq::Bad;
+            }
+            match conn.stream.read(&mut scratch) {
+                Ok(0) => return ReadReq::Bad,
+                Ok(read) => conn.buf.extend_from_slice(&scratch[..read]),
+                Err(_) => return ReadReq::Bad,
+            }
+        }
+        let body = conn.buf[body_start..total].to_vec();
+        conn.buf.drain(..total);
+        let keep_alive = if connection.split(',').any(|c| c.trim() == "close") {
+            false
+        } else if connection.split(',').any(|c| c.trim() == "keep-alive") {
+            true
+        } else {
+            version != "HTTP/1.0"
+        };
+        ReadReq::Request(
+            (
+                method,
+                target,
+                found,
+                String::from_utf8_lossy(&body).into_owned(),
+            ),
+            keep_alive,
+        )
+    }
+
     pub fn accept(args: &[Value]) -> Result<Value, String> {
         let server = id(&args[0]);
         let listener = take(&LISTENERS, server).ok_or("the server is not listening")?;
@@ -439,7 +576,7 @@ mod server {
             }
         };
         let body = text(&args[2], "Response")?;
-        write_response(&mut stream, status, &body, &args[3])?;
+        write_response(&mut stream, status, &body, &args[3], false)?;
         Ok(Value::None)
     }
 
@@ -448,6 +585,7 @@ mod server {
         status: u16,
         body: &str,
         headers_value: &Value,
+        keep_alive: bool,
     ) -> Result<(), String> {
         let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
         let mut typed = false;
@@ -471,8 +609,9 @@ mod server {
             head.push_str("content-type: text/plain; charset=utf-8\r\n");
         }
         head.push_str(&format!(
-            "content-length: {}\r\nconnection: close\r\n\r\n",
-            body.len()
+            "content-length: {}\r\nconnection: {}\r\n\r\n",
+            body.len(),
+            if keep_alive { "keep-alive" } else { "close" }
         ));
         let mut response = head.into_bytes();
         response.extend_from_slice(body.as_bytes());
@@ -522,11 +661,6 @@ mod server {
     }
 
     const WORKER_STACK: usize = 16 * 1024 * 1024;
-
-    struct Job {
-        request: crate::task::Graph,
-        stream: TcpStream,
-    }
 
     fn percent_decode(text: &str) -> String {
         let bytes = text.as_bytes();
@@ -631,7 +765,13 @@ mod server {
         }
     }
 
-    fn answer(vm: &mut Vm, handler: &Value, request: Value, stream: &mut TcpStream) {
+    fn answer(
+        vm: &mut Vm,
+        handler: &Value,
+        request: Value,
+        stream: &mut TcpStream,
+        keep_alive: bool,
+    ) {
         let (status, response_body, response_headers) =
             match vm.call(handler.clone(), vec![request]) {
                 Ok(value) => match response_parts(&value) {
@@ -646,14 +786,58 @@ mod server {
                     (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
                 }
             };
-        if write_response(stream, status, &response_body, &response_headers).is_err() {
-            let _ = write_response(stream, 500, INTERNAL_ERROR, &Value::record(Vec::new()));
+        if write_response(
+            stream,
+            status,
+            &response_body,
+            &response_headers,
+            keep_alive,
+        )
+        .is_err()
+        {
+            let _ = write_response(
+                stream,
+                500,
+                INTERNAL_ERROR,
+                &Value::record(Vec::new()),
+                keep_alive,
+            );
+        }
+    }
+
+    fn serve_connection(
+        stream: TcpStream,
+        vm: &mut Vm,
+        handler: &Value,
+        request_def: Option<&Rc<StructDef>>,
+    ) {
+        let mut conn = Conn {
+            stream,
+            buf: Vec::new(),
+        };
+        loop {
+            match read_request_conn(&mut conn) {
+                ReadReq::Closed => break,
+                ReadReq::Bad => {
+                    let _ = conn.stream.write_all(
+                        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    );
+                    break;
+                }
+                ReadReq::Request((method, target, found, body), keep_alive) => {
+                    let request = build_request(request_def, &method, &target, found, &body);
+                    answer(vm, handler, request, &mut conn.stream, keep_alive);
+                    if !keep_alive {
+                        break;
+                    }
+                }
+            }
         }
     }
 
     fn http_worker(
         packed: crate::task::Graph,
-        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Job>>>,
+        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<TcpStream>>>,
         dir: std::path::PathBuf,
     ) {
         let handler = crate::task::unpack(packed).remove(0);
@@ -666,15 +850,16 @@ mod server {
         if let Some(globals) = &handler_globals {
             vm.globals = Rc::clone(globals);
         }
+        let request_def = handler_globals
+            .as_ref()
+            .and_then(|g| struct_def(g, "Request"));
         loop {
-            let job = receiver
+            let stream = receiver
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .recv();
-            let Ok(job) = job else { break };
-            let request = crate::task::unpack(job.request).remove(0);
-            let mut stream = job.stream;
-            answer(&mut vm, &handler, request, &mut stream);
+            let Ok(stream) = stream else { break };
+            serve_connection(stream, &mut vm, &handler, request_def.as_ref());
         }
     }
 
@@ -691,23 +876,19 @@ mod server {
             .get(1)
             .cloned()
             .ok_or("Http.serve needs a handler".to_string())?;
-        let handler_globals = match &handler {
-            Value::Function(closure) => Some(Rc::clone(&closure.globals)),
-            Value::Native(_) => None,
+        match &handler {
+            Value::Function(_) | Value::Native(_) => {}
             _ => return Err("Http.serve needs a function to handle requests".to_string()),
-        };
+        }
         let listener = TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
         println!("listening on http://localhost:{port}");
         let dir = crate::task::program_dir();
-        let request_def = handler_globals
-            .as_ref()
-            .and_then(|g| struct_def(g, "Request"));
         let workers = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .max(1);
         let bound = workers.saturating_mul(2).max(1);
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<Job>(bound);
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<TcpStream>(bound);
         let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
         for _ in 0..workers {
             let packed = crate::task::pack(std::slice::from_ref(&handler));
@@ -721,23 +902,9 @@ mod server {
         }
         loop {
             match listener.accept() {
-                Ok((stream, _)) => match read_request(&stream) {
-                    None => {
-                        let mut stream = stream;
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                        );
-                    }
-                    Some((method, target, found, body)) => {
-                        let request =
-                            build_request(request_def.as_ref(), &method, &target, found, &body);
-                        let packed = crate::task::pack(std::slice::from_ref(&request));
-                        let _ = sender.send(Job {
-                            request: packed,
-                            stream,
-                        });
-                    }
-                },
+                Ok((stream, _)) => {
+                    let _ = sender.send(stream);
+                }
                 Err(error) => {
                     eprintln!("could not accept a connection: {error}");
                     std::thread::sleep(Duration::from_millis(1));

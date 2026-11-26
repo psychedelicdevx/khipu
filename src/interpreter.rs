@@ -578,6 +578,83 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn read_available(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(read) => out.extend_from_slice(&buf[..read]),
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn keep_alive_reuses_a_connection_and_pipelining_is_answered_in_order() {
+        let port = 20000 + std::process::id() % 20000 + 11;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.text(request.path)\n}",
+        );
+        let _ = raw_get(port, "/");
+        use std::io::Write;
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .write_all(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let first = read_available(&mut stream);
+        assert!(
+            first.contains("HTTP/1.1 200 OK") && first.ends_with("/a"),
+            "{first}"
+        );
+        assert!(first.contains("connection: keep-alive"), "{first}");
+        stream
+            .write_all(b"GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let second = read_available(&mut stream);
+        assert!(second.ends_with("/b"), "{second}");
+        let mut pipelined = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        pipelined
+            .write_all(b"GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let both = read_available(&mut pipelined);
+        let one = both.find("/1").expect("first response present");
+        let two = both.find("/2").expect("second response present");
+        assert!(one < two, "pipelined responses out of order: {both}");
+        assert_eq!(both.matches("HTTP/1.1 200 OK").count(), 2, "{both}");
+    }
+
+    #[test]
+    fn connection_close_and_http10_close_the_connection() {
+        let port = 20000 + std::process::id() % 20000 + 12;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.text(\"ok\")\n}",
+        );
+        let _ = raw_get(port, "/");
+        use std::io::{Read, Write};
+        let mut closing = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        closing
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut out = Vec::new();
+        closing.read_to_end(&mut out).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("connection: close"), "{text}");
+        let mut old = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        old.write_all(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n").unwrap();
+        let mut out10 = Vec::new();
+        old.read_to_end(&mut out10).unwrap();
+        assert!(
+            String::from_utf8_lossy(&out10).contains("connection: close"),
+            "{out10:?}"
+        );
+    }
+
     #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
