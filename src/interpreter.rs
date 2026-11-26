@@ -4,10 +4,11 @@ use std::fmt;
 use crate::error::Error;
 use crate::parser::{Block, Expr, Op, Stmt};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
     Bool(bool),
+    Str(String),
 }
 
 impl Value {
@@ -15,6 +16,7 @@ impl Value {
         match self {
             Value::Number(_) => "number",
             Value::Bool(_) => "bool",
+            Value::Str(_) => "string",
         }
     }
 }
@@ -24,6 +26,7 @@ impl fmt::Display for Value {
         match self {
             Value::Number(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
+            Value::Str(s) => write!(f, "{s}"),
         }
     }
 }
@@ -98,7 +101,7 @@ impl Interpreter {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name))
-            .copied()
+            .cloned()
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), String> {
@@ -117,6 +120,14 @@ impl Interpreter {
         match expr {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
+            Expr::Str(s) => Ok(Value::Str(s.clone())),
+            Expr::Template(parts) => {
+                let mut text = String::new();
+                for part in parts {
+                    text.push_str(&self.eval(part)?.to_string());
+                }
+                Ok(Value::Str(text))
+            }
             Expr::Variable(name) => self
                 .lookup(name)
                 .ok_or_else(|| format!("'{name}' is not defined")),
@@ -151,10 +162,18 @@ impl Interpreter {
 }
 
 fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
-    use Value::{Bool, Number};
+    use Value::{Bool, Number, Str};
 
     match (op, a, b) {
         (Op::Add, Number(x), Number(y)) => Ok(Number(x + y)),
+        (Op::Add, Str(x), Str(y)) => Ok(Str(x + &y)),
+        (Op::Add, a @ Str(_), b) | (Op::Add, a, b @ Str(_)) => Err(format!(
+            "cannot use '+' on {} and {}, use \"${{...}}\" to put values inside a string",
+            a.type_name(),
+            b.type_name()
+        )),
+        (Op::Equal, Str(x), Str(y)) => Ok(Bool(x == y)),
+        (Op::NotEqual, Str(x), Str(y)) => Ok(Bool(x != y)),
         (Op::Sub, Number(x), Number(y)) => Ok(Number(x - y)),
         (Op::Mul, Number(x), Number(y)) => Ok(Number(x * y)),
         (Op::Div, Number(x), Number(y)) => Ok(Number(x / y)),
@@ -290,5 +309,41 @@ mod tests {
     #[test]
     fn reports_errors_inside_blocks_on_their_own_line() {
         assert_eq!(error("let a = 1\nif true {\n  print(nope)\n}").line, 3);
+    }
+
+    fn string(source: &str) -> String {
+        match run(source).unwrap() {
+            Some(Value::Str(s)) => s,
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn joins_and_compares_strings() {
+        assert_eq!(string(r#""Hello, " + "world""#), "Hello, world");
+        assert!(boolean(r#""a" + "b" == "ab""#));
+        assert!(boolean(r#""a" != "b""#));
+    }
+
+    #[test]
+    fn interpolates_expressions_into_strings() {
+        let source = "let price = 20\nlet tax = 4\n\"total: ${price + tax}, paid: ${price > 10}\"";
+        assert_eq!(string(source), "total: 24, paid: true");
+        assert_eq!(string(r#""${"nested ${1 + 1}"}!""#), "nested 2!");
+    }
+
+    #[test]
+    fn refuses_to_mix_strings_and_numbers() {
+        let message = error(r#""age: " + 36"#).message;
+        assert!(message.contains("cannot use '+' on string and number"));
+        assert!(message.contains("${...}"));
+        assert!(error(r#""1" == 1"#).message.contains("cannot use '=='"));
+    }
+
+    #[test]
+    fn reports_errors_inside_interpolation_on_the_right_line() {
+        let error = error("let a = 1\nprint(\"value: ${nope}\")");
+        assert_eq!(error.line, 2);
+        assert_eq!(error.message, "'nope' is not defined");
     }
 }

@@ -1,0 +1,6 @@
+let name = "Ada"
+let year = 1815
+
+print("Hello, " + name + "!")
+print("${name} was born in ${year}, ${2026 - year} years ago.")
+print("Tabs\tand\nnew lines, plus a literal \${dollar}.")

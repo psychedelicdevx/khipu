@@ -5,14 +5,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `░░░░░░░░░░` 0 / 10 |
+| 1. Core language | `██░░░░░░░░` 2 / 10 |
 | 2. Types | `░░░░░░░░░░` 0 / 7 |
 | 3. Tooling | `██░░░░░░░░` 2 / 9 |
 | 4. Speed | `░░░░░░░░░░` 0 / 5 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 
-**Next up:** Strings, joining with `+`, escapes like `\n`
+**Next up:** Functions: `fn`, parameters, `return`
 
 ---
 
@@ -33,8 +33,8 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 
 ## Phase 1: Core language
 
-- [ ] Strings, joining with `+`, escapes like `\n`
-- [ ] String interpolation: `"total: ${price + tax}"`
+- [x] Strings, joining with `+`, escapes like `\n`
+- [x] String interpolation: `"total: ${price + tax}"`
 - [ ] Functions: `fn`, parameters, `return`
 - [ ] Recursion and closures
 - [ ] `print` becomes a real built-in function

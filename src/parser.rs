@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::lexer::Token;
+use crate::lexer::{StringPart, Token, lex};
 
 pub type Block = Vec<(usize, Stmt)>;
 
@@ -17,6 +17,8 @@ pub enum Stmt {
 pub enum Expr {
     Number(f64),
     Bool(bool),
+    Str(String),
+    Template(Vec<Expr>),
     Variable(String),
     Negate(Box<Expr>),
     Not(Box<Expr>),
@@ -255,6 +257,8 @@ impl Parser {
             Some(Token::Number(n)) => Ok(Expr::Number(n)),
             Some(Token::True) => Ok(Expr::Bool(true)),
             Some(Token::False) => Ok(Expr::Bool(false)),
+            Some(Token::Str(text)) => Ok(Expr::Str(text)),
+            Some(Token::Template(parts)) => self.template(parts),
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
             Some(Token::LeftParen) => {
                 let expr = self.expression()?;
@@ -263,6 +267,38 @@ impl Parser {
             }
             Some(token) => Err(self.error(format!("unexpected {token:?}"))),
             None => Err(self.error("unexpected end of input".to_string())),
+        }
+    }
+
+    fn template(&mut self, parts: Vec<StringPart>) -> Result<Expr, Error> {
+        let mut pieces = Vec::new();
+        for part in parts {
+            match part {
+                StringPart::Text(text) if text.is_empty() => {}
+                StringPart::Text(text) => pieces.push(Expr::Str(text)),
+                StringPart::Code(code) => pieces.push(self.embedded(&code)?),
+            }
+        }
+        Ok(Expr::Template(pieces))
+    }
+
+    fn embedded(&self, code: &str) -> Result<Expr, Error> {
+        let line = self.line;
+        let tokens = lex(code)
+            .map_err(|error| Error {
+                line,
+                message: error.message,
+            })?
+            .into_iter()
+            .map(|(token, _)| (token, line))
+            .collect();
+
+        let mut parser = Parser::new(tokens);
+        parser.line = line;
+        let expr = parser.expression()?;
+        match parser.peek() {
+            None => Ok(expr),
+            Some(token) => Err(self.error(format!("unexpected {token:?} inside ${{...}}"))),
         }
     }
 

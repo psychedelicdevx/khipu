@@ -3,59 +3,149 @@
   "name": "Khipu",
   "scopeName": "source.khipu",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#keywords" },
-    { "include": "#constants" },
-    { "include": "#numbers" },
-    { "include": "#builtins" },
-    { "include": "#operators" },
-    { "include": "#punctuation" },
-    { "include": "#variables" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    },
+    {
+      "include": "#variables"
+    }
   ],
   "repository": {
     "comments": {
       "patterns": [
-        { "name": "comment.line.double-slash.khipu", "match": "//.*$" }
+        {
+          "name": "comment.line.double-slash.khipu",
+          "match": "//.*$"
+        }
       ]
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.khipu", "match": "\\b(if|else|while)\\b" },
-        { "name": "storage.type.khipu", "match": "\\blet\\b" }
+        {
+          "name": "keyword.control.khipu",
+          "match": "\\b(if|else|while)\\b"
+        },
+        {
+          "name": "storage.type.khipu",
+          "match": "\\blet\\b"
+        }
       ]
     },
     "constants": {
       "patterns": [
-        { "name": "constant.language.boolean.khipu", "match": "\\b(true|false)\\b" }
+        {
+          "name": "constant.language.boolean.khipu",
+          "match": "\\b(true|false)\\b"
+        }
       ]
     },
     "numbers": {
       "patterns": [
-        { "name": "constant.numeric.khipu", "match": "\\b\\d+(\\.\\d+)?\\b" }
+        {
+          "name": "constant.numeric.khipu",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
       ]
     },
     "builtins": {
       "patterns": [
-        { "name": "support.function.builtin.khipu", "match": "\\bprint\\b" }
+        {
+          "name": "support.function.builtin.khipu",
+          "match": "\\bprint\\b"
+        }
       ]
     },
     "operators": {
       "patterns": [
-        { "name": "keyword.operator.comparison.khipu", "match": "==|!=|<=|>=|<|>" },
-        { "name": "keyword.operator.logical.khipu", "match": "&&|\\|\\||!" },
-        { "name": "keyword.operator.assignment.khipu", "match": "=" },
-        { "name": "keyword.operator.arithmetic.khipu", "match": "[-+*/%]" }
+        {
+          "name": "keyword.operator.comparison.khipu",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.khipu",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.assignment.khipu",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.khipu",
+          "match": "[-+*/%]"
+        }
       ]
     },
     "punctuation": {
       "patterns": [
-        { "name": "punctuation.section.block.khipu", "match": "[{}]" },
-        { "name": "punctuation.section.parens.khipu", "match": "[()]" }
+        {
+          "name": "punctuation.section.block.khipu",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.parens.khipu",
+          "match": "[()]"
+        }
       ]
     },
     "variables": {
       "patterns": [
-        { "name": "variable.other.khipu", "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b" }
+        {
+          "name": "variable.other.khipu",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.khipu",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.khipu",
+          "match": "\\\\[nt\"\\\\$]"
+        },
+        {
+          "name": "meta.embedded.interpolation.khipu",
+          "begin": "\\$\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.begin.khipu"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.end.khipu"
+            }
+          },
+          "contentName": "source.khipu",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        }
       ]
     }
   }

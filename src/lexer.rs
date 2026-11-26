@@ -1,8 +1,16 @@
 use crate::error::Error;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    Text(String),
+    Code(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
+    Str(String),
+    Template(Vec<StringPart>),
     Ident(String),
     Let,
     Print,
@@ -93,6 +101,11 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
 
         match c {
             ' ' | '\t' | '\r' => pos += 1,
+            '"' => {
+                let (token, end) = lex_string(&chars, pos, line)?;
+                tokens.push((token, line));
+                pos = end;
+            }
             c if c.is_ascii_digit() => {
                 let start = pos;
                 while pos < chars.len() && (chars[pos].is_ascii_digit() || chars[pos] == '.') {
@@ -137,6 +150,73 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
     }
 
     Ok(tokens)
+}
+
+fn lex_string(chars: &[char], start: usize, line: usize) -> Result<(Token, usize), Error> {
+    let unterminated = |what: &str| Error {
+        line,
+        message: format!("{what} is never closed"),
+    };
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut pos = start + 1;
+
+    loop {
+        match chars.get(pos) {
+            None | Some('\n') => return Err(unterminated("string")),
+            Some('"') => {
+                pos += 1;
+                break;
+            }
+            Some('\\') => {
+                let escaped = match chars.get(pos + 1) {
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('"') => '"',
+                    Some('\\') => '\\',
+                    Some('$') => '$',
+                    Some(other) => {
+                        return Err(Error {
+                            line,
+                            message: format!("unknown escape '\\{other}'"),
+                        });
+                    }
+                    None => return Err(unterminated("string")),
+                };
+                text.push(escaped);
+                pos += 2;
+            }
+            Some('$') if chars.get(pos + 1) == Some(&'{') => {
+                parts.push(StringPart::Text(std::mem::take(&mut text)));
+                pos += 2;
+                let code_start = pos;
+                let mut depth = 1;
+                while depth > 0 {
+                    match chars.get(pos) {
+                        None | Some('\n') => return Err(unterminated("'${'")),
+                        Some('{') => depth += 1,
+                        Some('}') => depth -= 1,
+                        _ => {}
+                    }
+                    pos += 1;
+                }
+                parts.push(StringPart::Code(
+                    chars[code_start..pos - 1].iter().collect(),
+                ));
+            }
+            Some(&c) => {
+                text.push(c);
+                pos += 1;
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        Ok((Token::Str(text), pos))
+    } else {
+        parts.push(StringPart::Text(text));
+        Ok((Token::Template(parts), pos))
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +287,35 @@ mod tests {
                 Token::Ident("g".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn lexes_strings_with_escapes() {
+        assert_eq!(
+            tokens(r#""say \"hi\"\n" "\${x}""#),
+            vec![
+                Token::Str("say \"hi\"\n".to_string()),
+                Token::Str("${x}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_interpolated_strings() {
+        assert_eq!(
+            tokens(r#""total: ${price + tax}!""#),
+            vec![Token::Template(vec![
+                StringPart::Text("total: ".to_string()),
+                StringPart::Code("price + tax".to_string()),
+                StringPart::Text("!".to_string()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn reports_unclosed_strings() {
+        let error = lex("let a = 1\nlet b = \"oops").unwrap_err();
+        assert_eq!(error.line, 2);
+        assert_eq!(error.message, "string is never closed");
     }
 }
