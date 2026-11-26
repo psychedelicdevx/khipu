@@ -200,9 +200,11 @@ fn repeat(args: &[Value]) -> Result<Value, String> {
     if count < 0 {
         return Err(format!("repeat needs a count of 0 or more, got {count}"));
     }
-    Ok(Value::str(
-        &text(&args[0], "repeat")?.repeat(count as usize),
-    ))
+    let piece = text(&args[0], "repeat")?;
+    if (piece.len() as u128) * (count as u128) > 1 << 30 {
+        return Err("repeat would make a string longer than 1 GB".to_string());
+    }
+    Ok(Value::str(&piece.repeat(count as usize)))
 }
 
 fn to_number(args: &[Value]) -> Result<Value, String> {
@@ -280,15 +282,19 @@ fn order(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
     }
 }
 
+fn sortable(values: &[Value]) -> Result<(), String> {
+    if let Some(first) = values.first() {
+        for value in &values[1..] {
+            order(first, value)?;
+        }
+    }
+    Ok(())
+}
+
 fn sort_values(values: &mut [Value]) -> Result<(), String> {
-    let failure = Cell::new(None);
-    values.sort_by(|a, b| {
-        order(a, b).unwrap_or_else(|message| {
-            failure.set(Some(message));
-            std::cmp::Ordering::Equal
-        })
-    });
-    failure.take().map_or(Ok(()), Err)
+    sortable(values)?;
+    values.sort_by(|a, b| order(a, b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(())
 }
 
 fn sorted(args: &[Value]) -> Result<Value, String> {
@@ -300,17 +306,9 @@ fn sorted(args: &[Value]) -> Result<Value, String> {
 fn sort_by_keys(args: &[Value]) -> Result<Value, String> {
     let items = items(&args[0], "sort_by")?;
     let keys = self::items(&args[1], "sort_by")?;
+    sortable(&keys)?;
     let mut order_of: Vec<usize> = (0..items.len()).collect();
-    let failure = Cell::new(None);
-    order_of.sort_by(|&a, &b| {
-        order(&keys[a], &keys[b]).unwrap_or_else(|message| {
-            failure.set(Some(message));
-            std::cmp::Ordering::Equal
-        })
-    });
-    if let Some(message) = failure.take() {
-        return Err(message);
-    }
+    order_of.sort_by(|&a, &b| order(&keys[a], &keys[b]).unwrap_or(std::cmp::Ordering::Equal));
     Ok(Value::list(
         order_of.into_iter().map(|at| items[at].clone()).collect(),
     ))

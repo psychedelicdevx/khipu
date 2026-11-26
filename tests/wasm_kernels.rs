@@ -17,6 +17,7 @@ const CALLS: &[(&str, &[f64])] = &[
     ("rem", &[1e300, 7.0]),
     ("rem", &[5.0, 0.0]),
     ("rem", &[-4.0, 2.0]),
+    ("rem", &[-0.0, 3.0]),
     ("rem", &[4.0, f64::INFINITY]),
     ("rem", &[1e300, 1e-300]),
     ("rem", &[123456.789, 0.001]),
@@ -119,6 +120,7 @@ fn emitted_webassembly_matches_the_interpreter() {
             .map(|(a, ty)| match ty {
                 Some(khipu::parser::Type::Bool) => (*a != 0.0).to_string(),
                 _ if a.is_infinite() => "1 / 0".to_string(),
+                _ if *a == 0.0 && a.is_sign_negative() => "-0".to_string(),
                 _ => a.to_string(),
             })
             .collect();

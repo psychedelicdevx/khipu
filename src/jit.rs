@@ -422,6 +422,32 @@ impl Lowering<'_, '_> {
                 self.b.seal_block(after);
                 self.terminated = false;
             }
+            Stmt::Whole(slots) => {
+                let mut fine = self.b.ins().iconst(types::I8, 1);
+                let infinity = self.b.ins().f64const(f64::INFINITY);
+                for slot in slots {
+                    let value = self.b.use_var(self.locals[*slot as usize]);
+                    let whole = self.b.ins().trunc(value);
+                    let integral = self.b.ins().fcmp(FloatCC::Equal, value, whole);
+                    let magnitude = self.b.ins().fabs(value);
+                    let finite = self.b.ins().fcmp(FloatCC::LessThan, magnitude, infinity);
+                    let both = self.b.ins().band(integral, finite);
+                    fine = self.b.ins().band(fine, both);
+                }
+                let bad = self.b.create_block();
+                let good = self.b.create_block();
+                self.b.ins().brif(fine, good, &[], bad, &[]);
+                self.b.switch_to_block(bad);
+                self.b.seal_block(bad);
+                let one = self.b.ins().iconst(types::I32, 1);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), one, self.state, 4);
+                let failed = failure_value(&mut self.b, self.kernel.signature.returns);
+                self.b.ins().jump(self.propagate, &[failed.into()]);
+                self.b.switch_to_block(good);
+                self.b.seal_block(good);
+            }
             Stmt::For {
                 counter,
                 limit,
@@ -718,6 +744,15 @@ mod tests {
             (f64::NAN, 2.0),
         ] {
             agree(remainder, "rem", &[a, b]);
+        }
+        let ranged = "fn total(n) {\n    let t = 0\n    for i in range(n) {\n        t = t + i\n    }\n    return t\n}";
+        agree(ranged, "total", &[4.0]);
+        for bad in [2.5, f64::NAN, f64::INFINITY] {
+            let (result, context) = native(ranged, "total", &[bad]);
+            assert!(
+                result.is_nan() && context.error == 1,
+                "range({bad}) must fail natively"
+            );
         }
         let division = "fn div(a, b) {\n    return a / b + -a\n}";
         agree(division, "div", &[1.0, 0.0]);

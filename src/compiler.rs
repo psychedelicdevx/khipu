@@ -890,7 +890,13 @@ impl Compiler<'_> {
 
     fn native_loop(&mut self, stmt: &Stmt) -> Option<usize> {
         let mut vars = Vec::new();
-        for name in crate::kernel::loop_names(stmt) {
+        let (used, called) = crate::kernel::loop_names(stmt);
+        for name in &called {
+            if !matches!(self.resolve(name).ok()?, Var::Global(_)) {
+                return None;
+            }
+        }
+        for name in used {
             let place = match self.resolve(&name).ok()? {
                 Var::Local(slot) => Place::Local(slot),
                 Var::Global(slot) => Place::Global(slot),
@@ -901,9 +907,11 @@ impl Compiler<'_> {
         if vars.len() > 16 {
             return None;
         }
+        let line = self.line as usize;
         let state = self.current();
         let source = LoopSource {
             owner: state.proto.name.to_string(),
+            line,
             index: state.proto.loops.len() as u32,
             stmt: stmt.clone(),
             vars,

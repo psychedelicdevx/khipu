@@ -12,7 +12,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `███████░░░` 12 / 18 |
+| 8. Performance and final audit | `████████░░` 14 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
 **Next up:** Beat Python on every sustained benchmark
@@ -131,9 +131,9 @@ Robustness
 - [x] No `unsafe` code, or every use justified and tested
 
 Final audit
-- [ ] Every roadmap item re-checked against the code and tests
+- [x] Every roadmap item re-checked against the code and tests
 - [ ] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
-- [ ] Every example and doc snippet runs as written
+- [x] Every example and doc snippet runs as written
 - [ ] Independent review of the whole repo, with every finding fixed or written down
 
 ## Phase 9: Documentation

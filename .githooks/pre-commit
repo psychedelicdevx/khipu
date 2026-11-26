@@ -10,3 +10,4 @@ cargo test --quiet
 cargo build --quiet --release
 find examples benchmarks -name '*.kp' -exec ./target/release/khipu fmt --check {} +
 ./target/release/khipu test examples/testing.kp > /dev/null
+python3 scripts/check-docs.py > /dev/null

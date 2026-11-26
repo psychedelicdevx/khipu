@@ -50,6 +50,7 @@ pub enum Stmt {
     Set(u32, Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
+    Whole(Vec<u32>),
     For {
         counter: u32,
         limit: u32,
@@ -91,6 +92,7 @@ pub enum Place {
 
 pub struct LoopSource {
     pub owner: String,
+    pub line: usize,
     pub index: u32,
     pub stmt: AstStmt,
     pub vars: Vec<(String, Place)>,
@@ -99,17 +101,17 @@ pub struct LoopSource {
 
 impl LoopSource {
     pub fn key(&self) -> String {
-        format!("{}\u{0}{}", self.owner, self.index)
+        format!("{}\u{0}{}\u{0}{}", self.owner, self.line, self.index)
     }
 }
 
-pub fn loop_names(stmt: &AstStmt) -> Vec<String> {
+pub fn loop_names(stmt: &AstStmt) -> (Vec<String>, Vec<String>) {
     let mut used = Vec::new();
     let mut called = Vec::new();
     let mut bound = Vec::new();
     walk_stmt(stmt, &mut used, &mut called, &mut bound);
     used.retain(|name| !called.contains(name) && !bound.contains(name));
-    used
+    (used, called)
 }
 
 fn remember(names: &mut Vec<String>, name: &str) {
@@ -491,6 +493,7 @@ impl Lowering<'_> {
                 return Ok(vec![
                     Stmt::Set(counter, start),
                     Stmt::Set(limit, end),
+                    Stmt::Whole(vec![counter, limit]),
                     Stmt::For {
                         counter,
                         limit,
@@ -618,15 +621,12 @@ type Callees<'a> = dyn Fn(&str) -> Option<(u32, Signature)> + 'a;
 
 fn resolve_group(
     root: &dyn Fn(&Callees) -> Lowered<Kernel>,
-    root_function: Option<(&str, Signature)>,
+    root_function: Option<(&Rc<Source>, Signature)>,
     find: &dyn Fn(&str) -> Option<Rc<Source>>,
     range_is_builtin: bool,
 ) -> Lowered<Vec<Kernel>> {
-    let mut order: Vec<Rc<Source>> = Vec::new();
+    let mut order: Vec<(String, Rc<Source>)> = Vec::new();
     let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
-    if let Some((name, signature)) = &root_function {
-        signatures.insert(name.to_string(), (0, signature.clone()));
-    }
     loop {
         let callees = |callee: &str| signatures.get(callee).cloned();
         let mut kernels = Vec::new();
@@ -636,11 +636,11 @@ fn resolve_group(
             Err(Rejected::Needs(callee)) => missing = Some(callee),
             Err(error) => return Err(error),
         }
-        for source in &order {
+        for (name, source) in &order {
             if missing.is_some() {
                 break;
             }
-            let signature = signatures[&source.name].1.clone();
+            let signature = signatures[name].1.clone();
             match lower(source, &signature, &callees, range_is_builtin) {
                 Ok(kernel) => kernels.push(kernel),
                 Err(Rejected::Needs(callee)) => {
@@ -656,14 +656,20 @@ fn resolve_group(
         let Some(source) = find(&callee) else {
             return unsupported("a call to something that is not a plain function");
         };
+        if let Some((root_source, signature)) = &root_function
+            && Rc::ptr_eq(root_source, &source)
+        {
+            signatures.insert(callee, (0, signature.clone()));
+            continue;
+        }
         if order.len() >= 64 {
             return unsupported("too many functions calling each other");
         }
         signatures.insert(
-            callee,
+            callee.clone(),
             (order.len() as u32 + 1, assumed_signature(&source)?),
         );
-        order.push(source);
+        order.push((callee, source));
     }
 }
 
@@ -676,7 +682,7 @@ pub fn group(
     let signature = assumed_signature(&source)?;
     resolve_group(
         &|callees| lower(&source, &signature, callees, range_is_builtin),
-        Some((root, signature.clone())),
+        Some((&source, signature.clone())),
         find,
         range_is_builtin,
     )

@@ -52,7 +52,7 @@ impl List {
             List::Values(items) => items.len(),
             List::Numbers(items) => items.len(),
             List::Bools(items) => items.len(),
-            List::Range(start, end) => (end - start).max(0) as usize,
+            List::Range(start, end) => end.saturating_sub(*start).max(0) as usize,
         }
     }
 
@@ -295,11 +295,55 @@ impl Value {
     }
 }
 
-pub const MAX_DEPTH: usize = 32;
+pub const MAX_DEPTH: usize = 200;
 
 thread_local! {
     static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TOO_DEEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SHOWING: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+struct Showing;
+
+impl Showing {
+    fn enter(address: usize) -> Option<Showing> {
+        SHOWING.with(|showing| {
+            let mut showing = showing.borrow_mut();
+            if showing.contains(&address) {
+                return None;
+            }
+            showing.push(address);
+            Some(Showing)
+        })
+    }
+}
+
+impl Drop for Showing {
+    fn drop(&mut self) {
+        SHOWING.with(|showing| {
+            showing.borrow_mut().pop();
+        });
+    }
+}
+
+fn address_of(value: &Value) -> Option<usize> {
+    Some(match value {
+        Value::List(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+        Value::Record(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+        Value::Instance(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+        _ => return None,
+    })
+}
+
+pub fn compare_equal(a: &Value, b: &Value) -> Result<Option<bool>, String> {
+    TOO_DEEP.set(false);
+    let same = equal(a, b);
+    if TOO_DEEP.replace(false) {
+        return Err(format!(
+            "cannot compare values nested more than {MAX_DEPTH} levels deep, does one contain itself?"
+        ));
+    }
+    Ok(same)
 }
 
 pub struct Nesting;
@@ -330,6 +374,10 @@ impl fmt::Display for Value {
         );
         let guard = Nesting::enter();
         if guard.is_none() && nested {
+            return write!(f, "...");
+        }
+        let showing = address_of(self).map(Showing::enter);
+        if matches!(showing, Some(None)) {
             return write!(f, "...");
         }
         match self {
@@ -478,14 +526,7 @@ pub fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
     use Value::{Bool, Number, Str};
 
     if let Op::Equal | Op::NotEqual = op {
-        TOO_DEEP.set(false);
-        let same = equal(&a, &b);
-        if TOO_DEEP.replace(false) {
-            return Err(format!(
-                "cannot compare values nested more than {MAX_DEPTH} levels deep, does one contain itself?"
-            ));
-        }
-        return match same {
+        return match compare_equal(&a, &b)? {
             Some(same) => Ok(Bool(same == matches!(op, Op::Equal))),
             None => Err(mismatch(op, &a, &b)),
         };
@@ -605,7 +646,7 @@ fn assert(args: &[Value]) -> Result<Value, String> {
 
 fn assert_eq(args: &[Value]) -> Result<Value, String> {
     let [actual, expected] = arguments::<2>("assert_eq", args)?;
-    if equal(actual, expected) == Some(true) {
+    if compare_equal(actual, expected)? == Some(true) {
         return Ok(Value::None);
     }
     let shown = |value: &Value| match value {

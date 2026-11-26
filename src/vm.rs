@@ -255,9 +255,11 @@ impl Vm {
                         && let Some(native) = crate::native::entry(&function)
                     {
                         let args_at: usize = $base;
-                        if let Some(value) =
-                            crate::native::call(&native, &self.stack[args_at..args_at + $argc])
-                        {
+                        if let Some(value) = crate::native::call(
+                            &native,
+                            &self.stack[args_at..args_at + $argc],
+                            self.frames.len() as u32,
+                        ) {
                             self.stack.truncate($return_to);
                             self.stack.push(value);
                             continue;
@@ -475,7 +477,9 @@ impl Vm {
                                     "'{name}' is not defined, use 'let {name} = ...' first"
                                 ));
                             }
-                            Some(Value::Function(_)) => crate::native::invalidate(),
+                            Some(Value::Function(_) | Value::Native(_)) => {
+                                crate::native::invalidate()
+                            }
                             Some(_) => {}
                         }
                         globals.values[slot as usize] = Some(value);
@@ -483,7 +487,10 @@ impl Vm {
                     Code::DefineGlobal(slot) => {
                         let value = self.stack.pop().expect("value to store");
                         let mut globals = closure.globals.borrow_mut();
-                        if matches!(globals.values[slot as usize], Some(Value::Function(_))) {
+                        if matches!(
+                            globals.values[slot as usize],
+                            Some(Value::Function(_) | Value::Native(_))
+                        ) {
                             crate::native::invalidate();
                         }
                         globals.values[slot as usize] = Some(value);
@@ -1269,7 +1276,8 @@ impl Vm {
                         else {
                             continue;
                         };
-                        if crate::native::run_loop(&native, &mut values).is_none() {
+                        let depth = self.frames.len() as u32;
+                        if crate::native::run_loop(&native, &mut values, depth).is_none() {
                             continue;
                         }
                         let mut globals = closure.globals.borrow_mut();

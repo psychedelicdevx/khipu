@@ -35,8 +35,11 @@ impl Default for Tier {
     }
 }
 
+const MAX_COMPILES: u32 = 2_000;
+
 thread_local! {
     static GENERATION: Cell<u32> = const { Cell::new(0) };
+    static COMPILES: Cell<u32> = const { Cell::new(0) };
 }
 
 pub fn invalidate() {
@@ -62,9 +65,10 @@ pub fn entry(closure: &Closure) -> Option<Native> {
         return None;
     }
     let native = attempt(closure, generation);
-    if native.is_none() {
-        proto.tier.set(Tier::Rejected(generation));
-    }
+    proto.tier.set(match native {
+        Some(native) => Tier::Native(native),
+        None => Tier::Rejected(generation),
+    });
     native
 }
 
@@ -79,20 +83,21 @@ fn range_is_builtin(globals: &crate::value::Globals) -> bool {
 }
 
 struct Lookup<'a> {
+    store: &'a crate::value::GlobalStore,
     globals: std::cell::Ref<'a, crate::value::Globals>,
     protos: RefCell<HashMap<String, Rc<Proto>>>,
 }
 
 impl Lookup<'_> {
     fn find(&self, name: &str) -> Option<Rc<Source>> {
-        if let Some(proto) = self.protos.borrow().get(name) {
-            return proto.source.clone();
-        }
         let slot = self.globals.names.iter().position(|n| n == name)?;
         let Some(Value::Function(callee)) = &self.globals.values[slot] else {
             return None;
         };
-        if !callee.captures.is_empty() || !callee.proto.top_level {
+        if !callee.captures.is_empty()
+            || !callee.proto.top_level
+            || !Rc::ptr_eq(&callee.globals, self.store)
+        {
             return None;
         }
         let source = callee.proto.source.clone()?;
@@ -108,6 +113,10 @@ fn install(
     protos: &HashMap<String, Rc<Proto>>,
     generation: u32,
 ) -> Option<Vec<Native>> {
+    if COMPILES.get() >= MAX_COMPILES {
+        return None;
+    }
+    COMPILES.set(COMPILES.get() + 1);
     let targets = targets(kernels)?;
     let mut natives = Vec::with_capacity(kernels.len());
     for (kernel, target) in kernels.iter().zip(targets) {
@@ -125,7 +134,9 @@ fn install(
             returns_bool: kernel.signature.returns == Kind::Bool,
             generation,
         };
-        if let Some(proto) = protos.get(&kernel.name) {
+        if let Some(proto) = protos.get(&kernel.name)
+            && !natives.is_empty()
+        {
             proto.tier.set(Tier::Native(native));
         }
         natives.push(native);
@@ -136,13 +147,10 @@ fn install(
 fn attempt(closure: &Closure, generation: u32) -> Option<Native> {
     let root = closure.proto.source.as_ref()?;
     let lookup = Lookup {
+        store: &closure.globals,
         globals: closure.globals.borrow(),
         protos: RefCell::new(HashMap::new()),
     };
-    lookup
-        .protos
-        .borrow_mut()
-        .insert(root.name.clone(), Rc::clone(&closure.proto));
     let builtin = range_is_builtin(&lookup.globals);
     let kernels = kernel::group(&root.name, &|name| lookup.find(name), builtin).ok()?;
     let protos = lookup.protos.into_inner();
@@ -166,6 +174,7 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
         .collect();
     let native = kinds.and_then(|kinds| {
         let lookup = Lookup {
+            store: &closure.globals,
             globals: closure.globals.borrow(),
             protos: RefCell::new(HashMap::new()),
         };
@@ -182,9 +191,9 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
     native
 }
 
-pub fn run_loop(native: &Native, values: &mut [Value]) -> Option<()> {
+pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()> {
     let mut raw = arguments(native, values)?;
-    run(native, &mut raw)?;
+    run(native, &mut raw, depth)?;
     for (at, value) in values.iter_mut().enumerate() {
         *value = if native.bool_params & (1 << at) != 0 {
             Value::Bool(raw[at] != 0.0)
@@ -195,9 +204,9 @@ pub fn run_loop(native: &Native, values: &mut [Value]) -> Option<()> {
     Some(())
 }
 
-pub fn call(native: &Native, args: &[Value]) -> Option<Value> {
+pub fn call(native: &Native, args: &[Value], depth: u32) -> Option<Value> {
     let mut raw = arguments(native, args)?;
-    let value = run(native, &mut raw)?;
+    let value = run(native, &mut raw, depth)?;
     Some(result(native, value))
 }
 
@@ -242,10 +251,11 @@ mod backend {
         Some(compiled.into_iter().map(|c| c.entry).collect())
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16]) -> Option<f64> {
+    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<f64> {
         CONTEXT.with(|context| {
             let mut context = context.borrow_mut();
             context.error = 0;
+            context.depth = depth;
             // SAFETY: `native.target` was produced by `jit::compile` for a kernel
             // with `native.arity` values, `raw` holds 16 f64 slots, and the
             // context lives for the whole call.
@@ -269,7 +279,7 @@ mod backend {
     use crate::kernel::Kernel;
 
     unsafe extern "C" {
-        fn native_call(index: u32, argc: u32, args: *mut f64) -> f64;
+        fn native_call(index: u32, argc: u32, args: *mut f64, depth: u32) -> f64;
         fn native_failed() -> u32;
     }
 
@@ -287,11 +297,16 @@ mod backend {
         })
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16]) -> Option<f64> {
+    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<f64> {
         // SAFETY: both imports are provided by the page that instantiated this
         // module; `raw` holds 16 f64 slots at the given pointer.
         let (value, failed) = unsafe {
-            let value = native_call(native.target, u32::from(native.arity), raw.as_mut_ptr());
+            let value = native_call(
+                native.target,
+                u32::from(native.arity),
+                raw.as_mut_ptr(),
+                depth,
+            );
             (value, native_failed())
         };
         if failed != 0 {

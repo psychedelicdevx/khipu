@@ -421,6 +421,43 @@ mod tests {
     }
 
     #[test]
+    fn native_code_keeps_every_rule_of_the_interpreter() {
+        let fractional = error(
+            "fn total(n) {\n    let t = 0\n    for i in range(n) {\n        t = t + i\n    }\n    return t\n}\nlet fine = total(4)\ntotal(2.5)",
+        );
+        assert_eq!(
+            (fractional.line, fractional.message.as_str()),
+            (3, "range needs whole numbers")
+        );
+        assert_eq!(
+            error("let t = 0\nfor i in range(1 / 0) {\n    t = t + 1\n}").message,
+            "range needs whole numbers"
+        );
+
+        let alias = "fn square(n: number) -> number {\n    return n * n\n}\nlet sq = square\nfn run() -> number {\n    let t = 0\n    for i in range(10) {\n        t = t + sq(i)\n    }\n    return t\n}\nrun()";
+        assert_eq!(number(alias), 285.0);
+
+        let shadowed = "fn add(a: number, b: number) -> number {\n    return a + b\n}\nfn fold(add: fn(number, number) -> number, n: number) -> number {\n    let t = 0\n    for i in range(n) {\n        t = add(t, i)\n    }\n    return t\n}\nfold(fn(a: number, b: number) -> number { return a * 2 + b }, 5)";
+        assert_eq!(number(shadowed), 26.0);
+
+        let redefined = "fn total(n: number) -> number {\n    let t = 0\n    for i in range(n) {\n        t = t + i\n    }\n    return t\n}\nlet first = total(3)\nlet range = fn(n: number) -> list<number> { return [10, 20] }\n\"${first} ${total(3)}\"";
+        assert_eq!(string(redefined), "3 30");
+
+        let twice = string("let r = { a: none, b: none }\nr.a = r\nr.b = r\n\"${r}\"");
+        assert_eq!(twice, "{a: ..., b: ...}");
+        let chain = "let deep: list = []\nlet other: list = []\nlet a = deep\nlet b = other\nfor _ in range(100) {\n    let inner: list = []\n    push(a, inner)\n    a = inner\n    let next: list = []\n    push(b, next)\n    b = next\n}\ndeep == other";
+        assert!(boolean(chain));
+        assert_eq!(
+            error("let big: list = []\nfor i in range(30) {\n    push(big, i)\n}\npush(big, \"a\")\nbig.sorted()").message,
+            "can only sort numbers or strings, got number and string"
+        );
+        assert_eq!(
+            error("\"abc\".repeat(1000000000000)").message,
+            "repeat would make a string longer than 1 GB"
+        );
+    }
+
+    #[test]
     fn a_budget_stops_a_program_that_never_ends() {
         let program = Parser::new(lex("let i = 0\nwhile true {\n    i = i + 1\n}").unwrap())
             .parse_program()
@@ -534,7 +571,7 @@ mod tests {
             (
                 "[1, \"a\"].sorted()",
                 1,
-                "can only sort numbers or strings, got string and number",
+                "can only sort numbers or strings, got number and string",
             ),
             ("Math.log(0)", 1, "log needs a number above 0, got 0"),
             (
@@ -640,12 +677,12 @@ mod tests {
             (
                 "let a: list = []\nlet b: list = []\npush(a, a)\npush(b, b)\na == b",
                 5,
-                "cannot compare values nested more than 32 levels deep, does one contain itself?",
+                "cannot compare values nested more than 200 levels deep, does one contain itself?",
             ),
             (
                 "let a: list = []\npush(a, a)\nJson.stringify(a)",
                 3,
-                "cannot write values nested more than 32 levels deep as JSON, does one contain itself?",
+                "cannot write values nested more than 200 levels deep as JSON, does one contain itself?",
             ),
             (
                 "Http.request(\"FLY\", \"http://localhost:1\", \"\", {})",
@@ -687,7 +724,7 @@ mod tests {
             "the code is nested more than 200 levels deep"
         );
         let shown = string("let a: list = []\npush(a, a)\n\"${a}\"");
-        assert!(shown.starts_with("[[[") && shown.contains("..."));
+        assert_eq!(shown, "[...]");
         let deep_scalar = string("let a: list = [1]\npush(a, a)\n\"${a} ${[2]}\"");
         assert!(deep_scalar.ends_with(" [2]"), "{deep_scalar}");
     }

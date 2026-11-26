@@ -43,6 +43,7 @@ const I64_REM_S: u8 = 0x81;
 const F64_ABS: u8 = 0x99;
 const F64_NEG: u8 = 0x9a;
 const F64_TRUNC: u8 = 0x9d;
+const F64_COPYSIGN: u8 = 0xa6;
 const F64_ADD: u8 = 0xa0;
 const F64_SUB: u8 = 0xa1;
 const F64_MUL: u8 = 0xa2;
@@ -142,7 +143,7 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
     }
 
     let mut export_section = Vec::new();
-    leb(&mut export_section, kernels.len() as u32 + 1);
+    leb(&mut export_section, kernels.len() as u32 + 2);
     for (index, _) in kernels.iter().enumerate() {
         let name = format!("k{index}");
         leb(&mut export_section, name.len() as u32);
@@ -154,6 +155,10 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
     export_section.extend_from_slice(b"error");
     export_section.push(0x03);
     leb(&mut export_section, ERROR);
+    leb(&mut export_section, 5);
+    export_section.extend_from_slice(b"depth");
+    export_section.push(0x03);
+    leb(&mut export_section, DEPTH);
 
     let mut code_section = Vec::new();
     leb(&mut code_section, kernels.len() as u32 + 1);
@@ -330,17 +335,8 @@ fn remainder_body() -> Vec<u8> {
     out.push(END);
 
     local_get(&mut out, r);
-    f64_const(&mut out, 0.0);
-    out.push(F64_EQ);
     local_get(&mut out, x);
-    f64_const(&mut out, 0.0);
-    out.push(F64_LT);
-    out.push(I32_AND);
-    out.extend_from_slice(&[IF, F64]);
-    f64_const(&mut out, -0.0);
-    out.push(ELSE);
-    local_get(&mut out, r);
-    out.push(END);
+    out.push(F64_COPYSIGN);
     out.push(END);
     out.push(END);
     out.push(END);
@@ -465,6 +461,31 @@ impl Emitter<'_> {
                 self.expression(value);
                 self.results();
                 self.exit();
+            }
+            Stmt::Whole(slots) => {
+                i32_const(&mut self.out, 1);
+                for slot in slots {
+                    local_get(&mut self.out, *slot);
+                    local_get(&mut self.out, *slot);
+                    self.out.push(F64_TRUNC);
+                    self.out.push(F64_EQ);
+                    local_get(&mut self.out, *slot);
+                    self.out.push(F64_ABS);
+                    f64_const(&mut self.out, f64::INFINITY);
+                    self.out.push(F64_LT);
+                    self.out.push(I32_AND);
+                    self.out.push(I32_AND);
+                }
+                self.out.push(I32_EQZ);
+                self.out.extend_from_slice(&[IF, EMPTY]);
+                self.labels += 1;
+                i32_const(&mut self.out, 1);
+                self.out.push(GLOBAL_SET);
+                leb(&mut self.out, ERROR);
+                self.failure();
+                self.exit();
+                self.labels -= 1;
+                self.out.push(END);
             }
             Stmt::For {
                 counter,

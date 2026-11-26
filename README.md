@@ -158,10 +158,21 @@ print(total)
 `select` waits on several channels and runs the arm for whichever gets a value first:
 
 ```js
-select {
-    job = receive(jobs) => handle(job)
-    receive(quit) => return
+let jobs = channel()
+let quit = channel()
+
+fn worker() {
+    while true {
+        select {
+            job = receive(jobs) => print("working on", job)
+            receive(quit) => return
+        }
+    }
 }
+
+spawn(worker)
+send(jobs, "the report")
+send(quit, true)
 ```
 
 If every task ends up waiting on a channel that nothing will ever send to, Khipu stops with a deadlock error that points at the line, instead of hanging.
@@ -247,7 +258,7 @@ import colors from "colors"
 print(colors.red("hello"))
 ```
 
-An import without `.kp` is a package; with `.kp` it is a file next to yours. `khipu add` records the exact commit in `khipu.lock`, so `khipu install` gives everyone the same code; packages' own dependencies are installed too, but only from `https://`, `ssh://` or `git@` sources, so a package can never pull in a folder from your machine. Installing never runs a package's code, and imports only look inside your own project.
+An import without `.kp` is a package; with `.kp` it is a file next to yours. `khipu add` records the exact commit in `khipu.lock`, so `khipu install` gives everyone the same code; packages' own dependencies are installed too, but only from `https://`, `ssh://` or `git@` sources, so a package can never pull in a folder from your machine. Installing never runs a package's code, and package imports only look inside your own project.
 
 ## Roadmap
 
@@ -261,7 +272,7 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `███████░░░` 12 / 18 |
+| 8. Performance and final audit | `████████░░` 14 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
 **Next up:** Beat Python on every sustained benchmark
@@ -385,4 +396,4 @@ Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo
 KHIPU_FUZZ=100000 cargo test --release --test fuzz -- --ignored
 ```
 
-Every user-facing error message has a test that checks its wording and the line it points at. There are three `unsafe` uses, each with a comment saying why it holds: calling a function the JIT just compiled, in `src/jit.rs` and `src/native.rs`, where the signature is the one we declared; and the `#[unsafe(no_mangle)]` attribute on the functions in `src/wasm.rs` that the browser calls by name. The JIT tests compare every compiled function with the interpreter, and the playground build exercises the exports.
+Every user-facing error message has a test that checks its wording and the line it points at. `unsafe` appears in three places, each with a comment saying why it holds: turning the pointer to a function the JIT just compiled into a callable with the signature we declared (`src/jit.rs`), calling it (`src/native.rs`), and, in the browser build only, calling the two functions the page provides (`src/native.rs`). The `#[unsafe(no_mangle)]` attributes in `src/wasm.rs` name the exports the browser calls. The JIT and WebAssembly tests compare every compiled function with the interpreter, and the playground build exercises the exports.
