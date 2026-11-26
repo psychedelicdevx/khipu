@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::checker::Checker;
 use crate::compiler::{Globals, compile_script};
 use crate::error::Error;
 use crate::parser::Block;
@@ -9,6 +10,7 @@ use crate::value::{Fields, NATIVES};
 use crate::vm::{Loading, Modules, Vm};
 
 pub struct Interpreter {
+    checker: Checker,
     globals: Globals,
     vm: Vm,
 }
@@ -30,7 +32,11 @@ impl Interpreter {
             vm.sync_globals(&globals.names);
             vm.globals.borrow_mut().values[slot] = Some(Value::Native(native));
         }
-        Interpreter { globals, vm }
+        Interpreter {
+            checker: Checker::new(),
+            globals,
+            vm,
+        }
     }
 
     pub fn run(&mut self, program: &Block) -> Result<Option<Value>, Error> {
@@ -42,6 +48,7 @@ impl Interpreter {
     }
 
     fn execute(&mut self, program: &Block, promote: bool) -> Result<Option<Value>, Error> {
+        self.checker.check(program)?;
         let (proto, ends_with_value) = compile_script(program, &mut self.globals, promote)?;
         self.vm.sync_globals(&self.globals.names);
         let value = self.vm.run(Rc::new(proto))?;
@@ -643,5 +650,137 @@ mod tests {
             string("\"${1000000000000000} ${0 - 0}\""),
             "1000000000000000 0"
         );
+    }
+
+    #[test]
+    fn accepts_type_annotations() {
+        assert_eq!(number("let age: number = 36\nage + 1"), 37.0);
+        assert_eq!(string("let name: string = \"Ada\"\nname"), "Ada");
+        let source = "fn add(a: number, b: number) -> number {\n  return a + b\n}\nadd(2, 3)";
+        assert_eq!(number(source), 5.0);
+    }
+
+    #[test]
+    fn rejects_mismatched_annotations() {
+        assert_eq!(
+            error("let age: number = \"old\"").message,
+            "'age' should be number, got string"
+        );
+        assert_eq!(
+            error("let ok: bool = 1").message,
+            "'ok' should be bool, got number"
+        );
+    }
+
+    #[test]
+    fn infers_types_from_the_first_value() {
+        let error = error("let count = 0\ncount = \"zero\"");
+        assert_eq!(
+            (error.line, error.message.as_str()),
+            (2, "'count' should be number, got string")
+        );
+        assert_eq!(number("let n = 1\nn = n + 1\nn"), 2.0);
+    }
+
+    #[test]
+    fn checks_types_before_anything_runs() {
+        let error = error("let first = [1][5]\nlet second: number = \"x\"");
+        assert_eq!(error.line, 2);
+        assert_eq!(error.message, "'second' should be number, got string");
+    }
+
+    #[test]
+    fn checks_function_signatures() {
+        let add = "fn add(a: number, b: number) -> number {\n  return a + b\n}\n";
+        assert_eq!(
+            error(&format!("{add}add(1, \"2\")")).message,
+            "argument 2 of 'add' should be number, got string"
+        );
+        assert_eq!(
+            error("fn name() -> string {\n  return 5\n}").message,
+            "'name' should return string, got number"
+        );
+        assert_eq!(
+            error("fn sign(x: number) -> number {\n  if x > 0 {\n    return 1\n  }\n}").message,
+            "'sign' should return number, but can reach the end without returning"
+        );
+        let both = "fn sign(x: number) -> number {\n  if x > 0 {\n    return 1\n  } else {\n    return -1\n  }\n}\nsign(-5)";
+        assert_eq!(number(both), -1.0);
+    }
+
+    #[test]
+    fn nullable_types_need_a_fallback() {
+        let message = error("let nick: string? = none\nlet shown: string = nick").message;
+        assert_eq!(
+            message,
+            "'shown' should be string, got string? (it might be none, use ?? to give a fallback)"
+        );
+        assert_eq!(
+            string("let nick: string? = none\nlet shown: string = nick ?? \"anon\"\nshown"),
+            "anon"
+        );
+        assert!(
+            error("let n: number = none")
+                .message
+                .contains("'n' should be number, got none")
+        );
+        assert_eq!(
+            error("fn find() -> record? {\n  return none\n}\nfind().name").message,
+            "cannot read field 'name' of a value that might be none, use '?.name'"
+        );
+    }
+
+    #[test]
+    fn checks_function_types() {
+        let twice =
+            "fn twice(f: fn(number) -> number, x: number) -> number {\n  return f(f(x))\n}\n";
+        assert_eq!(
+            number(&format!(
+                "{twice}twice(fn(n: number) -> number {{ return n * 2 }}, 3)"
+            )),
+            12.0
+        );
+        assert_eq!(
+            error(&format!(
+                "{twice}twice(fn(s: string) -> string {{ return s }}, 3)"
+            ))
+            .message,
+            "argument 1 of 'twice' should be fn(number) -> number, got fn(string) -> string"
+        );
+    }
+
+    #[test]
+    fn untyped_code_stays_flexible() {
+        assert_eq!(number("fn id(x) {\n  return x\n}\nid(1) + id(2)"), 3.0);
+        assert_eq!(
+            string("fn id(x) {\n  return x\n}\nid(\"a\") + id(\"b\")"),
+            "ab"
+        );
+    }
+
+    #[test]
+    fn knows_functions_declared_later() {
+        let source = "fn main() {\n  return helper(1)\n}\nfn helper(n: number) -> number {\n  return n\n}\nmain()";
+        assert_eq!(number(source), 1.0);
+        let bad = "fn main() {\n  return helper(\"x\")\n}\nfn helper(n: number) -> number {\n  return n\n}";
+        assert_eq!(
+            error(bad).message,
+            "argument 1 of 'helper' should be number, got string"
+        );
+    }
+
+    #[test]
+    fn the_prompt_remembers_types_and_recovers_from_mistakes() {
+        let mut interpreter = Interpreter::new();
+        let mut run = |source: &str| {
+            let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+            interpreter.run(&program)
+        };
+        run("let x: number = 1").unwrap();
+        assert_eq!(
+            run("x = \"s\"").unwrap_err().message,
+            "'x' should be number, got string"
+        );
+        assert!(matches!(run("x").unwrap(), Some(Value::Number(n)) if n == 1.0));
     }
 }

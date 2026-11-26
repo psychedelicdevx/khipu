@@ -7,13 +7,13 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
-| 3. Types | `░░░░░░░░░░` 0 / 7 |
+| 3. Types | `██████░░░░` 4 / 7 |
 | 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Type annotations: `let age: number = 36`
+**Next up:** Structs / classes with methods
 
 ---
 
@@ -57,10 +57,10 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 
 ## Phase 3: Types (the C# feel)
 
-- [ ] Type annotations: `let age: number = 36`
-- [ ] A type checker that runs before the program does
-- [ ] Type inference for `let`
-- [ ] Typed function signatures
+- [x] Type annotations: `let age: number = 36`
+- [x] A type checker that runs before the program does
+- [x] Type inference for `let`
+- [x] Typed function signatures
 - [ ] Structs / classes with methods
 - [ ] Enums with values, and `match`
 - [ ] Generics: `List<T>`

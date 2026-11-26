@@ -19,6 +19,9 @@
       "include": "#functions"
     },
     {
+      "include": "#types"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -209,6 +212,18 @@
               "name": "punctuation.separator.key-value.khipu"
             }
           }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.khipu",
+          "match": "\\b(number|bool|string|any|list|record)\\b"
+        },
+        {
+          "name": "keyword.operator.arrow.khipu",
+          "match": "->"
         }
       ]
     }

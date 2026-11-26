@@ -1,3 +1,4 @@
+mod checker;
 mod compiler;
 mod error;
 mod interpreter;

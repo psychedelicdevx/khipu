@@ -1,0 +1,29 @@
+let tax_rate: number = 0.2
+let shop = "Khipu Books"
+
+fn price_with_tax(price: number) -> number {
+    return price + price * tax_rate
+}
+
+fn label(title: string, price: number) -> string {
+    return "${title}: ${price_with_tax(price)}"
+}
+
+fn find_discount(code: string) -> number? {
+    if code == "WELCOME" {
+        return 5
+    }
+    return none
+}
+
+fn apply(f: fn(number) -> number, value: number) -> number {
+    return f(value)
+}
+
+print(shop)
+print(label("Crafting Interpreters", 40))
+
+let discount = find_discount("HELLO") ?? 0
+print("discount:", discount)
+
+print("doubled:", apply(fn(n: number) -> number { return n * 2 }, 21))

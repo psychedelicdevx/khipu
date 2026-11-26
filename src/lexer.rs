@@ -38,6 +38,8 @@ pub enum Token {
     OrOr,
     QuestionQuestion,
     QuestionDot,
+    Question,
+    Arrow,
     Bang,
     Plus,
     Minus,
@@ -82,6 +84,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             ('|', Some('|')) => Some(Token::OrOr),
             ('?', Some('?')) => Some(Token::QuestionQuestion),
             ('?', Some('.')) => Some(Token::QuestionDot),
+            ('-', Some('>')) => Some(Token::Arrow),
             _ => None,
         };
         if let Some(token) = double {
@@ -109,6 +112,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             '<' => Some(Token::Less),
             '>' => Some(Token::Greater),
             '!' => Some(Token::Bang),
+            '?' => Some(Token::Question),
             '\n' => Some(Token::Newline),
             _ => None,
         };

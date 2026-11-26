@@ -62,6 +62,8 @@ $ khipu examples/primes.kp
 | `1 == true` is `true` | `1 == true` is an error: you can't compare different types |
 | A typo'd variable is `undefined` | `print(totl)` is an error: *'totl' is not defined* |
 | `x = 5` without declaring creates a global | `x = 5` is an error until you write `let x = ...` |
+| `let count = 0` then `count = "zero"` is fine | A type error, *'count' should be number, got string*, caught before the program runs |
+| `user.name` crashes at runtime when `user` is `null` | `find_user()` returning `record?` must be handled with `?.` or `??` first |
 
 ## Getting started
 
@@ -88,13 +90,13 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
-| 3. Types | `░░░░░░░░░░` 0 / 7 |
+| 3. Types | `██████░░░░` 4 / 7 |
 | 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Type annotations: `let age: number = 36`
+**Next up:** Structs / classes with methods
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -102,12 +104,12 @@ The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselve
 
 | Benchmark | Khipu | Python | Node | vs Python | vs Node |
 |---|---|---|---|---|---|
-| closures | 19 ms | 37 ms | 24 ms | **2.0× faster** | **1.3× faster** |
-| fib | 17 ms | 25 ms | 25 ms | **1.4× faster** | **1.4× faster** |
-| lists | 14 ms | 39 ms | 30 ms | **2.7× faster** | **2.1× faster** |
-| loop | 34 ms | 198 ms | 35 ms | **5.9× faster** | **1.0× faster** |
-| records | 23 ms | 43 ms | 24 ms | **1.9× faster** | **1.1× faster** |
-| strings | 25 ms | 41 ms | 26 ms | **1.7× faster** | **1.0× faster** |
+| closures | 19 ms | 37 ms | 25 ms | **2.0× faster** | **1.4× faster** |
+| fib | 18 ms | 25 ms | 24 ms | **1.4× faster** | **1.3× faster** |
+| lists | 14 ms | 41 ms | 29 ms | **3.0× faster** | **2.1× faster** |
+| loop | 34 ms | 211 ms | 35 ms | **6.2× faster** | **1.0× faster** |
+| records | 23 ms | 44 ms | 25 ms | **1.9× faster** | **1.1× faster** |
+| strings | 25 ms | 41 ms | 25 ms | **1.6× faster** | **1.0× faster** |
 
 Best of 5 runs, including start-up, on Apple M5. Run `python3 scripts/bench.py` to measure again.
 

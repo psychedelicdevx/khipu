@@ -5,6 +5,38 @@ use crate::lexer::{StringPart, Token, lex};
 
 pub type Block = Vec<(usize, Stmt)>;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Any,
+    Number,
+    Bool,
+    Str,
+    None,
+    List,
+    Record,
+    Function(Vec<Type>, Box<Type>),
+    Optional(Box<Type>),
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Type::Any => write!(f, "any"),
+            Type::Number => write!(f, "number"),
+            Type::Bool => write!(f, "bool"),
+            Type::Str => write!(f, "string"),
+            Type::None => write!(f, "none"),
+            Type::List => write!(f, "list"),
+            Type::Record => write!(f, "record"),
+            Type::Function(params, returns) => {
+                let params: Vec<String> = params.iter().map(Type::to_string).collect();
+                write!(f, "fn({}) -> {returns}", params.join(", "))
+            }
+            Type::Optional(inner) => write!(f, "{inner}?"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Import {
     Module(String),
@@ -13,7 +45,7 @@ pub enum Import {
 
 #[derive(Debug)]
 pub enum Stmt {
-    Let(String, Expr),
+    Let(String, Option<Type>, Expr),
     Assign(String, Expr),
     SetIndex(Expr, Expr, Expr),
     SetField(Expr, String, Expr),
@@ -46,6 +78,8 @@ pub enum Expr {
     Function {
         name: String,
         params: Vec<String>,
+        param_types: Vec<Option<Type>>,
+        returns: Option<Type>,
         body: Rc<Block>,
     },
     Call(Box<Expr>, Vec<Expr>),
@@ -129,22 +163,21 @@ impl Parser {
             Some(Token::Let) => {
                 self.pos += 1;
                 let name = self.identifier()?;
-                self.expect(Token::Equals)?;
-                let value = match self.expression()? {
-                    Expr::Function { params, body, .. } => Expr::Function {
-                        name: name.clone(),
-                        params,
-                        body,
-                    },
-                    other => other,
+                let annotation = if self.peek() == Some(&Token::Colon) {
+                    self.pos += 1;
+                    Some(self.parse_type()?)
+                } else {
+                    None
                 };
-                Ok(Stmt::Let(name, value))
+                self.expect(Token::Equals)?;
+                let value = named(self.expression()?, &name);
+                Ok(Stmt::Let(name, annotation, value))
             }
             Some(Token::Fn) if matches!(self.peek_next(), Some(Token::Ident(_))) => {
                 self.pos += 1;
                 let name = self.identifier()?;
                 let function = self.function(name.clone())?;
-                Ok(Stmt::Let(name, function))
+                Ok(Stmt::Let(name, None, function))
             }
             Some(Token::Return) => {
                 self.pos += 1;
@@ -438,9 +471,16 @@ impl Parser {
     fn function(&mut self, name: String) -> Result<Expr, Error> {
         self.expect(Token::LeftParen)?;
         let mut params = Vec::new();
+        let mut param_types = Vec::new();
         if self.peek() != Some(&Token::RightParen) {
             loop {
                 params.push(self.identifier()?);
+                param_types.push(if self.peek() == Some(&Token::Colon) {
+                    self.pos += 1;
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                });
                 if self.peek() != Some(&Token::Comma) {
                     break;
                 }
@@ -448,6 +488,12 @@ impl Parser {
             }
         }
         self.expect(Token::RightParen)?;
+        let returns = if self.peek() == Some(&Token::Arrow) {
+            self.pos += 1;
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
 
         let outer_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
@@ -458,8 +504,56 @@ impl Parser {
         Ok(Expr::Function {
             name,
             params,
+            param_types,
+            returns,
             body: Rc::new(body?),
         })
+    }
+
+    fn parse_type(&mut self) -> Result<Type, Error> {
+        let base = match self.advance() {
+            Some(Token::Ident(name)) => match name.as_str() {
+                "number" => Type::Number,
+                "bool" => Type::Bool,
+                "string" => Type::Str,
+                "any" => Type::Any,
+                "list" => Type::List,
+                "record" => Type::Record,
+                other => return Err(self.error(format!("unknown type '{other}'"))),
+            },
+            Some(Token::NoneKeyword) => Type::None,
+            Some(Token::Fn) => {
+                self.expect(Token::LeftParen)?;
+                let mut params = Vec::new();
+                if self.peek() != Some(&Token::RightParen) {
+                    loop {
+                        params.push(self.parse_type()?);
+                        if self.peek() != Some(&Token::Comma) {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                }
+                self.expect(Token::RightParen)?;
+                let returns = if self.peek() == Some(&Token::Arrow) {
+                    self.pos += 1;
+                    self.parse_type()?
+                } else {
+                    Type::None
+                };
+                Type::Function(params, Box::new(returns))
+            }
+            Some(token) => return Err(self.error(format!("expected a type, found {token:?}"))),
+            None => return Err(self.error("expected a type, found end of input".to_string())),
+        };
+        if self.peek() == Some(&Token::Question) {
+            self.pos += 1;
+            return Ok(match base {
+                Type::None | Type::Any | Type::Optional(_) => base,
+                other => Type::Optional(Box::new(other)),
+            });
+        }
+        Ok(base)
     }
 
     fn primary(&mut self) -> Result<Expr, Error> {
@@ -558,14 +652,7 @@ impl Parser {
                 return Err(self.error(format!("field '{key}' is listed twice")));
             }
             self.expect(Token::Colon)?;
-            let value = match self.expression()? {
-                Expr::Function { name, params, body } if name.is_empty() => Expr::Function {
-                    name: key.clone(),
-                    params,
-                    body,
-                },
-                other => other,
-            };
+            let value = named(self.expression()?, &key);
             fields.push((key, value));
             self.skip_newlines();
             match self.advance() {
@@ -598,5 +685,24 @@ impl Parser {
         self.line = line;
         self.pos += 1;
         Some(token)
+    }
+}
+
+fn named(expr: Expr, new_name: &str) -> Expr {
+    match expr {
+        Expr::Function {
+            name,
+            params,
+            param_types,
+            returns,
+            body,
+        } if name.is_empty() => Expr::Function {
+            name: new_name.to_string(),
+            params,
+            param_types,
+            returns,
+            body,
+        },
+        other => other,
     }
 }

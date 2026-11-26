@@ -499,7 +499,7 @@ impl Compiler<'_> {
 
     fn statement(&mut self, stmt: &Stmt) -> Result<(), Error> {
         match stmt {
-            Stmt::Let(name, expr @ Expr::Function { .. }) if !self.defines_global(name) => {
+            Stmt::Let(name, _, expr @ Expr::Function { .. }) if !self.defines_global(name) => {
                 self.emit(Code::None);
                 let boxed = self.current().captured.contains(name);
                 let slot = self.declare_local(name, boxed);
@@ -513,7 +513,7 @@ impl Compiler<'_> {
                     Code::SetLocal(slot)
                 });
             }
-            Stmt::Let(name, expr) => {
+            Stmt::Let(name, _, expr) => {
                 self.expression(expr)?;
                 self.define(name);
             }
@@ -805,7 +805,9 @@ impl Compiler<'_> {
                     Op::And | Op::Or | Op::Coalesce => unreachable!("handled above"),
                 });
             }
-            Expr::Function { name, params, body } => self.function(name, params, body)?,
+            Expr::Function {
+                name, params, body, ..
+            } => self.function(name, params, body)?,
             Expr::Call(callee, args) => {
                 if let Expr::Variable(name) = &**callee
                     && let Var::Global(slot) = self.resolve(name)?
@@ -866,7 +868,7 @@ fn walk_block(block: &Block, inside: bool, names: &mut HashSet<String>) {
 
 fn walk_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
     match stmt {
-        Stmt::Let(_, expr) | Stmt::Expr(expr) => walk_expr(expr, inside, names),
+        Stmt::Let(_, _, expr) | Stmt::Expr(expr) => walk_expr(expr, inside, names),
         Stmt::Assign(name, expr) => {
             if inside {
                 names.insert(name.clone());
