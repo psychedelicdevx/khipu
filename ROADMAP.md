@@ -5,14 +5,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `█████░░░░░` 5 / 10 |
+| 1. Core language | `███████░░░` 7 / 10 |
 | 2. Types | `░░░░░░░░░░` 0 / 7 |
 | 3. Tooling | `██░░░░░░░░` 2 / 9 |
 | 4. Speed | `░░░░░░░░░░` 0 / 5 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 
-**Next up:** Lists: `[1, 2, 3]`, indexing, `len`
+**Next up:** Records (objects): `{ name: "Ada", age: 36 }`
 
 ---
 
@@ -38,9 +38,9 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Functions: `fn`, parameters, `return`
 - [x] Recursion and closures
 - [x] `print` becomes a real built-in function
-- [ ] Lists: `[1, 2, 3]`, indexing, `len`
+- [x] Lists: `[1, 2, 3]`, indexing, `len`
 - [ ] Records (objects): `{ name: "Ada", age: 36 }`
-- [ ] `for item in list` loops, `break` and `continue`
+- [x] `for item in list` loops, `break` and `continue`
 - [ ] `none` instead of `null` and `undefined`
 - [ ] Modules: `import` other `.kp` files
 

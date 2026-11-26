@@ -9,8 +9,12 @@ pub type Block = Vec<(usize, Stmt)>;
 pub enum Stmt {
     Let(String, Expr),
     Assign(String, Expr),
+    SetIndex(Expr, Expr, Expr),
     If(Expr, Block, Option<Block>),
     While(Expr, Block),
+    For(String, Expr, Block),
+    Break,
+    Continue,
     Return(Option<Expr>),
     Expr(Expr),
 }
@@ -21,6 +25,8 @@ pub enum Expr {
     Bool(bool),
     Str(String),
     Template(Vec<Expr>),
+    List(Vec<Expr>),
+    Index(Box<Expr>, Box<Expr>),
     Variable(String),
     Negate(Box<Expr>),
     Not(Box<Expr>),
@@ -55,6 +61,7 @@ pub struct Parser {
     pos: usize,
     line: usize,
     function_depth: usize,
+    loop_depth: usize,
 }
 
 impl Parser {
@@ -64,6 +71,7 @@ impl Parser {
             pos: 0,
             line: 1,
             function_depth: 0,
+            loop_depth: 0,
         }
     }
 
@@ -75,9 +83,7 @@ impl Parser {
         let mut statements = Vec::new();
 
         loop {
-            while self.peek() == Some(&Token::Newline) {
-                self.pos += 1;
-            }
+            self.skip_newlines();
 
             match (self.peek(), &closing) {
                 (None, None) => break,
@@ -146,16 +152,55 @@ impl Parser {
             Some(Token::While) => {
                 self.pos += 1;
                 let condition = self.expression()?;
-                let body = self.block()?;
+                let body = self.loop_body()?;
                 Ok(Stmt::While(condition, body))
             }
-            Some(Token::Ident(_)) if self.peek_next() == Some(&Token::Equals) => {
-                let name = self.identifier()?;
+            Some(Token::For) => {
                 self.pos += 1;
-                Ok(Stmt::Assign(name, self.expression()?))
+                let name = self.identifier()?;
+                self.expect(Token::In)?;
+                let iterable = self.expression()?;
+                let body = self.loop_body()?;
+                Ok(Stmt::For(name, iterable, body))
             }
-            _ => Ok(Stmt::Expr(self.expression()?)),
+            Some(Token::Break) | Some(Token::Continue) => {
+                let stmt = match self.advance() {
+                    Some(Token::Break) => Stmt::Break,
+                    _ => Stmt::Continue,
+                };
+                if self.loop_depth == 0 {
+                    let word = if matches!(stmt, Stmt::Break) {
+                        "break"
+                    } else {
+                        "continue"
+                    };
+                    return Err(self.error(format!("'{word}' can only be used inside a loop")));
+                }
+                Ok(stmt)
+            }
+            _ => {
+                let target = self.expression()?;
+                if self.peek() != Some(&Token::Equals) {
+                    return Ok(Stmt::Expr(target));
+                }
+                self.pos += 1;
+                let value = self.expression()?;
+                match target {
+                    Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
+                    Expr::Index(list, index) => Ok(Stmt::SetIndex(*list, *index, value)),
+                    _ => {
+                        Err(self.error("only a name or a list item can be assigned to".to_string()))
+                    }
+                }
+            }
         }
+    }
+
+    fn loop_body(&mut self) -> Result<Block, Error> {
+        self.loop_depth += 1;
+        let body = self.block();
+        self.loop_depth -= 1;
+        body
     }
 
     fn if_statement(&mut self) -> Result<Stmt, Error> {
@@ -286,22 +331,43 @@ impl Parser {
 
     fn call(&mut self) -> Result<Expr, Error> {
         let mut expr = self.primary()?;
-        while self.peek() == Some(&Token::LeftParen) {
-            self.pos += 1;
-            let mut args = Vec::new();
-            if self.peek() != Some(&Token::RightParen) {
-                loop {
-                    args.push(self.expression()?);
-                    if self.peek() != Some(&Token::Comma) {
-                        break;
-                    }
+        loop {
+            match self.peek() {
+                Some(Token::LeftParen) => {
                     self.pos += 1;
+                    let args = self.items(Token::RightParen)?;
+                    expr = Expr::Call(Box::new(expr), args);
                 }
+                Some(Token::LeftBracket) => {
+                    self.pos += 1;
+                    let index = self.expression()?;
+                    self.expect(Token::RightBracket)?;
+                    expr = Expr::Index(Box::new(expr), Box::new(index));
+                }
+                _ => return Ok(expr),
             }
-            self.expect(Token::RightParen)?;
-            expr = Expr::Call(Box::new(expr), args);
         }
-        Ok(expr)
+    }
+
+    fn items(&mut self, closing: Token) -> Result<Vec<Expr>, Error> {
+        let mut items = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&closing) {
+                self.pos += 1;
+                return Ok(items);
+            }
+            items.push(self.expression()?);
+            self.skip_newlines();
+            match self.advance() {
+                Some(Token::Comma) => {}
+                Some(token) if token == closing => return Ok(items),
+                Some(token) => {
+                    return Err(self.error(format!("expected ',' or {closing:?}, found {token:?}")));
+                }
+                None => return Err(self.error(format!("expected {closing:?}, found end of input"))),
+            }
+        }
     }
 
     fn function(&mut self, name: String) -> Result<Expr, Error> {
@@ -318,9 +384,11 @@ impl Parser {
         }
         self.expect(Token::RightParen)?;
 
+        let outer_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
         let body = self.block();
         self.function_depth -= 1;
+        self.loop_depth = outer_loops;
 
         Ok(Expr::Function {
             name,
@@ -338,6 +406,7 @@ impl Parser {
             Some(Token::Template(parts)) => self.template(parts),
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
             Some(Token::Fn) => self.function(String::new()),
+            Some(Token::LeftBracket) => Ok(Expr::List(self.items(Token::RightBracket)?)),
             Some(Token::LeftParen) => {
                 let expr = self.expression()?;
                 self.expect(Token::RightParen)?;
@@ -400,6 +469,12 @@ impl Parser {
         Error {
             line: self.line,
             message,
+        }
+    }
+
+    fn skip_newlines(&mut self) {
+        while self.peek() == Some(&Token::Newline) {
+            self.pos += 1;
         }
     }
 

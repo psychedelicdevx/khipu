@@ -10,6 +10,9 @@
       "include": "#strings"
     },
     {
+      "include": "#builtins"
+    },
+    {
       "include": "#functions"
     },
     {
@@ -20,9 +23,6 @@
     },
     {
       "include": "#numbers"
-    },
-    {
-      "include": "#builtins"
     },
     {
       "include": "#operators"
@@ -47,7 +47,7 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while|return)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return)\\b"
         },
         {
           "name": "storage.type.khipu",
@@ -75,7 +75,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.khipu",
-          "match": "\\bprint\\b"
+          "match": "\\b(print|len|push|range)\\b(?=\\s*\\()"
         }
       ]
     },
@@ -108,6 +108,14 @@
         {
           "name": "punctuation.section.parens.khipu",
           "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.khipu",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.separator.comma.khipu",
+          "match": ","
         }
       ]
     },

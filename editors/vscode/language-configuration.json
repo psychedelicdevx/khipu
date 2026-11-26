@@ -10,6 +10,10 @@
     [
       "(",
       ")"
+    ],
+    [
+      "[",
+      "]"
     ]
   ],
   "autoClosingPairs": [
@@ -27,6 +31,10 @@
       "notIn": [
         "string"
       ]
+    },
+    {
+      "open": "[",
+      "close": "]"
     }
   ],
   "surroundingPairs": [
@@ -41,6 +49,10 @@
     [
       "\"",
       "\""
+    ],
+    [
+      "[",
+      "]"
     ]
   ],
   "indentationRules": {

@@ -15,6 +15,7 @@ pub enum Value {
     Number(f64),
     Bool(bool),
     Str(String),
+    List(Rc<RefCell<Vec<Value>>>),
     Function(Rc<Function>),
     Native(&'static str, NativeFn),
     None,
@@ -46,6 +47,8 @@ impl Scope {
 enum Exit {
     Error(Error),
     Return(Value),
+    Break,
+    Continue,
 }
 
 impl Value {
@@ -54,6 +57,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::Bool(_) => "bool",
             Value::Str(_) => "string",
+            Value::List(_) => "list",
             Value::Function(_) | Value::Native(..) => "function",
             Value::None => "none",
         }
@@ -66,6 +70,14 @@ impl fmt::Display for Value {
             Value::Number(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => write!(f, "{s}"),
+            Value::List(items) => {
+                let items: Vec<String> = items
+                    .borrow()
+                    .iter()
+                    .map(|item| format!("{item:?}"))
+                    .collect();
+                write!(f, "[{}]", items.join(", "))
+            }
             Value::Function(function) => write!(f, "<fn {}>", function_label(function)),
             Value::Native(name, _) => write!(f, "<fn {name}>"),
             Value::None => write!(f, "none"),
@@ -99,10 +111,17 @@ pub struct Interpreter {
 impl Interpreter {
     pub fn new() -> Self {
         let globals = Scope::new(None);
-        globals
-            .borrow_mut()
-            .vars
-            .insert("print".to_string(), Value::Native("print", print));
+        for (name, native) in [
+            ("print", print as NativeFn),
+            ("len", len),
+            ("push", push),
+            ("range", range),
+        ] {
+            globals
+                .borrow_mut()
+                .vars
+                .insert(name.to_string(), Value::Native(name, native));
+        }
         Interpreter {
             env: globals,
             line: 1,
@@ -115,6 +134,9 @@ impl Interpreter {
             Ok(value) => Ok(value),
             Err(Exit::Error(error)) => Err(error),
             Err(Exit::Return(_)) => Err(self.error("'return' can only be used inside a function")),
+            Err(Exit::Break) | Err(Exit::Continue) => {
+                Err(self.error("'break' and 'continue' can only be used inside a loop"))
+            }
         }
     }
 
@@ -161,12 +183,54 @@ impl Interpreter {
                 }
                 Ok(None)
             }
+            Stmt::SetIndex(target, index, value) => {
+                let target = self.eval(target)?;
+                let index = self.eval(index)?;
+                let value = self.eval(value)?;
+                match target {
+                    Value::List(items) => {
+                        let position = self.position(&index, items.borrow().len())?;
+                        items.borrow_mut()[position] = value;
+                        Ok(None)
+                    }
+                    Value::Str(_) => Err(self.fail("strings can't be changed in place")),
+                    other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
+                }
+            }
             Stmt::While(condition, body) => {
                 while self.eval_bool(condition, "while")? {
-                    self.run_block(body)?;
+                    match self.run_block(body) {
+                        Ok(()) | Err(Exit::Continue) => {}
+                        Err(Exit::Break) => break,
+                        Err(other) => return Err(other),
+                    }
                 }
                 Ok(None)
             }
+            Stmt::For(name, iterable, body) => {
+                let items = match self.eval(iterable)? {
+                    Value::List(items) => items.borrow().clone(),
+                    Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    other => {
+                        return Err(self.fail(format!(
+                            "for needs a list or a string, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                for item in items {
+                    let env = Scope::new(Some(self.env.clone()));
+                    env.borrow_mut().vars.insert(name.clone(), item);
+                    match self.run_in(env, body) {
+                        Ok(_) | Err(Exit::Continue) => {}
+                        Err(Exit::Break) => break,
+                        Err(other) => return Err(other),
+                    }
+                }
+                Ok(None)
+            }
+            Stmt::Break => Err(Exit::Break),
+            Stmt::Continue => Err(Exit::Continue),
             Stmt::Return(expr) => {
                 let value = match expr {
                     Some(expr) => self.eval(expr)?,
@@ -214,6 +278,30 @@ impl Interpreter {
                     text.push_str(&self.eval(part)?.to_string());
                 }
                 Ok(Value::Str(text))
+            }
+            Expr::List(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.eval(item)?);
+                }
+                Ok(Value::List(Rc::new(RefCell::new(values))))
+            }
+            Expr::Index(target, index) => {
+                let target = self.eval(target)?;
+                let index = self.eval(index)?;
+                match target {
+                    Value::List(items) => {
+                        let items = items.borrow();
+                        let position = self.position(&index, items.len())?;
+                        Ok(items[position].clone())
+                    }
+                    Value::Str(s) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let position = self.position(&index, chars.len())?;
+                        Ok(Value::Str(chars[position].to_string()))
+                    }
+                    other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
+                }
             }
             Expr::Variable(name) => match self.lookup(name) {
                 Some(value) => Ok(value),
@@ -294,6 +382,19 @@ impl Interpreter {
         }
     }
 
+    fn position(&self, index: &Value, len: usize) -> Result<usize, Exit> {
+        match index {
+            Value::Number(n) if n.fract() != 0.0 => {
+                Err(self.fail(format!("index must be a whole number, got {n}")))
+            }
+            Value::Number(n) if *n >= 0.0 && (*n as usize) < len => Ok(*n as usize),
+            Value::Number(n) => {
+                Err(self.fail(format!("index {n} is out of range, the length is {len}")))
+            }
+            other => Err(self.fail(format!("index must be a number, got {}", other.type_name()))),
+        }
+    }
+
     fn eval_bool(&mut self, expr: &Expr, what: &str) -> Result<bool, Exit> {
         match self.eval(expr)? {
             Value::Bool(b) => Ok(b),
@@ -322,8 +423,89 @@ fn print(args: &[Value]) -> Result<Value, String> {
     Ok(Value::None)
 }
 
+fn arguments<'a, const N: usize>(name: &str, args: &'a [Value]) -> Result<&'a [Value; N], String> {
+    args.try_into().map_err(|_| {
+        format!(
+            "{name} expects {N} argument{}, got {}",
+            if N == 1 { "" } else { "s" },
+            args.len()
+        )
+    })
+}
+
+fn len(args: &[Value]) -> Result<Value, String> {
+    match arguments::<1>("len", args)? {
+        [Value::List(items)] => Ok(Value::Number(items.borrow().len() as f64)),
+        [Value::Str(s)] => Ok(Value::Number(s.chars().count() as f64)),
+        [other] => Err(format!(
+            "len needs a list or a string, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+fn push(args: &[Value]) -> Result<Value, String> {
+    match arguments::<2>("push", args)? {
+        [Value::List(items), value] => {
+            items.borrow_mut().push(value.clone());
+            Ok(Value::None)
+        }
+        [other, _] => Err(format!("push needs a list, got {}", other.type_name())),
+    }
+}
+
+fn range(args: &[Value]) -> Result<Value, String> {
+    let (start, end) = match args {
+        [Value::Number(end)] => (0.0, *end),
+        [Value::Number(start), Value::Number(end)] => (*start, *end),
+        _ => {
+            return Err(
+                "range expects one or two numbers: range(end) or range(start, end)".to_string(),
+            );
+        }
+    };
+    if start.fract() != 0.0 || end.fract() != 0.0 {
+        return Err("range needs whole numbers".to_string());
+    }
+    let items = (start as i64..end as i64)
+        .map(|n| Value::Number(n as f64))
+        .collect();
+    Ok(Value::List(Rc::new(RefCell::new(items))))
+}
+
+fn equal(a: &Value, b: &Value) -> Option<bool> {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => Some(x == y),
+        (Value::Bool(x), Value::Bool(y)) => Some(x == y),
+        (Value::Str(x), Value::Str(y)) => Some(x == y),
+        (Value::List(x), Value::List(y)) => {
+            let (x, y) = (x.borrow(), y.borrow());
+            Some(
+                x.len() == y.len()
+                    && x.iter()
+                        .zip(y.iter())
+                        .all(|(a, b)| equal(a, b).unwrap_or(false)),
+            )
+        }
+        (Value::None, Value::None) => Some(true),
+        _ => None,
+    }
+}
+
 fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
     use Value::{Bool, Number, Str};
+
+    if let Op::Equal | Op::NotEqual = op {
+        return match equal(&a, &b) {
+            Some(same) => Ok(Bool(same == matches!(op, Op::Equal))),
+            None => Err(format!(
+                "cannot use '{}' on {} and {}",
+                symbol(op),
+                a.type_name(),
+                b.type_name()
+            )),
+        };
+    }
 
     match (op, a, b) {
         (Op::Add, Number(x), Number(y)) => Ok(Number(x + y)),
@@ -333,8 +515,6 @@ fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
             a.type_name(),
             b.type_name()
         )),
-        (Op::Equal, Str(x), Str(y)) => Ok(Bool(x == y)),
-        (Op::NotEqual, Str(x), Str(y)) => Ok(Bool(x != y)),
         (Op::Sub, Number(x), Number(y)) => Ok(Number(x - y)),
         (Op::Mul, Number(x), Number(y)) => Ok(Number(x * y)),
         (Op::Div, Number(x), Number(y)) => Ok(Number(x / y)),
@@ -343,10 +523,6 @@ fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
         (Op::LessEqual, Number(x), Number(y)) => Ok(Bool(x <= y)),
         (Op::Greater, Number(x), Number(y)) => Ok(Bool(x > y)),
         (Op::GreaterEqual, Number(x), Number(y)) => Ok(Bool(x >= y)),
-        (Op::Equal, Number(x), Number(y)) => Ok(Bool(x == y)),
-        (Op::Equal, Bool(x), Bool(y)) => Ok(Bool(x == y)),
-        (Op::NotEqual, Number(x), Number(y)) => Ok(Bool(x != y)),
-        (Op::NotEqual, Bool(x), Bool(y)) => Ok(Bool(x != y)),
         (op, a, b) => Err(format!(
             "cannot use '{}' on {} and {}",
             symbol(op),
@@ -567,5 +743,101 @@ mod tests {
         let error = error("fn broken() {\n  return nope\n}\nbroken()");
         assert_eq!(error.line, 2);
         assert_eq!(error.message, "'nope' is not defined");
+    }
+
+    #[test]
+    fn builds_and_reads_lists() {
+        assert_eq!(number("let xs = [10, 20, 30]\nxs[1]"), 20.0);
+        assert_eq!(number("len([1, 2, 3]) + len(\"four\")"), 7.0);
+        assert_eq!(
+            string("\"${[1, \"two\", [true]]}\""),
+            "[1, \"two\", [true]]"
+        );
+        assert_eq!(string("\"hello\"[1]"), "e");
+        assert_eq!(
+            number("let grid = [\n  [1, 2],\n  [3, 4],\n]\ngrid[1][0]"),
+            3.0
+        );
+    }
+
+    #[test]
+    fn changes_lists_in_place() {
+        assert_eq!(
+            number("let xs = [1, 2]\npush(xs, 3)\nxs[0] = 9\nxs[0] + xs[2]"),
+            12.0
+        );
+        assert_eq!(number("let a = [1]\nlet b = a\npush(b, 2)\nlen(a)"), 2.0);
+    }
+
+    #[test]
+    fn compares_lists_by_contents() {
+        assert!(boolean("[1, [2, \"x\"]] == [1, [2, \"x\"]]"));
+        assert!(boolean("[1, 2] != [2, 1]"));
+        assert!(boolean("range(3) == [0, 1, 2]"));
+        assert!(boolean("range(2, 5) == [2, 3, 4]"));
+    }
+
+    #[test]
+    fn loops_over_lists_and_strings() {
+        assert_eq!(
+            number("let total = 0\nfor n in [1, 2, 3, 4] {\n  total = total + n\n}\ntotal"),
+            10.0
+        );
+        assert_eq!(
+            string("let out = \"\"\nfor c in \"abc\" {\n  out = c + out\n}\nout"),
+            "cba"
+        );
+    }
+
+    #[test]
+    fn breaks_and_continues() {
+        let source = "let total = 0\nfor n in range(10) {\n  if n == 7 {\n    break\n  }\n  if n % 2 == 0 {\n    continue\n  }\n  total = total + n\n}\ntotal";
+        assert_eq!(number(source), 1.0 + 3.0 + 5.0);
+        let source = "let i = 0\nwhile true {\n  i = i + 1\n  if i == 5 {\n    break\n  }\n}\ni";
+        assert_eq!(number(source), 5.0);
+    }
+
+    #[test]
+    fn each_loop_round_gets_its_own_variable() {
+        let source = "let getters = []\nfor i in range(3) {\n  push(getters, fn() { return i })\n}\ngetters[1]()";
+        assert_eq!(number(source), 1.0);
+    }
+
+    #[test]
+    fn reports_list_mistakes() {
+        assert_eq!(
+            error("[1, 2][5]").message,
+            "index 5 is out of range, the length is 2"
+        );
+        assert_eq!(
+            error("[1, 2][0.5]").message,
+            "index must be a whole number, got 0.5"
+        );
+        assert_eq!(
+            error("[1][\"a\"]").message,
+            "index must be a number, got string"
+        );
+        assert_eq!(
+            error("let s = \"hi\"\ns[0] = \"y\"").message,
+            "strings can't be changed in place"
+        );
+        assert_eq!(
+            error("for x in 5 {\n}").message,
+            "for needs a list or a string, got number"
+        );
+        assert_eq!(
+            error("break").message,
+            "'break' can only be used inside a loop"
+        );
+        assert_eq!(
+            error("while true {\n  fn f() {\n    continue\n  }\n}").message,
+            "'continue' can only be used inside a loop"
+        );
+        assert_eq!(error("push(1, 2)").message, "push needs a list, got number");
+        assert_eq!(error("len()").message, "len expects 1 argument, got 0");
+        assert_eq!(
+            error("[1] == 1").message,
+            "cannot use '==' on list and number"
+        );
     }
 }

@@ -66,8 +66,8 @@ fn repl() {
         }
         source.push_str(&line);
 
-        let open = source.matches('{').count();
-        let close = source.matches('}').count();
+        let open = source.matches(['{', '[']).count();
+        let close = source.matches(['}', ']']).count();
         if open > close {
             continue;
         }

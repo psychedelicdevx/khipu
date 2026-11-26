@@ -18,6 +18,10 @@ pub enum Token {
     If,
     Else,
     While,
+    For,
+    In,
+    Break,
+    Continue,
     True,
     False,
     Equals,
@@ -39,6 +43,8 @@ pub enum Token {
     RightParen,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Comma,
     Newline,
 }
@@ -85,6 +91,8 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             ')' => Some(Token::RightParen),
             '{' => Some(Token::LeftBrace),
             '}' => Some(Token::RightBrace),
+            '[' => Some(Token::LeftBracket),
+            ']' => Some(Token::RightBracket),
             ',' => Some(Token::Comma),
             '=' => Some(Token::Equals),
             '<' => Some(Token::Less),
@@ -138,6 +146,10 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                     "if" => Token::If,
                     "else" => Token::Else,
                     "while" => Token::While,
+                    "for" => Token::For,
+                    "in" => Token::In,
+                    "break" => Token::Break,
+                    "continue" => Token::Continue,
                     "true" => Token::True,
                     "false" => Token::False,
                     _ => Token::Ident(word),
@@ -321,5 +333,25 @@ mod tests {
         let error = lex("let a = 1\nlet b = \"oops").unwrap_err();
         assert_eq!(error.line, 2);
         assert_eq!(error.message, "string is never closed");
+    }
+
+    #[test]
+    fn lexes_lists_and_loops() {
+        assert_eq!(
+            tokens("for x in [1, 2] { break }"),
+            vec![
+                Token::For,
+                Token::Ident("x".to_string()),
+                Token::In,
+                Token::LeftBracket,
+                Token::Number(1.0),
+                Token::Comma,
+                Token::Number(2.0),
+                Token::RightBracket,
+                Token::LeftBrace,
+                Token::Break,
+                Token::RightBrace,
+            ]
+        );
     }
 }

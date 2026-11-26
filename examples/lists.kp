@@ -1,0 +1,39 @@
+let scores = [72, 95, 88, 61, 100]
+
+let total = 0
+for score in scores {
+    total = total + score
+}
+print("average: ${total / len(scores)}")
+
+let passed = []
+for score in scores {
+    if score < 70 {
+        continue
+    }
+    push(passed, score)
+}
+print("passed:", passed)
+
+fn find(items, wanted) {
+    for i in range(len(items)) {
+        if items[i] == wanted {
+            return i
+        }
+    }
+    return -1
+}
+print("88 is at index ${find(scores, 88)}")
+
+let board = [
+    ["x", "o", "x"],
+    ["o", "x", "o"],
+    ["o", "x", "x"],
+]
+for row in board {
+    let line = ""
+    for cell in row {
+        line = line + cell
+    }
+    print(line)
+}
