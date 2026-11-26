@@ -13,8 +13,8 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. Documentation | `██░░░░░░░░` 1 / 5 |
-| 10. HTTP without limits | `░░░░░░░░░░` 0 / 15 |
+| 9. HTTP without limits | `░░░░░░░░░░` 0 / 15 |
+| 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
 
@@ -139,17 +139,7 @@ Final audit
 - [x] Every example and doc snippet runs as written
 - [x] Independent review of the whole repo, with every finding fixed or written down
 
-## Phase 9: Documentation
-
-Written once the language has settled.
-
-- [x] The Khipu Book: teaches the language
-- [ ] Khipu Language Reference: exactly how everything behaves
-- [ ] Standard Library Reference: every API, with examples
-- [ ] Khipu Internals: the Rust implementation, compiler, VM, garbage collector and scheduler
-- [ ] Documentation site that hosts all four
-
-## Phase 10: HTTP without limits
+## Phase 9: HTTP without limits
 
 Today `Http.serve` answers one request at a time on one thread. A backend should be bounded by the machine, not by the language.
 
@@ -173,6 +163,16 @@ Interface
 - [ ] Routing in the standard library: match on method and path with parameters, written in Khipu in `src/prelude.kp`
 - [ ] WebSockets: upgrade a request, then `send` and `receive` on it like a channel
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md
+
+## Phase 10: Documentation
+
+The last regular phase, written once the language has settled.
+
+- [x] The Khipu Book: teaches the language
+- [ ] Khipu Language Reference: exactly how everything behaves
+- [ ] Standard Library Reference: every API, with examples
+- [ ] Khipu Internals: the Rust implementation, compiler, VM, garbage collector and scheduler
+- [ ] Documentation site that hosts all four
 
 ---
 
