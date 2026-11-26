@@ -1,9 +1,0 @@
-let items = []
-for i in range(300000) {
-    push(items, i * 2)
-}
-let total = 0
-for item in items {
-    total = total + item
-}
-print(total + items[len(items) - 1])

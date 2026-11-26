@@ -1,0 +1,12 @@
+let N = 200000
+
+fn point(x, y) {
+    return { x: x, y: y }
+}
+
+let total = 0
+for i in range(N) {
+    let p = point(i, i + 1)
+    total = total + p.x + p.y * 2
+}
+print(total)

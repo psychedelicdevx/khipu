@@ -8,13 +8,13 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
-| 4. Benchmarks | `░░░░░░░░░░` 0 / 8 |
+| 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██░░░░░░░░` 2 / 9 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 8. Native speed | `░░░░░░░░░░` 0 / 3 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 
-**Next up:** Median of 20+ runs with spread, instead of best of 5
+**Next up:** Error messages that show the line and point at the problem
 
 ---
 
@@ -66,16 +66,16 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Enums with values, and `match`
 - [x] Generics: `List<T>`
 
-## Phase 4: Benchmarks
+## Phase 4: Benchmarks ✅
 
-- [ ] Median of 20+ runs with spread, instead of best of 5
-- [ ] Separate cold-start and sustained (long-running) results
-- [ ] Peak memory for every benchmark
-- [ ] CPU set: iterative Fibonacci, nested loops, prime sieve, matrix multiply, Mandelbrot
-- [ ] Microbenchmarks: calls, local and global variables, record and struct access
-- [ ] C and Rust reference versions of every benchmark
-- [ ] Interleaved runs with raw results saved in `benchmarks/results`
-- [ ] BENCHMARKS.md: methodology, and every result, including where Khipu loses
+- [x] Median of 20+ runs with spread, instead of best of 5
+- [x] Separate cold-start and sustained (long-running) results
+- [x] Peak memory for every benchmark
+- [x] CPU set: iterative Fibonacci, nested loops, prime sieve, matrix multiply, Mandelbrot
+- [x] Microbenchmarks: calls, local and global variables, record and struct access
+- [x] C and Rust reference versions of every benchmark
+- [x] Interleaved runs with raw results saved in `benchmarks/results`
+- [x] BENCHMARKS.md: methodology, and every result, including where Khipu loses
 
 ## Phase 5: Tooling
 
@@ -106,8 +106,29 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Package manager
 - [ ] Compile Khipu to WASM for the web
 
-## Phase 8: Native speed
+## Phase 8: Performance and final audit
 
-- [ ] Garbage collector
+Everything the benchmarks found, fixed and proven, then a full independent review of the project.
+
+Memory
+- [ ] Lazy `range()` that never builds a list
+- [ ] Garbage collector that frees cycles
+- [ ] Peak memory below Python and Node on every benchmark
+
+Speed
+- [ ] Faster function calls, so `fib` and `fib_iterative` beat Python
+- [ ] Beat Python on every sustained benchmark
 - [ ] Native compilation (Cranelift)
 - [ ] Competitive with Node on the benchmark suite
+- [ ] Start-up stays under 5 ms
+
+Robustness
+- [ ] Fuzzing the lexer, parser, checker and VM finds no crash
+- [ ] Every error message tested, with line numbers
+- [ ] No `unsafe` code, or every use justified and tested
+
+Final audit
+- [ ] Every roadmap item re-checked against the code and tests
+- [ ] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
+- [ ] Every example and doc snippet runs as written
+- [ ] Independent review of the whole repo, with every finding fixed or written down

@@ -91,30 +91,42 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
-| 4. Benchmarks | `░░░░░░░░░░` 0 / 8 |
+| 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██░░░░░░░░` 2 / 9 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 8. Native speed | `░░░░░░░░░░` 0 / 3 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 
-**Next up:** Median of 20+ runs with spread, instead of best of 5
+**Next up:** Error messages that show the line and point at the problem
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
 ## Performance
 
-| Benchmark | Khipu | Python | Node | vs Python | vs Node |
-|---|---|---|---|---|---|
-| closures | 15 ms | 34 ms | 24 ms | **2.2× faster** | **1.6× faster** |
-| fib | 16 ms | 24 ms | 23 ms | **1.5× faster** | **1.4× faster** |
-| lists | 12 ms | 37 ms | 26 ms | **3.0× faster** | **2.1× faster** |
-| loop | 33 ms | 192 ms | 33 ms | **5.8× faster** | 1.0× slower |
-| records | 22 ms | 42 ms | 23 ms | **1.9× faster** | **1.1× faster** |
-| strings | 23 ms | 39 ms | 25 ms | **1.7× faster** | **1.1× faster** |
+Sustained runs use inputs large enough that start-up is a small share of the time. Median of 5 runs on Apple M5; lower is better.
 
-Best of 5 runs, including start-up, on Apple M5. Run `python3 scripts/bench.py` to measure again.
+| Benchmark | Khipu | Python | Node | C | Rust | vs Python | vs Node |
+|---|---|---|---|---|---|---|---|
+| fib | 148 ms | 136 ms | 35 ms | 6.1 ms | 6.1 ms | 1.1× slower | 4.3× slower |
+| fib_iterative | 621 ms | 467 ms | 45 ms | 9.7 ms | 10 ms | 1.3× slower | 13.7× slower |
+| loop | 310 ms | 2294 ms | 156 ms | 2.7 ms | 2.9 ms | **7.4× faster** | 2.0× slower |
+| nested_loops | 178 ms | 234 ms | 28 ms | 4.4 ms | 4.7 ms | **1.3× faster** | 6.3× slower |
+| sieve | 322 ms | 527 ms | 51 ms | 4.9 ms | 5.4 ms | **1.6× faster** | 6.4× slower |
+| matrix | 150 ms | 272 ms | 30 ms | 3.3 ms | 4.8 ms | **1.8× faster** | 5.0× slower |
+| mandelbrot | 76 ms | 225 ms | 26 ms | 3.8 ms | 4.4 ms | **3.0× faster** | 2.9× slower |
+| lists | 114 ms | 286 ms | 78 ms | 5.1 ms | 6.1 ms | **2.5× faster** | 1.5× slower |
+| records | 218 ms | 346 ms | 27 ms | 2.1 ms | 2.7 ms | **1.6× faster** | 8.1× slower |
+| strings | 216 ms | 287 ms | 40 ms | 83 ms | 105 ms | **1.3× faster** | 5.4× slower |
+| calls | 75 ms | 191 ms | 34 ms | 2.4 ms | 2.2 ms | **2.6× faster** | 2.2× slower |
+| closures | 125 ms | 234 ms | 27 ms | 4.6 ms | 4.2 ms | **1.9× faster** | 4.6× slower |
+| locals | 134 ms | 275 ms | 65 ms | 2.3 ms | 2.6 ms | **2.1× faster** | 2.1× slower |
+| globals | 102 ms | 342 ms | 27 ms | 4.7 ms | 11 ms | **3.4× faster** | 3.7× slower |
+| record_access | 287 ms | 819 ms | 25 ms | 4.9 ms | 6.5 ms | **2.9× faster** | 11.4× slower |
+| struct_access | 270 ms | 719 ms | 26 ms | 5.1 ms | 6.6 ms | **2.7× faster** | 10.5× slower |
 
-Every benchmark in `benchmarks/` exists in Khipu, Python and JavaScript, and the script checks that all three print the same answer before it reports a time.
+Start-up, an empty program (median of 21 runs): Khipu 2.6 ms · Python 13 ms · Node 22 ms · C 2.1 ms · Rust 2.4 ms.
+
+On sustained runs Khipu beats Python on 14 of 16 benchmarks and Node on 0 of 16. Cold-start results, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Editor support
 

@@ -1,0 +1,10 @@
+let N = 300000
+let items = []
+for i in range(N) {
+    push(items, i * 2)
+}
+let total = 0
+for item in items {
+    total = total + item
+}
+print(total + items[len(items) - 1])

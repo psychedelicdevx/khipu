@@ -1,0 +1,8 @@
+const N = 3000000
+let i = 0
+let total = 0
+while (i < N) {
+    total = total + i
+    i = i + 1
+}
+console.log(total)

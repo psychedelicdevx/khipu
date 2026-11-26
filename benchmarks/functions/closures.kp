@@ -1,0 +1,16 @@
+let N = 500000
+
+fn counter() {
+    let count = 0
+    return fn() {
+        count = count + 1
+        return count
+    }
+}
+
+let next = counter()
+let last = 0
+for i in range(N) {
+    last = next()
+}
+print(last)

@@ -1,0 +1,7 @@
+let N = 200000
+let count = 0
+for i in range(N) {
+    let line = "item ${i}: " + "ok"
+    count = count + len(line)
+}
+print(count)

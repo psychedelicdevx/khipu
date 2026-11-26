@@ -1,0 +1,25 @@
+let N = 100000
+let flags = []
+for i in range(N + 1) {
+    push(flags, true)
+}
+flags[0] = false
+flags[1] = false
+let p = 2
+while p * p <= N {
+    if flags[p] {
+        let m = p * p
+        while m <= N {
+            flags[m] = false
+            m = m + p
+        }
+    }
+    p = p + 1
+}
+let count = 0
+for flag in flags {
+    if flag {
+        count = count + 1
+    }
+}
+print(count)

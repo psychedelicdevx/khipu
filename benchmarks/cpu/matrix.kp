@@ -1,0 +1,28 @@
+let N = 40
+
+fn make(n, offset) {
+    let rows = []
+    for i in range(n) {
+        let row = []
+        for j in range(n) {
+            push(row, (i * j + offset) % 10)
+        }
+        push(rows, row)
+    }
+    return rows
+}
+
+let a = make(N, 1)
+let b = make(N, 3)
+let total = 0
+for i in range(N) {
+    let row = a[i]
+    for j in range(N) {
+        let sum = 0
+        for k in range(N) {
+            sum = sum + row[k] * b[k][j]
+        }
+        total = total + sum
+    }
+}
+print(total)

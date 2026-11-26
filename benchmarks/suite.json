@@ -1,0 +1,106 @@
+{
+  "benchmarks": [
+    {
+      "name": "fib",
+      "path": "cpu/fib",
+      "cold": 27,
+      "sustained": 32
+    },
+    {
+      "name": "fib_iterative",
+      "path": "cpu/fib_iterative",
+      "cold": 100000,
+      "sustained": 1000000
+    },
+    {
+      "name": "loop",
+      "path": "cpu/loop",
+      "cold": 3000000,
+      "sustained": 30000000
+    },
+    {
+      "name": "nested_loops",
+      "path": "cpu/nested_loops",
+      "cold": 300,
+      "sustained": 2000
+    },
+    {
+      "name": "sieve",
+      "path": "cpu/sieve",
+      "cold": 100000,
+      "sustained": 3000000
+    },
+    {
+      "name": "matrix",
+      "path": "cpu/matrix",
+      "cold": 40,
+      "sustained": 150
+    },
+    {
+      "name": "mandelbrot",
+      "path": "cpu/mandelbrot",
+      "cold": 60,
+      "sustained": 250
+    },
+    {
+      "name": "lists",
+      "path": "collections/lists",
+      "cold": 300000,
+      "sustained": 3000000
+    },
+    {
+      "name": "records",
+      "path": "collections/records",
+      "cold": 200000,
+      "sustained": 2000000
+    },
+    {
+      "name": "strings",
+      "path": "strings/strings",
+      "cold": 200000,
+      "sustained": 2000000
+    },
+    {
+      "name": "calls",
+      "path": "functions/calls",
+      "cold": 300000,
+      "sustained": 3000000
+    },
+    {
+      "name": "closures",
+      "path": "functions/closures",
+      "cold": 500000,
+      "sustained": 5000000
+    },
+    {
+      "name": "locals",
+      "path": "functions/locals",
+      "cold": 1000000,
+      "sustained": 10000000
+    },
+    {
+      "name": "globals",
+      "path": "functions/globals",
+      "cold": 1000000,
+      "sustained": 5000000
+    },
+    {
+      "name": "record_access",
+      "path": "functions/record_access",
+      "cold": 1000000,
+      "sustained": 10000000
+    },
+    {
+      "name": "struct_access",
+      "path": "functions/struct_access",
+      "cold": 1000000,
+      "sustained": 10000000
+    },
+    {
+      "name": "empty",
+      "path": "startup/empty",
+      "cold": null,
+      "sustained": null
+    }
+  ]
+}
