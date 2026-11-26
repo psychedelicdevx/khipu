@@ -700,11 +700,23 @@ struct Job {
     dir: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct Pool {
+    jobs: VecDeque<Job>,
+    idle: Vec<usize>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static POOL: Mutex<Pool> = Mutex::new(Pool {
+    jobs: VecDeque::new(),
+    idle: Vec::new(),
+});
+
 #[derive(Default)]
 struct Inbox {
-    #[cfg(not(target_arch = "wasm32"))]
-    jobs: Vec<Job>,
     woken: Vec<u64>,
+    poked: bool,
 }
 
 #[derive(Default)]
@@ -714,8 +726,6 @@ struct Worker {
 }
 
 static WORKERS: OnceLock<Box<[Worker]>> = OnceLock::new();
-#[cfg(not(target_arch = "wasm32"))]
-static NEXT_WORKER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn wake(worker: usize, task: u64) {
     if let Some(workers) = WORKERS.get() {
@@ -746,8 +756,6 @@ fn workers() -> &'static [Worker] {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn(args: &[Value]) -> Result<Value, String> {
-    use std::sync::atomic::Ordering;
-
     let Some(function) = args.first() else {
         return Err("spawn needs a function to run".to_string());
     };
@@ -771,12 +779,28 @@ pub fn spawn(args: &[Value]) -> Result<Value, String> {
         world.next
     };
     let workers = workers();
-    let index = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % workers.len();
-    lock(&workers[index].inbox)
-        .jobs
-        .push(Job { task, values, dir });
-    workers[index].signal.notify_one();
+    let idle = {
+        let mut pool = lock(&POOL);
+        pool.jobs.push_back(Job { task, values, dir });
+        pool.idle.pop()
+    };
+    if let Some(index) = idle {
+        lock(&workers[index].inbox).poked = true;
+        workers[index].signal.notify_one();
+    }
     Ok(Value::None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn start(job: Job, tasks: &mut HashMap<u64, crate::vm::Vm>, ready: &mut VecDeque<u64>) {
+    let mut values = unpack(job.values);
+    let function = values.remove(0);
+    let mut vm = crate::vm::Vm::task(&job.dir);
+    if let Err(error) = vm.prepare(function, values) {
+        report(error);
+    }
+    tasks.insert(job.task, vm);
+    ready.push_back(job.task);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -788,30 +812,33 @@ fn run_worker(index: usize) {
     let mut parked: HashSet<u64> = HashSet::new();
     let mut ready: VecDeque<u64> = VecDeque::new();
     loop {
-        let jobs = {
+        {
             let mut inbox = lock(&me.inbox);
-            while inbox.jobs.is_empty() && inbox.woken.is_empty() && ready.is_empty() {
-                inbox = me
-                    .signal
-                    .wait(inbox)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
+            inbox.poked = false;
             for task in inbox.woken.drain(..) {
                 if parked.remove(&task) {
                     ready.push_back(task);
                 }
             }
-            std::mem::take(&mut inbox.jobs)
-        };
-        for job in jobs {
-            let mut values = unpack(job.values);
-            let function = values.remove(0);
-            let mut vm = crate::vm::Vm::task(&job.dir);
-            if let Err(error) = vm.prepare(function, values) {
-                report(error);
+            if ready.is_empty() {
+                let mut pool = lock(&POOL);
+                if let Some(job) = pool.jobs.pop_front() {
+                    drop(pool);
+                    drop(inbox);
+                    start(job, &mut tasks, &mut ready);
+                    continue;
+                }
+                pool.idle.push(index);
+                drop(pool);
+                while inbox.woken.is_empty() && !inbox.poked {
+                    inbox = me
+                        .signal
+                        .wait(inbox)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                lock(&POOL).idle.retain(|worker| *worker != index);
+                continue;
             }
-            tasks.insert(job.task, vm);
-            ready.push_back(job.task);
         }
         let Some(task) = ready.pop_front() else {
             continue;

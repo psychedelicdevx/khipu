@@ -248,6 +248,19 @@ impl Vm {
                             "too much recursion: more than {MAX_FRAMES} calls deep"
                         ));
                     }
+                    self.budget -= 1;
+                    if self.budget == 0 {
+                        self.budget = SLICE;
+                        if self.preemptive {
+                            self.frames.push(Frame {
+                                closure: Rc::clone(&closure),
+                                ip: ip - 1,
+                                base,
+                                return_to,
+                            });
+                            return Err(Error::new(0, task::YIELDED));
+                        }
+                    }
                     self.frames.push(Frame {
                         closure: std::mem::replace(&mut closure, function),
                         ip,
@@ -498,11 +511,16 @@ impl Vm {
                     Code::CallGlobal(slot, argc) => {
                         let argc = argc as usize;
                         let args_at = self.stack.len() - argc;
-                        let callee = closure.globals.borrow().values[slot as usize].clone();
+                        let globals = closure.globals.borrow();
+                        if let Some(Value::Function(function)) = &globals.values[slot as usize] {
+                            let function = Rc::clone(function);
+                            drop(globals);
+                            enter!(function, argc, args_at, args_at)
+                        }
+                        let callee = globals.values[slot as usize].clone();
+                        drop(globals);
                         match callee {
-                            Some(Value::Function(function)) => {
-                                enter!(function, argc, args_at, args_at)
-                            }
+                            Some(Value::Function(_)) => unreachable!("handled above"),
                             Some(Value::Native(native)) => {
                                 let function = native.function;
                                 match function(&self.stack[args_at..]) {
@@ -805,34 +823,10 @@ impl Vm {
                     Code::Index => {
                         let index = self.stack.pop().expect("index");
                         let target = self.stack.pop().expect("target");
-                        let value = match &target {
-                            Value::List(items) => {
-                                let items = items.borrow();
-                                match position(&index, items.len()) {
-                                    Ok(at) => items.get(at).unwrap_or(Value::None),
-                                    Err(message) => fail!(message),
-                                }
-                            }
-                            Value::Str(text) => {
-                                let chars: Vec<char> = text.chars().collect();
-                                match position(&index, chars.len()) {
-                                    Ok(at) => Value::str(&chars[at].to_string()),
-                                    Err(message) => fail!(message),
-                                }
-                            }
-                            Value::Record(fields) => match &index {
-                                Value::Str(name) => match get_field(fields, name) {
-                                    Ok(value) => value,
-                                    Err(message) => fail!(message),
-                                },
-                                other => fail!(format!(
-                                    "record fields are named with strings, got {}",
-                                    other.type_name()
-                                )),
-                            },
-                            other => fail!(format!("cannot index into {}", other.type_name())),
-                        };
-                        self.stack.push(value);
+                        match index_into(&target, &index) {
+                            Ok(value) => self.stack.push(value),
+                            Err(message) => fail!(message),
+                        }
                     }
                     Code::SetIndex => {
                         let value = self.stack.pop().expect("value");
@@ -866,72 +860,10 @@ impl Vm {
                             fail!("internal error: field name is not a string");
                         };
                         let target = self.stack.pop().expect("target");
-                        let value = match &target {
-                            Value::Record(fields) => match get_field(fields, name) {
-                                Ok(value) => value,
-                                Err(message) => fail!(message),
-                            },
-                            Value::Instance(instance) => {
-                                match instance
-                                    .def
-                                    .fields
-                                    .iter()
-                                    .position(|field| **field == ***name)
-                                {
-                                    Some(at) => instance.fields.borrow()[at].clone(),
-                                    None if instance
-                                        .def
-                                        .methods
-                                        .iter()
-                                        .any(|(m, _)| **m == ***name) =>
-                                    {
-                                        fail!(format!(
-                                            "'{name}' is a method of {}, call it like value.{name}(...)",
-                                            instance.def.name
-                                        ))
-                                    }
-                                    None => fail!(format!(
-                                        "{} has no field '{name}'",
-                                        instance.def.name
-                                    )),
-                                }
-                            }
-                            Value::StructDef(def) => {
-                                match def.methods.iter().find(|(m, _)| **m == ***name) {
-                                    Some((_, method)) => method.clone(),
-                                    None => fail!(format!("{} has no method '{name}'", def.name)),
-                                }
-                            }
-                            Value::EnumDef(def) => {
-                                match def.variants.iter().position(|(v, _)| **v == ***name) {
-                                    Some(variant) if def.variants[variant].1 == 0 => {
-                                        Value::enumeration(EnumValue {
-                                            def: Rc::clone(def),
-                                            variant,
-                                            values: Vec::new(),
-                                        })
-                                    }
-                                    Some(variant) => {
-                                        let arity = def.variants[variant].1;
-                                        fail!(format!(
-                                            "{}.{name} holds {arity} value{}, write {}.{name}(...)",
-                                            def.name,
-                                            if arity == 1 { "" } else { "s" },
-                                            def.name
-                                        ))
-                                    }
-                                    None => fail!(format!("{} has no variant '{name}'", def.name)),
-                                }
-                            }
-                            Value::None => fail!(format!(
-                                "cannot read field '{name}' of none, use '?.{name}' if it might be none"
-                            )),
-                            other => fail!(format!(
-                                "cannot read field '{name}' of {}",
-                                other.type_name()
-                            )),
-                        };
-                        self.stack.push(value);
+                        match field_of(&target, name) {
+                            Ok(value) => self.stack.push(value),
+                            Err(message) => fail!(message),
+                        }
                     }
                     Code::SetField(name) => {
                         let Value::Str(name) = &proto.constants[name as usize] else {
@@ -1118,6 +1050,187 @@ impl Vm {
                             None => ip = exit as usize,
                         }
                     }
+                    Code::MoveLocal(from, to) => {
+                        let value = self.stack[base + from as usize].clone();
+                        self.stack[base + to as usize] = value;
+                    }
+                    Code::ReturnLocal(slot) => {
+                        let result = self.stack[base + slot as usize].clone();
+                        self.stack.truncate(return_to);
+                        let Some(caller) = self.frames.pop() else {
+                            return Ok(result);
+                        };
+                        self.stack.push(result);
+                        closure = caller.closure;
+                        ip = caller.ip;
+                        base = caller.base;
+                        return_to = caller.return_to;
+                        continue 'frames;
+                    }
+                    Code::BinaryLocals(a, b, op) => {
+                        let (a, b) = (
+                            &self.stack[base + a as usize],
+                            &self.stack[base + b as usize],
+                        );
+                        let value = match (a, b) {
+                            (Value::Number(x), Value::Number(y)) => arithmetic(op, *x, *y),
+                            _ => match binary(op, a.clone(), b.clone()) {
+                                Ok(value) => value,
+                                Err(message) => fail!(message),
+                            },
+                        };
+                        self.stack.push(value);
+                    }
+                    Code::JumpUnlessLocals(a, b, op, target) => {
+                        let (a, b) = (
+                            &self.stack[base + a as usize],
+                            &self.stack[base + b as usize],
+                        );
+                        let holds = match (a, b) {
+                            (Value::Number(x), Value::Number(y)) => compare(op, *x, *y),
+                            _ => match binary(op, a.clone(), b.clone()) {
+                                Ok(Value::Bool(holds)) => holds,
+                                Ok(_) => {
+                                    fail!("internal error: comparison did not give true or false")
+                                }
+                                Err(message) => fail!(message),
+                            },
+                        };
+                        if !holds {
+                            ip = target as usize;
+                        }
+                    }
+                    Code::LocalAddConst(slot, c) | Code::LocalSubConst(slot, c) => {
+                        let constant = &proto.constants[c as usize];
+                        let local = &self.stack[base + slot as usize];
+                        let add = matches!(op_code, Code::LocalAddConst(..));
+                        let value = match (local, constant) {
+                            (Value::Number(x), Value::Number(y)) if add => Value::Number(x + y),
+                            (Value::Number(x), Value::Number(y)) => Value::Number(x - y),
+                            _ => {
+                                let op = if add { Op::Add } else { Op::Sub };
+                                match binary(op, local.clone(), constant.clone()) {
+                                    Ok(value) => value,
+                                    Err(message) => fail!(message),
+                                }
+                            }
+                        };
+                        self.stack.push(value);
+                    }
+                    Code::UpdateLocalWithLocal(slot, from, op) => {
+                        let value = self.stack[base + from as usize].clone();
+                        update!(&mut self.stack[base + slot as usize], op, value)
+                    }
+                    Code::UpdateGlobalWithGlobal(slot, from, op) => {
+                        let mut globals = closure.globals.borrow_mut();
+                        let globals = &mut *globals;
+                        let Some(value) = globals.values[from as usize].clone() else {
+                            fail!(format!("'{}' is not defined", globals.names[from as usize]));
+                        };
+                        let Some(place) = globals.values[slot as usize].as_mut() else {
+                            let name = &globals.names[slot as usize];
+                            fail!(format!(
+                                "'{name}' is not defined, use 'let {name} = ...' first"
+                            ));
+                        };
+                        update!(place, op, value)
+                    }
+                    Code::PopJump(count, target) => {
+                        let len = self.stack.len();
+                        self.stack.truncate(len - count as usize);
+                        if (target as usize) < ip {
+                            self.budget -= 1;
+                            if self.budget == 0 {
+                                self.budget = SLICE;
+                                if self.preemptive {
+                                    self.frames.push(Frame {
+                                        closure: Rc::clone(&closure),
+                                        ip: target as usize,
+                                        base,
+                                        return_to,
+                                    });
+                                    return Err(Error::new(0, task::YIELDED));
+                                }
+                            }
+                        }
+                        ip = target as usize
+                    }
+                    Code::GetLocalField(slot, name) | Code::GetGlobalField(slot, name) => {
+                        let Value::Str(name) = &proto.constants[name as usize] else {
+                            fail!("internal error: field name is not a string");
+                        };
+                        let target = match op_code {
+                            Code::GetLocalField(..) => self.stack[base + slot as usize].clone(),
+                            _ => match &closure.globals.borrow().values[slot as usize] {
+                                Some(value) => value.clone(),
+                                None => fail!(format!(
+                                    "'{}' is not defined",
+                                    closure.globals.borrow().names[slot as usize]
+                                )),
+                            },
+                        };
+                        match field_of(&target, name) {
+                            Ok(value) => self.stack.push(value),
+                            Err(message) => fail!(message),
+                        }
+                    }
+                    Code::JumpUnlessLocalConst(slot, c, op, target) => {
+                        let local = &self.stack[base + slot as usize];
+                        let constant = &proto.constants[c as usize];
+                        let holds = match (local, constant) {
+                            (Value::Number(x), Value::Number(y)) => compare(op, *x, *y),
+                            _ => match binary(op, local.clone(), constant.clone()) {
+                                Ok(Value::Bool(holds)) => holds,
+                                Ok(_) => {
+                                    fail!("internal error: comparison did not give true or false")
+                                }
+                                Err(message) => fail!(message),
+                            },
+                        };
+                        if !holds {
+                            ip = target as usize;
+                        }
+                    }
+                    Code::ReturnBinary(op) => {
+                        let b = self.stack.pop().expect("operand");
+                        let a = self.stack.pop().expect("operand");
+                        let result = match (&a, &b) {
+                            (Value::Number(x), Value::Number(y)) => arithmetic(op, *x, *y),
+                            _ => match binary(op, a, b) {
+                                Ok(value) => value,
+                                Err(message) => fail!(message),
+                            },
+                        };
+                        self.stack.truncate(return_to);
+                        let Some(caller) = self.frames.pop() else {
+                            return Ok(result);
+                        };
+                        self.stack.push(result);
+                        closure = caller.closure;
+                        ip = caller.ip;
+                        base = caller.base;
+                        return_to = caller.return_to;
+                        continue 'frames;
+                    }
+                    Code::IndexLocals(list, index) => {
+                        let value = match (
+                            &self.stack[base + list as usize],
+                            &self.stack[base + index as usize],
+                        ) {
+                            (Value::List(items), index) => {
+                                let items = items.borrow();
+                                match position(index, items.len()) {
+                                    Ok(at) => items.get(at).unwrap_or(Value::None),
+                                    Err(message) => fail!(message),
+                                }
+                            }
+                            (target, index) => match index_into(target, index) {
+                                Ok(value) => value,
+                                Err(message) => fail!(message),
+                            },
+                        };
+                        self.stack.push(value);
+                    }
                     Code::Import(path) => {
                         let Value::Str(path) = &proto.constants[path as usize] else {
                             fail!("internal error: import path is not a string");
@@ -1194,6 +1307,100 @@ impl Vm {
             Interpreter::with_modules(dir, Rc::clone(&self.modules), Rc::clone(&self.loading));
         module.run(&program)?;
         Ok(module.exports())
+    }
+}
+
+fn arithmetic(op: Op, x: f64, y: f64) -> Value {
+    match op {
+        Op::Add => Value::Number(x + y),
+        Op::Sub => Value::Number(x - y),
+        Op::Mul => Value::Number(x * y),
+        Op::Div => Value::Number(x / y),
+        Op::Rem => Value::Number(x % y),
+        _ => Value::Bool(compare(op, x, y)),
+    }
+}
+
+fn compare(op: Op, x: f64, y: f64) -> bool {
+    match op {
+        Op::Less => x < y,
+        Op::LessEqual => x <= y,
+        Op::Greater => x > y,
+        Op::GreaterEqual => x >= y,
+        Op::Equal => x == y,
+        _ => x != y,
+    }
+}
+
+fn index_into(target: &Value, index: &Value) -> Result<Value, String> {
+    match target {
+        Value::List(items) => {
+            let items = items.borrow();
+            let at = position(index, items.len())?;
+            Ok(items.get(at).unwrap_or(Value::None))
+        }
+        Value::Str(text) => {
+            let chars: Vec<char> = text.chars().collect();
+            let at = position(index, chars.len())?;
+            Ok(Value::str(&chars[at].to_string()))
+        }
+        Value::Record(fields) => match index {
+            Value::Str(name) => get_field(fields, name),
+            other => Err(format!(
+                "record fields are named with strings, got {}",
+                other.type_name()
+            )),
+        },
+        other => Err(format!("cannot index into {}", other.type_name())),
+    }
+}
+
+fn field_of(target: &Value, name: &str) -> Result<Value, String> {
+    match target {
+        Value::Record(fields) => get_field(fields, name),
+        Value::Instance(instance) => {
+            match instance
+                .def
+                .fields
+                .iter()
+                .position(|field| &**field == name)
+            {
+                Some(at) => Ok(instance.fields.borrow()[at].clone()),
+                None if instance.def.methods.iter().any(|(m, _)| &**m == name) => Err(format!(
+                    "'{name}' is a method of {}, call it like value.{name}(...)",
+                    instance.def.name
+                )),
+                None => Err(format!("{} has no field '{name}'", instance.def.name)),
+            }
+        }
+        Value::StructDef(def) => match def.methods.iter().find(|(m, _)| &**m == name) {
+            Some((_, method)) => Ok(method.clone()),
+            None => Err(format!("{} has no method '{name}'", def.name)),
+        },
+        Value::EnumDef(def) => match def.variants.iter().position(|(v, _)| &**v == name) {
+            Some(variant) if def.variants[variant].1 == 0 => Ok(Value::enumeration(EnumValue {
+                def: Rc::clone(def),
+                variant,
+                values: Vec::new(),
+            })),
+            Some(variant) => {
+                let arity = def.variants[variant].1;
+                Err(format!(
+                    "{}.{name} holds {arity} value{}, write {}.{name}(...)",
+                    def.name,
+                    if arity == 1 { "" } else { "s" },
+                    def.name
+                ))
+            }
+            None => Err(format!("{} has no variant '{name}'", def.name)),
+        },
+        Value::None => Err(format!(
+            "cannot read field '{name}' of none, use '?.{name}' if it might be none"
+        )),
+        other => Err(format!(
+            "cannot read field '{name}' of {}",
+            other.type_name()
+        )),
     }
 }
 

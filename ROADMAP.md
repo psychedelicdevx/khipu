@@ -12,10 +12,10 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `██░░░░░░░░` 3 / 18 |
+| 8. Performance and final audit | `████░░░░░░` 7 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Faster function calls, so `fib` and `fib_iterative` beat Python
+**Next up:** Beat Python on every sustained benchmark
 
 ---
 
@@ -116,14 +116,14 @@ Memory
 - [x] Peak memory below Python and Node on every benchmark
 
 Speed
-- [ ] Faster function calls, so `fib` and `fib_iterative` beat Python
+- [x] Faster function calls, so `fib` and `fib_iterative` beat Python
 - [ ] Beat Python on every sustained benchmark
 - [ ] Native compilation (Cranelift)
 - [ ] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
 - [ ] Competitive with Node on the benchmark suite
-- [ ] Start-up stays under 5 ms
-- [ ] Work stealing, so a busy core hands tasks to idle ones
-- [ ] Tasks also take turns inside deep recursion, not only in loops
+- [x] Start-up stays under 5 ms
+- [x] Work stealing, so a busy core hands tasks to idle ones
+- [x] Tasks also take turns inside deep recursion, not only in loops
 
 Robustness
 - [ ] Fuzzing the lexer, parser, checker and VM finds no crash

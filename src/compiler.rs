@@ -103,6 +103,82 @@ pub enum Code {
     ForNext(u32, u32),
     Import(u32),
     ImportName(u32, u32),
+    MoveLocal(u32, u32),
+    ReturnLocal(u32),
+    BinaryLocals(u32, u32, Op),
+    JumpUnlessLocals(u32, u32, Op, u32),
+    LocalAddConst(u32, u32),
+    LocalSubConst(u32, u32),
+    UpdateLocalWithLocal(u32, u32, Op),
+    UpdateGlobalWithGlobal(u32, u32, Op),
+    PopJump(u32, u32),
+    GetLocalField(u32, u32),
+    GetGlobalField(u32, u32),
+    IndexLocals(u32, u32),
+    JumpUnlessLocalConst(u32, u32, Op, u32),
+    ReturnBinary(Op),
+}
+
+fn fuse(code: &[Code], label: usize, next: Code) -> Option<(usize, Code)> {
+    let len = code.len();
+    let last = *code.last()?;
+    let free = |back: usize| label + back <= len;
+    let one = |fused: Code| free(1).then_some((1, fused));
+    let two = |fused: Code| free(2).then_some((2, fused));
+    let before = || (len >= 2).then(|| code[len - 2]);
+    match (next, last) {
+        (Code::SetLocal(to), Code::GetLocal(from)) => one(Code::MoveLocal(from, to)),
+        (Code::Return, Code::GetLocal(slot)) => one(Code::ReturnLocal(slot)),
+        (Code::Return, binary) => one(Code::ReturnBinary(binary_op(binary)?)),
+        (Code::AddConst(c), Code::GetLocal(slot)) => one(Code::LocalAddConst(slot, c)),
+        (Code::SubConst(c), Code::GetLocal(slot)) => one(Code::LocalSubConst(slot, c)),
+        (Code::UpdateLocal(slot, op), Code::GetLocal(from)) => {
+            one(Code::UpdateLocalWithLocal(slot, from, op))
+        }
+        (Code::UpdateGlobal(slot, op), Code::GetGlobal(from)) => {
+            one(Code::UpdateGlobalWithGlobal(slot, from, op))
+        }
+        (Code::Jump(target), Code::PopN(count)) => one(Code::PopJump(count, target)),
+        (Code::GetField(name), Code::GetLocal(slot)) => one(Code::GetLocalField(slot, name)),
+        (Code::GetField(name), Code::GetGlobal(slot)) => one(Code::GetGlobalField(slot, name)),
+        (Code::Index, Code::GetLocal(index)) => match before()? {
+            Code::GetLocal(list) => two(Code::IndexLocals(list, index)),
+            _ => None,
+        },
+        (binary, Code::GetLocal(b)) => match (binary_op(binary)?, before()?) {
+            (op, Code::GetLocal(a)) => two(Code::BinaryLocals(a, b, op)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn binary_op(code: Code) -> Option<Op> {
+    Some(match code {
+        Code::Add => Op::Add,
+        Code::Sub => Op::Sub,
+        Code::Mul => Op::Mul,
+        Code::Div => Op::Div,
+        Code::Rem => Op::Rem,
+        Code::Less => Op::Less,
+        Code::LessEqual => Op::LessEqual,
+        Code::Greater => Op::Greater,
+        Code::GreaterEqual => Op::GreaterEqual,
+        Code::Equal => Op::Equal,
+        Code::NotEqual => Op::NotEqual,
+        _ => return None,
+    })
+}
+
+fn comparison_op(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Less | Op::LessEqual | Op::Greater | Op::GreaterEqual | Op::Equal | Op::NotEqual
+    )
+}
+
+fn comparison(code: Code) -> Option<Op> {
+    binary_op(code).filter(|op| comparison_op(*op))
 }
 
 pub struct StructInfo {
@@ -221,7 +297,7 @@ impl FnState {
             captured,
             capture_names: Vec::new(),
             loops: Vec::new(),
-            label: usize::MAX,
+            label: 0,
         }
     }
 
@@ -302,14 +378,26 @@ impl Compiler<'_> {
 
     fn emit(&mut self, code: Code) -> usize {
         let line = self.line;
-        let proto = &mut self.current().proto;
+        let state = self.current();
+        let (code, line) = match fuse(&state.proto.code, state.label, code) {
+            Some((replaced, fused)) => {
+                let keep = state.proto.code.len() - replaced;
+                state.proto.code.truncate(keep);
+                state.proto.lines.truncate(keep);
+                (fused, line)
+            }
+            None => (code, line),
+        };
+        let proto = &mut state.proto;
         proto.code.push(code);
         proto.lines.push(line);
         proto.code.len() - 1
     }
 
     fn here(&mut self) -> u32 {
-        self.current().proto.code.len() as u32
+        let state = self.current();
+        state.label = state.proto.code.len();
+        state.label as u32
     }
 
     fn patch(&mut self, at: usize) {
@@ -318,6 +406,9 @@ impl Compiler<'_> {
         let code = &mut self.current().proto.code[at];
         *code = match *code {
             Code::Jump(_) => Code::Jump(target),
+            Code::PopJump(count, _) => Code::PopJump(count, target),
+            Code::JumpUnlessLocals(a, b, op, _) => Code::JumpUnlessLocals(a, b, op, target),
+            Code::JumpUnlessLocalConst(s, c, op, _) => Code::JumpUnlessLocalConst(s, c, op, target),
             Code::JumpIfFalse(_, check) => Code::JumpIfFalse(target, check),
             Code::JumpUnlessLess(_) => Code::JumpUnlessLess(target),
             Code::JumpUnlessLessEqual(_) => Code::JumpUnlessLessEqual(target),
@@ -344,6 +435,20 @@ impl Compiler<'_> {
     fn jump_unless(&mut self, check: Check) -> usize {
         let state = self.current();
         let here = state.proto.code.len();
+        if let [.., Code::GetLocal(slot), Code::Constant(c), compare] = state.proto.code[..]
+            && state.label + 3 <= here
+            && let Some(op) = comparison(compare)
+        {
+            let line = state.proto.lines[here - 1];
+            state.proto.code.truncate(here - 3);
+            state.proto.lines.truncate(here - 3);
+            state
+                .proto
+                .code
+                .push(Code::JumpUnlessLocalConst(slot, c, op, 0));
+            state.proto.lines.push(line);
+            return here - 3;
+        }
         let last_two = match state.proto.code[..] {
             [.., Code::Constant(c), compare] if state.label != here && state.label != here - 1 => {
                 match compare {
@@ -368,6 +473,9 @@ impl Compiler<'_> {
         }
         let fused = match state.proto.code.last() {
             _ if state.label == here => None,
+            Some(Code::BinaryLocals(a, b, op)) if comparison_op(*op) => {
+                Some(Code::JumpUnlessLocals(*a, *b, *op, 0))
+            }
             Some(Code::Less) => Some(Code::JumpUnlessLess(0)),
             Some(Code::LessEqual) => Some(Code::JumpUnlessLessEqual(0)),
             Some(Code::Greater) => Some(Code::JumpUnlessGreater(0)),
@@ -941,9 +1049,13 @@ impl Compiler<'_> {
                 self.emit(Code::Constant(index));
             }
             Expr::Template(parts) => {
-                for part in parts {
+                let last_computed = parts
+                    .iter()
+                    .rposition(|part| !matches!(part, Expr::Str(_)))
+                    .unwrap_or(0);
+                for (index, part) in parts.iter().enumerate() {
                     self.expression(part)?;
-                    if !matches!(part, Expr::Str(_)) {
+                    if index < last_computed && !matches!(part, Expr::Str(_)) {
                         self.emit(Code::Stringify);
                     }
                 }

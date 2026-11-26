@@ -135,7 +135,7 @@ print(reply.status, reply.json().message)
 
 ## Tasks on every core
 
-`spawn` starts a task. Tasks are cheap: fifty thousand can wait at once in about 100 MB. They run on every core and talk only through channels: whatever you `send` is copied, so two tasks never share a value and data races can't happen.
+`spawn` starts a task. Tasks are cheap: fifty thousand can wait at once in about 100 MB. They run on every core and talk only through channels: whatever you `send` is copied, so two tasks never share a value and data races can't happen. A task that is waiting to start goes to whichever core is free, and a long-running task gives the others a turn, in loops and in deep recursion alike.
 
 ```js
 let results = channel()
@@ -261,10 +261,10 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `██░░░░░░░░` 3 / 18 |
+| 8. Performance and final audit | `████░░░░░░` 7 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Faster function calls, so `fib` and `fib_iterative` beat Python
+**Next up:** Beat Python on every sustained benchmark
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 

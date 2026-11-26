@@ -335,6 +335,29 @@ mod tests {
     }
 
     #[test]
+    fn tasks_take_turns_inside_deep_recursion() {
+        let mut interpreter = Interpreter::new();
+        let program = Parser::new(
+            lex("fn count(n: number) -> number {\n    if n == 0 {\n        return 0\n    }\n    return count(n - 1) + 1\n}\nfn twice() -> number {\n    return count(8000) + count(8000)\n}")
+                .unwrap(),
+        )
+        .parse_program()
+        .unwrap();
+        interpreter.run(&program).unwrap();
+        let twice = {
+            let globals = interpreter.vm.globals.borrow();
+            let slot = globals.names.iter().position(|n| n == "twice").unwrap();
+            globals.values[slot].clone().unwrap()
+        };
+        let mut task = crate::vm::Vm::task(std::path::Path::new("."));
+        task.prepare(twice, Vec::new()).unwrap();
+        let paused = task.resume().unwrap_err();
+        assert_eq!(paused.message, crate::task::YIELDED);
+        let finished = task.resume().unwrap();
+        assert!(matches!(finished, Value::Number(n) if n == 16000.0));
+    }
+
+    #[test]
     fn skips_tests_in_a_normal_run_and_asserts() {
         assert_eq!(
             number("test \"never runs\" {\n    assert(false)\n}\nlet a = 1\na"),
