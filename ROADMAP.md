@@ -11,11 +11,11 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 7. Ecosystem | `█████░░░░░` 3 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Standard library: math, strings, lists
+**Next up:** HTTP: fetch and a small server
 
 ---
 
@@ -99,10 +99,10 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 
 ## Phase 7: Ecosystem
 
-- [ ] Standard library: math, strings, lists
-- [ ] Files and the terminal
+- [x] Standard library: math, strings, lists
+- [x] Files and the terminal
 - [ ] HTTP: fetch and a small server
-- [ ] Contracts: `requires`, `ensures`, `example` (LLM-proof code)
+- [x] Contracts: `requires`, `ensures`, `example` (LLM-proof code)
 - [ ] Package manager
 - [ ] Compile Khipu to WASM for the web
 

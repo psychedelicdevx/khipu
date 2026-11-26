@@ -21,7 +21,18 @@ pub fn format(source: &str) -> Result<String, Error> {
         }
 
         let closing = tokens.iter().take_while(|token| closes(token)).count();
-        let indent = INDENT.repeat(depth.saturating_sub(closing));
+        let clause = matches!(tokens.first(), Some(Token::Ident(word)) if matches!(word.as_str(), "requires" | "ensures" | "example"))
+            && !matches!(
+                tokens.get(1),
+                None | Some(
+                    Token::Equals
+                        | Token::Dot
+                        | Token::QuestionDot
+                        | Token::LeftParen
+                        | Token::LeftBracket
+                )
+            );
+        let indent = INDENT.repeat(depth.saturating_sub(closing) + usize::from(clause));
         let mut line = indent + &join(&tokens, &spans, &chars);
         if !comment.is_empty() {
             if !tokens.is_empty() {
@@ -121,6 +132,42 @@ fn roles(tokens: &[Token], spans: &[(usize, usize)]) -> Vec<Role> {
     roles
 }
 
+pub fn tokens_text(tokens: &[Token]) -> String {
+    let spans: Vec<(usize, usize)> = (0..tokens.len()).map(|at| (2 * at, 2 * at + 1)).collect();
+    let roles = roles(tokens, &spans);
+    let mut out = String::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 && spaced(&tokens[index - 1], roles[index - 1], token, roles[index]) {
+            out.push(' ');
+        }
+        match token {
+            Token::Ident(name) => out.push_str(name),
+            Token::Number(n) if n.fract() == 0.0 && n.abs() < 1e15 => {
+                out.push_str(&(*n as i64).to_string())
+            }
+            Token::Number(n) => out.push_str(&n.to_string()),
+            Token::Str(text) => out.push_str(&format!("{text:?}")),
+            Token::Template(parts) => {
+                out.push('"');
+                for part in parts {
+                    match part {
+                        crate::lexer::StringPart::Text(text) => out.push_str(text),
+                        crate::lexer::StringPart::Code(code) => {
+                            out.push_str("${");
+                            out.push_str(code);
+                            out.push('}');
+                        }
+                    }
+                }
+                out.push('"');
+            }
+            Token::Newline => {}
+            other => out.push_str(other.to_string().trim_matches('\'')),
+        }
+    }
+    out
+}
+
 fn join(tokens: &[Token], spans: &[(usize, usize)], chars: &[char]) -> String {
     let roles = roles(tokens, spans);
     let mut out = String::new();
@@ -189,6 +236,14 @@ mod tests {
         same("fn largest<T>(items: list<T>, score: fn(T) -> number) -> T? {\n    return none\n}\n");
         same("let p = Point { x: 1, y: -2 }\nlet empty = {}\n");
         same("if !done && a < b {\n    print(\"${a} < ${b}\")\n}\n");
+    }
+
+    #[test]
+    fn indents_contracts() {
+        assert_eq!(
+            format("fn half(n: number) -> number\nrequires n >= 0\n  example half(4) == 2\n{\nreturn n / 2\n}\nlet example = 1\n").unwrap(),
+            "fn half(n: number) -> number\n    requires n >= 0\n    example half(4) == 2\n{\n    return n / 2\n}\nlet example = 1\n"
+        );
     }
 
     #[test]

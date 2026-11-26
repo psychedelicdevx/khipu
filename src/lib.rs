@@ -6,6 +6,7 @@ pub mod interpreter;
 pub mod lexer;
 pub mod lsp;
 pub mod parser;
+pub mod stdlib;
 pub mod task;
 pub mod value;
 pub mod vm;

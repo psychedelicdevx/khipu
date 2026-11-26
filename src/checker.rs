@@ -83,6 +83,10 @@ impl Checker {
                 Type::Function(vec![Type::Any], Box::new(Type::List(Box::new(Type::Str)))),
             ),
         ]);
+        let mut globals = globals;
+        for native in crate::stdlib::NATIVES.iter() {
+            globals.insert(native.name.to_string(), Type::Any);
+        }
         Checker {
             scopes: vec![globals],
             functions: Vec::new(),
@@ -124,6 +128,20 @@ impl Checker {
         self.scopes.push(scope);
     }
 
+    pub fn with_library() -> Self {
+        let mut checker = Checker::new();
+        let library = crate::lexer::lex_prelude(crate::stdlib::PRELUDE)
+            .and_then(|tokens| crate::parser::Parser::new(tokens).parse_program())
+            .and_then(|program| checker.check(&program));
+        if let Err(error) = library {
+            panic!(
+                "the built-in library failed on line {}: {}",
+                error.line, error.message
+            );
+        }
+        checker
+    }
+
     pub fn global(&self, name: &str) -> Option<&Type> {
         self.scopes[0].get(name)
     }
@@ -162,6 +180,27 @@ impl Checker {
                     })
                     .collect()
             }),
+            Type::List(_) | Type::Str | Type::Number | Type::Bool => {
+                let prefix = match ty {
+                    Type::List(_) => "list#",
+                    Type::Str => "string#",
+                    Type::Number => "number#",
+                    _ => "bool#",
+                };
+                self.scopes[0]
+                    .iter()
+                    .filter_map(|(name, method)| {
+                        let name = name.strip_prefix(prefix)?;
+                        match method {
+                            Type::Function(params, returns) => Some((
+                                name.to_string(),
+                                Type::Function(params[1..].to_vec(), returns.clone()),
+                            )),
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         };
         found.sort_by(|a, b| a.0.cmp(&b.0));
@@ -771,6 +810,33 @@ impl Checker {
                     self.check_args(&format!("{owner}.{method}"), &payload, &Type::None, args)?;
                     return Ok(Type::Enum(owner.clone()));
                 }
+                Type::List(_) | Type::Str | Type::Number | Type::Bool => {
+                    let kind = match &target_type {
+                        Type::List(_) => "list",
+                        Type::Str => "string",
+                        Type::Number => "number",
+                        _ => "bool",
+                    };
+                    let Some(Type::Function(params, returns)) =
+                        self.global(&format!("{kind}#{method}")).cloned()
+                    else {
+                        return self.fail(format!("{kind} has no method '{method}'"));
+                    };
+                    let mut bindings = HashMap::new();
+                    if let Some(receiver) = params.first()
+                        && !unify(receiver, &target_type, &mut bindings)
+                    {
+                        return self.fail(format!(
+                            "{kind}.{method} needs a {receiver}, got {target_type}"
+                        ));
+                    }
+                    let params: Vec<Type> = params[1..]
+                        .iter()
+                        .map(|param| substitute(param, &bindings))
+                        .collect();
+                    let returns = substitute(&returns, &bindings);
+                    return self.check_args(&format!("{kind}.{method}"), &params, &returns, args);
+                }
                 _ => {
                     let field = self.field(&target_type, method)?;
                     return self.call_value(&label, field, args);
@@ -1144,6 +1210,7 @@ fn substitute(ty: &Type, bindings: &HashMap<String, Type>) -> Type {
 fn always_returns(block: &Block) -> bool {
     match block.last() {
         Some((_, Stmt::Return(_))) => true,
+        Some((_, Stmt::If(Expr::Bool(true), then_block, None))) => always_returns(then_block),
         Some((_, Stmt::If(_, then_block, Some(else_block)))) => {
             always_returns(then_block) && always_returns(else_block)
         }

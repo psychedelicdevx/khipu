@@ -80,6 +80,7 @@ pub struct PortableProto {
     structs: Vec<(String, Vec<String>, Vec<String>)>,
     enums: Vec<PortableEnum>,
     patterns: Vec<PortablePattern>,
+    builtin: bool,
 }
 
 type Packed = HashMap<usize, (Rc<Proto>, Arc<PortableProto>)>;
@@ -147,6 +148,7 @@ fn pack_proto(proto: &Rc<Proto>) -> Arc<PortableProto> {
         protos: proto.protos.iter().map(pack_proto).collect(),
         shapes: proto.shapes.iter().map(|shape| strings(shape)).collect(),
         captures: proto.captures.clone(),
+        builtin: proto.builtin,
         structs: proto
             .structs
             .iter()
@@ -211,6 +213,7 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         protos: packed.protos.iter().map(unpack_proto).collect(),
         shapes: packed.shapes.iter().map(|shape| names(shape)).collect(),
         captures: packed.captures.clone(),
+        builtin: packed.builtin,
         structs: packed
             .structs
             .iter()

@@ -2,7 +2,7 @@
   "name": "khipu",
   "displayName": "Khipu",
   "description": "Khipu language support: highlighting, errors as you type, autocomplete, hover and formatting",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "psychedelicdevx",
   "engines": {
     "vscode": "^1.82.0"

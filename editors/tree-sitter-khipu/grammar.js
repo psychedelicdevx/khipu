@@ -66,8 +66,12 @@ module.exports = grammar({
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
         optional(seq('->', field('return_type', $._type))),
+        repeat($.contract),
         field('body', $.block),
       ),
+
+    contract: ($) =>
+      seq(field('keyword', $.identifier), field('condition', $._expression)),
 
     type_parameters: ($) => seq('<', commaSep1($.identifier), '>'),
 
@@ -241,6 +245,7 @@ module.exports = grammar({
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
         optional(seq('->', field('return_type', $._type))),
+        repeat($.contract),
         field('body', $.block),
       ),
 

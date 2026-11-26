@@ -2,9 +2,12 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::checker::Checker;
-use crate::compiler::{Globals, compile_script};
+use crate::compiler::{Globals, compile_script, mark_builtin};
 use crate::error::Error;
+use crate::lexer::lex_prelude;
 use crate::parser::Block;
+use crate::parser::Parser;
+use crate::stdlib;
 pub use crate::value::Value;
 use crate::value::{Fields, NATIVES};
 use crate::vm::{Loading, Modules, Vm};
@@ -13,6 +16,7 @@ pub struct Interpreter {
     checker: Checker,
     globals: Globals,
     vm: Vm,
+    builtins: usize,
 }
 
 impl Default for Interpreter {
@@ -33,32 +37,57 @@ impl Interpreter {
     pub fn with_modules(dir: &Path, modules: Modules, loading: Loading) -> Self {
         let mut globals = Globals::default();
         let mut vm = Vm::new(dir, modules, loading);
-        for native in &NATIVES {
+        for native in NATIVES.iter().chain(stdlib::NATIVES.iter()) {
             let slot = globals.slot(native.name) as usize;
             vm.sync_globals(&globals.names);
             vm.globals.borrow_mut().values[slot] = Some(Value::Native(native));
         }
-        Interpreter {
+        let mut interpreter = Interpreter {
             checker: Checker::new(),
             globals,
             vm,
+            builtins: 0,
+        };
+        let prelude = lex_prelude(stdlib::PRELUDE)
+            .and_then(|tokens| Parser::new(tokens).parse_program())
+            .and_then(|program| interpreter.execute(&program, false, true));
+        if let Err(error) = prelude {
+            panic!(
+                "the built-in library failed on line {}: {}",
+                error.line, error.message
+            );
         }
+        interpreter.builtins = interpreter.globals.names.len();
+        interpreter.vm.load_methods();
+        interpreter
     }
 
     pub fn run(&mut self, program: &Block) -> Result<Option<Value>, Error> {
-        self.execute(program, false)
+        self.execute(program, false, false)
     }
 
     pub fn run_main(&mut self, program: &Block) -> Result<Option<Value>, Error> {
-        self.execute(program, true)
+        self.execute(program, true, false)
     }
 
-    fn execute(&mut self, program: &Block, promote: bool) -> Result<Option<Value>, Error> {
+    fn execute(
+        &mut self,
+        program: &Block,
+        promote: bool,
+        builtin: bool,
+    ) -> Result<Option<Value>, Error> {
         self.checker.check(program)?;
-        let (proto, ends_with_value) = compile_script(program, &mut self.globals, promote)?;
+        let (mut proto, ends_with_value) = compile_script(program, &mut self.globals, promote)?;
+        if builtin {
+            mark_builtin(&mut proto);
+        }
         self.vm.sync_globals(&self.globals.names);
         let value = self.vm.run(Rc::new(proto))?;
         Ok(ends_with_value.then_some(value))
+    }
+
+    pub fn methods(&self) -> crate::vm::Methods {
+        self.vm.methods()
     }
 
     pub fn exports(&self) -> Fields {
@@ -67,6 +96,7 @@ impl Interpreter {
             .names
             .iter()
             .zip(&globals.values)
+            .skip(self.builtins)
             .filter_map(|(name, value)| match value {
                 Some(Value::Native(..)) | None => None,
                 Some(value) => Some((Rc::from(name.as_str()), value.clone())),
@@ -119,6 +149,107 @@ mod tests {
     fn runs_a_multi_line_program() {
         let source = "// set up\nlet x = 2 + 3\n\nlet y = x * 4 // twenty\ny";
         assert_eq!(number(source), 20.0);
+    }
+
+    #[test]
+    fn has_a_standard_library() {
+        assert_eq!(
+            string(
+                "\"  a,b ,c \".trim().split(\",\").map(fn(s: string) -> string { return s.trim().upper() }).join(\"\")"
+            ),
+            "ABC"
+        );
+        assert_eq!(
+            number(
+                "[3, 1, 2].sorted().reversed()[0] + [4, 5].sum() + [1, 2, 3].reduce(0, fn(a: number, n: number) -> number { return a + n })"
+            ),
+            18.0
+        );
+        assert_eq!(
+            number("[1, 2, 3, 4].filter(fn(n: number) -> bool { return n % 2 == 0 }).len()"),
+            2.0
+        );
+        assert_eq!(
+            string(
+                "[\"bb\", \"a\", \"ccc\"].sort_by(fn(s: string) -> any { return s.len() }).join(\" \")"
+            ),
+            "a bb ccc"
+        );
+        assert_eq!(
+            number("(2).pow(8) + (9.7).floor() + Math.sqrt(9) + (-1).abs()"),
+            269.0
+        );
+        assert_eq!(number("\"khipu\".index_of(\"pu\") ?? -1"), 3.0);
+        assert_eq!(number("\"x\".to_number() ?? -1"), -1.0);
+        assert_eq!(string("\"khipu\".slice(-3, 5)"), "ipu");
+        assert!(boolean(
+            "[1, 2].any(fn(n: number) -> bool { return n > 1 }) && ![1, 2].all(fn(n: number) -> bool { return n > 1 })"
+        ));
+        assert_eq!(
+            number(
+                "let xs = [1, 2]\nxs.push(3)\nxs.insert(0, 0)\nxs.remove(1) + xs.len() + (xs.pop() ?? 0)"
+            ),
+            7.0
+        );
+        assert_eq!(
+            error("[\"a\"].sum()").message,
+            "list.sum needs a list<number>, got list<string>"
+        );
+        assert_eq!(
+            error("\"a\".upper(1)").message,
+            "string.upper expects 0 arguments, got 1"
+        );
+        assert_eq!(
+            error("\"a\".shout()").message,
+            "string has no method 'shout'"
+        );
+        assert_eq!(
+            error("[1].remove(5)").message,
+            "remove index 5 is outside a list of length 1"
+        );
+        assert_eq!(
+            error("(-1).sqrt()").message,
+            "sqrt needs a number of 0 or more, got -1"
+        );
+
+        let folder = std::env::temp_dir().join(format!("khipu-files-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("notes.txt").display().to_string();
+        let source = format!(
+            "File.write(\"{path}\", \"a\\nb\\n\")\nFile.append(\"{path}\", \"c\")\nlet seen = File.lines(\"{path}\").join(\"\") + File.list(\"{}\").join(\",\")\nFile.delete(\"{path}\")\nif File.exists(\"{path}\") {{\n    seen = \"left behind\"\n}}\nseen",
+            folder.display()
+        );
+        assert_eq!(string(&source), "abcnotes.txt");
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(
+            error("File.read(\"/no/such/khipu/file\")").message,
+            "cannot read /no/such/khipu/file: it does not exist"
+        );
+    }
+
+    #[test]
+    fn checks_contracts() {
+        let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
+        assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);
+        let broken = error(&format!("{divide}let x = 1\ndivide(x, 0)"));
+        assert_eq!(broken.message, "divide requires b != 0 (a = 1, b = 0)");
+        assert_eq!(broken.line, 9);
+
+        let wrong = error(
+            "fn up(n: number) -> number\n    ensures result > n\n{\n    if n > 0 {\n        return n + 1\n    }\n    return n\n}\nup(1) + up(-1)",
+        );
+        assert_eq!(wrong.message, "up ensures result > n, but it returned -1");
+        assert_eq!(wrong.line, 7);
+
+        assert_eq!(
+            error("fn outer() {\n    fn inner()\n        example inner() == none\n    {\n    }\n}")
+                .message,
+            "examples can only be written on top-level functions and methods"
+        );
+        assert_eq!(
+            number("let requires = 2\nlet example = 3\nrequires * example"),
+            6.0
+        );
     }
 
     #[test]

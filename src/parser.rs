@@ -52,26 +52,26 @@ impl std::fmt::Display for Type {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Import {
     Module(String),
     Names(Vec<String>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<(String, Type)>,
     pub methods: Vec<(String, Expr)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
     pub variants: Vec<(String, Vec<Type>)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Pattern {
     Wildcard,
     Bind(String),
@@ -83,20 +83,20 @@ pub enum Pattern {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ArmBody {
     Expr(Expr),
     Block(Block),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Arm {
     pub pattern: Pattern,
     pub body: ArmBody,
     pub line: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Let(String, Option<Type>, Expr),
     Assign(String, Expr),
@@ -115,7 +115,7 @@ pub enum Stmt {
     Expr(Expr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Number(f64),
     Bool(bool),
@@ -169,6 +169,7 @@ pub struct Parser {
     function_depth: usize,
     loop_depth: usize,
     no_struct: bool,
+    examples: Block,
 }
 
 impl Parser {
@@ -180,6 +181,7 @@ impl Parser {
             function_depth: 0,
             loop_depth: 0,
             no_struct: false,
+            examples: Vec::new(),
         }
     }
 
@@ -229,6 +231,9 @@ impl Parser {
             let line = self.tokens[self.pos].1;
             let stmt = self.statement()?;
             statements.push((line, stmt));
+            if self.function_depth == 0 {
+                statements.append(&mut self.examples);
+            }
 
             match self.peek() {
                 None | Some(Token::Newline) => {}
@@ -698,11 +703,93 @@ impl Parser {
             None
         };
 
+        let mut clauses: Vec<(usize, String, Expr, String)> = Vec::new();
+        loop {
+            let mut ahead = self.pos;
+            while matches!(self.tokens.get(ahead), Some((Token::Newline, _))) {
+                ahead += 1;
+            }
+            let Some((Token::Ident(word), line)) = self.tokens.get(ahead).cloned() else {
+                break;
+            };
+            if !matches!(word.as_str(), "requires" | "ensures" | "example") {
+                break;
+            }
+            self.pos = ahead + 1;
+            self.line = line;
+            let start = self.pos;
+            let condition = self.restricted_expression()?;
+            let words: Vec<Token> = self.tokens[start..self.pos]
+                .iter()
+                .map(|(token, _)| token.clone())
+                .collect();
+            clauses.push((line, word, condition, crate::format::tokens_text(&words)));
+        }
+        if !clauses.is_empty() {
+            self.skip_newlines();
+        }
+
         let outer_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
         let body = self.block();
         self.function_depth -= 1;
         self.loop_depth = outer_loops;
+        let mut body = body?;
+
+        let label = if name.is_empty() {
+            "this function"
+        } else {
+            name.as_str()
+        };
+        let mut ensures = Vec::new();
+        let mut checks = Vec::new();
+        for (line, kind, condition, text) in clauses {
+            match kind.as_str() {
+                "requires" => {
+                    let mut message = vec![Expr::Str(format!("\u{1}{label} requires {text}"))];
+                    for (index, param) in params.iter().enumerate() {
+                        let lead = if index == 0 { " (" } else { ", " };
+                        message.push(Expr::Str(format!("{lead}{param} = ")));
+                        message.push(Expr::Variable(param.clone()));
+                    }
+                    if !params.is_empty() {
+                        message.push(Expr::Str(")".to_string()));
+                    }
+                    checks.push((line, lined(guard(condition, Expr::Template(message)), line)));
+                }
+                "ensures" => ensures.push((condition, format!("{label} ensures {text}"))),
+                _ => {
+                    if self.function_depth > 0 {
+                        return Err(Error::new(
+                            line,
+                            "examples can only be written on top-level functions and methods",
+                        ));
+                    }
+                    let check = match condition {
+                        Expr::Binary(left, Op::Equal, right) => Expr::Call(
+                            Box::new(Expr::Variable("assert_eq".to_string())),
+                            vec![*left, *right],
+                        ),
+                        other => Expr::Call(
+                            Box::new(Expr::Variable("assert".to_string())),
+                            vec![other, Expr::Str(text.clone())],
+                        ),
+                    };
+                    self.examples.push((
+                        line,
+                        Stmt::Test(format!("{label}: {text}"), vec![(line, Stmt::Expr(check))]),
+                    ));
+                }
+            }
+        }
+        if !ensures.is_empty() {
+            let end = body.last().map_or(self.line, |(line, _)| *line);
+            body = with_ensures(body, &ensures);
+            if returns.is_none() {
+                body.push((end, lined(returning(None, &ensures, false), end)));
+            }
+        }
+        checks.append(&mut body);
 
         Ok(Expr::Function {
             name,
@@ -710,7 +797,7 @@ impl Parser {
             params,
             param_types,
             returns,
-            body: Rc::new(body?),
+            body: Rc::new(checks),
         })
     }
 
@@ -1106,6 +1193,97 @@ impl Parser {
         self.pos += 1;
         Some(token)
     }
+}
+
+fn guard(condition: Expr, message: Expr) -> Stmt {
+    let fail = Expr::Call(
+        Box::new(Expr::Variable("contract#".to_string())),
+        vec![message],
+    );
+    Stmt::If(
+        Expr::Not(Box::new(condition)),
+        vec![(0, Stmt::Expr(fail))],
+        None,
+    )
+}
+
+fn returning(value: Option<Expr>, ensures: &[(Expr, String)], give_back: bool) -> Stmt {
+    let mut block = vec![(
+        0,
+        Stmt::Let("result".to_string(), None, value.unwrap_or(Expr::None)),
+    )];
+    for (condition, text) in ensures {
+        let message = Expr::Template(vec![
+            Expr::Str(format!("{text}, but it returned ")),
+            Expr::Variable("result".to_string()),
+        ]);
+        block.push((0, guard(condition.clone(), message)));
+    }
+    if give_back {
+        block.push((0, Stmt::Return(Some(Expr::Variable("result".to_string())))));
+    }
+    Stmt::If(Expr::Bool(true), block, None)
+}
+
+fn with_ensures(block: Block, ensures: &[(Expr, String)]) -> Block {
+    block
+        .into_iter()
+        .map(|(line, stmt)| {
+            let stmt = match stmt {
+                Stmt::Return(value) => returning(value, ensures, true),
+                Stmt::If(condition, then, otherwise) => Stmt::If(
+                    condition,
+                    with_ensures(then, ensures),
+                    otherwise.map(|block| with_ensures(block, ensures)),
+                ),
+                Stmt::While(condition, body) => Stmt::While(condition, with_ensures(body, ensures)),
+                Stmt::For(name, items, body) => Stmt::For(name, items, with_ensures(body, ensures)),
+                Stmt::Let(name, ty, Expr::Match(subject, arms)) => Stmt::Let(
+                    name,
+                    ty,
+                    Expr::Match(subject, arms_with_ensures(arms, ensures)),
+                ),
+                Stmt::Expr(Expr::Match(subject, arms)) => {
+                    Stmt::Expr(Expr::Match(subject, arms_with_ensures(arms, ensures)))
+                }
+                other => other,
+            };
+            (line, lined(stmt, line))
+        })
+        .collect()
+}
+
+fn arms_with_ensures(arms: Vec<Arm>, ensures: &[(Expr, String)]) -> Vec<Arm> {
+    arms.into_iter()
+        .map(|arm| Arm {
+            body: match arm.body {
+                ArmBody::Block(block) => ArmBody::Block(with_ensures(block, ensures)),
+                other => other,
+            },
+            ..arm
+        })
+        .collect()
+}
+
+fn lined(stmt: Stmt, line: usize) -> Stmt {
+    match stmt {
+        Stmt::If(condition, then, otherwise) => Stmt::If(
+            condition,
+            relined(then, line),
+            otherwise.map(|block| relined(block, line)),
+        ),
+        other => other,
+    }
+}
+
+fn relined(block: Block, line: usize) -> Block {
+    block
+        .into_iter()
+        .map(|(at, stmt)| {
+            let at = if at == 0 { line } else { at };
+            (at, lined(stmt, at))
+        })
+        .collect()
 }
 
 fn named(expr: Expr, new_name: &str) -> Expr {

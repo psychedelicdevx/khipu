@@ -72,6 +72,7 @@
 ] @keyword.import
 
 (test_block keyword: (identifier) @keyword)
+(contract keyword: (identifier) @keyword)
 (select_statement keyword: (identifier) @keyword.conditional)
 
 [

@@ -45,6 +45,7 @@ fn run_file(path: &str) {
     };
 
     khipu::task::set_program(path, &source);
+    khipu::stdlib::set_args(std::env::args().skip(2).collect());
     let dir = Path::new(path).parent().unwrap_or(Path::new("."));
     if let Err(error) =
         parse(&source).and_then(|program| Interpreter::in_dir(dir).run_main(&program))

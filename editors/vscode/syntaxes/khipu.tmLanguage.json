@@ -53,7 +53,7 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while|for|in|break|continue|return|import|from|match)\\b|^\\s*test\\b(?=\\s*\")|\\bselect\\b(?=\\s*\\{)"
+          "match": "\\b(if|else|while|for|in|break|continue|return|import|from|match)\\b|^\\s*test\\b(?=\\s*\")|\\bselect\\b(?=\\s*\\{)|^\\s*(requires|ensures|example)\\b(?!\\s*[=.(\\[])"
         },
         {
           "name": "storage.type.khipu",

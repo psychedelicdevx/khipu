@@ -61,7 +61,8 @@ pub extern "C" fn run(len: usize) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn check(len: usize) -> usize {
     let source = source(len);
-    let Err(error) = parse(&source).and_then(|program| Checker::new().check(&program)) else {
+    let Err(error) = parse(&source).and_then(|program| Checker::with_library().check(&program))
+    else {
         return finish(String::new());
     };
     let text = source.lines().nth(error.line.wrapping_sub(1)).unwrap_or("");

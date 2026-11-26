@@ -21,6 +21,11 @@ const SLICE: u32 = 10_000;
 
 pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Fields>>>>>;
 pub type Loading = Rc<RefCell<Vec<PathBuf>>>;
+pub type Methods = Rc<[HashMap<String, Value>; 4]>;
+
+thread_local! {
+    static TASK_METHODS: Methods = crate::interpreter::Interpreter::new().methods();
+}
 
 struct Frame {
     closure: Rc<Closure>,
@@ -38,6 +43,7 @@ pub struct Vm {
     loading: Loading,
     budget: u32,
     pub preemptive: bool,
+    methods: Methods,
 }
 
 impl Vm {
@@ -51,7 +57,32 @@ impl Vm {
             loading,
             budget: SLICE,
             preemptive: false,
+            methods: Methods::default(),
         }
+    }
+
+    pub fn load_methods(&mut self) {
+        let mut methods: [HashMap<String, Value>; 4] = Default::default();
+        let globals = self.globals.borrow();
+        for (name, value) in globals.names.iter().zip(&globals.values) {
+            let (Some((kind, method)), Some(value)) = (name.split_once('#'), value) else {
+                continue;
+            };
+            let index = match kind {
+                "list" => 0,
+                "string" => 1,
+                "number" => 2,
+                "bool" => 3,
+                _ => continue,
+            };
+            methods[index].insert(method.to_string(), value.clone());
+        }
+        drop(globals);
+        self.methods = Rc::new(methods);
+    }
+
+    pub fn methods(&self) -> Methods {
+        Rc::clone(&self.methods)
     }
 
     pub fn task(dir: &Path) -> Self {
@@ -64,6 +95,7 @@ impl Vm {
             loading: Loading::default(),
             budget: SLICE,
             preemptive: true,
+            methods: TASK_METHODS.with(Rc::clone),
         }
     }
 
@@ -163,9 +195,22 @@ impl Vm {
             let code: &[Code] = &proto.code;
 
             macro_rules! fail {
-                ($message:expr) => {
-                    return Err(Error::new(proto.lines[ip - 1] as usize, $message))
-                };
+                ($message:expr) => {{
+                    let message: String = $message.into();
+                    let blame_caller = message.starts_with('\u{1}');
+                    let line = if proto.builtin || blame_caller {
+                        self.frames
+                            .iter()
+                            .rev()
+                            .find(|frame| !frame.closure.proto.builtin)
+                            .map_or(proto.lines[ip - 1] as usize, |frame| {
+                                frame.closure.proto.lines[frame.ip - 1] as usize
+                            })
+                    } else {
+                        proto.lines[ip - 1] as usize
+                    };
+                    return Err(Error::new(line, message.trim_start_matches('\u{1}')));
+                }};
             }
 
             macro_rules! jump_unless {
@@ -680,6 +725,31 @@ impl Vm {
                                 }
                                 Err(message) => fail!(message),
                             },
+                            Value::List(_) | Value::Str(_) | Value::Number(_) | Value::Bool(_) => {
+                                let kind = match &target {
+                                    Value::List(_) => 0,
+                                    Value::Str(_) => 1,
+                                    Value::Number(_) => 2,
+                                    _ => 3,
+                                };
+                                let Some(method) = self.methods[kind].get(name.as_str()).cloned()
+                                else {
+                                    fail!(format!("{} has no method '{name}'", target.type_name()));
+                                };
+                                let Value::Function(function) = method else {
+                                    fail!("internal error: built-in method is not a function");
+                                };
+                                let expected = function.proto.arity as usize;
+                                if expected != argc + 1 {
+                                    fail!(format!(
+                                        "{}.{name} expects {} argument{}, got {argc}",
+                                        target.type_name(),
+                                        expected.saturating_sub(1),
+                                        if expected == 2 { "" } else { "s" }
+                                    ));
+                                }
+                                enter!(function, argc + 1, target_at, target_at)
+                            }
                             Value::None => fail!(format!(
                                 "cannot read field '{name}' of none, use '?.{name}' if it might be none"
                             )),

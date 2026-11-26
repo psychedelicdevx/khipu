@@ -1,0 +1,19 @@
+fn divide(a: number, b: number) -> number
+    requires b != 0
+    ensures result * b == a
+    example divide(10, 2) == 5
+    example divide(9, 3) == 3
+{
+    return a / b
+}
+
+fn average(numbers: list<number>) -> number
+    requires numbers.len() > 0
+    ensures result >= (numbers.min() ?? 0) && result <= (numbers.max() ?? 0)
+    example average([2, 4, 6]) == 4
+{
+    return divide(numbers.sum(), numbers.len())
+}
+
+print(average([3, 5, 10]))
+print("run 'khipu test examples/contracts.kp' to check the examples")

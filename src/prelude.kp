@@ -1,0 +1,382 @@
+fn string#len(self: string) -> number {
+    return len(self)
+}
+
+fn string#is_empty(self: string) -> bool {
+    return len(self) == 0
+}
+
+fn string#upper(self: string) -> string {
+    return upper#(self)
+}
+
+fn string#lower(self: string) -> string {
+    return lower#(self)
+}
+
+fn string#trim(self: string) -> string {
+    return trim#(self)
+}
+
+fn string#split(self: string, separator: string) -> list<string> {
+    return split#(self, separator)
+}
+
+fn string#lines(self: string) -> list<string> {
+    return lines#(self)
+}
+
+fn string#chars(self: string) -> list<string> {
+    return chars#(self)
+}
+
+fn string#contains(self: string, part: string) -> bool {
+    return contains#(self, part)
+}
+
+fn string#starts_with(self: string, part: string) -> bool {
+    return starts_with#(self, part)
+}
+
+fn string#ends_with(self: string, part: string) -> bool {
+    return ends_with#(self, part)
+}
+
+fn string#replace(self: string, old: string, new: string) -> string {
+    return replace#(self, old, new)
+}
+
+fn string#index_of(self: string, part: string) -> number? {
+    return index_of#(self, part)
+}
+
+fn string#slice(self: string, start: number, end: number) -> string {
+    return slice#(self, start, end)
+}
+
+fn string#repeat(self: string, count: number) -> string {
+    return repeat#(self, count)
+}
+
+fn string#to_number(self: string) -> number? {
+    return to_number#(self)
+}
+
+fn string#to_string(self: string) -> string {
+    return self
+}
+
+fn number#to_string(self: number) -> string {
+    return to_string#(self)
+}
+
+fn number#sqrt(self: number) -> number {
+    return math#("sqrt", self)
+}
+
+fn number#floor(self: number) -> number {
+    return math#("floor", self)
+}
+
+fn number#ceil(self: number) -> number {
+    return math#("ceil", self)
+}
+
+fn number#round(self: number) -> number {
+    return math#("round", self)
+}
+
+fn number#abs(self: number) -> number {
+    return math#("abs", self)
+}
+
+fn number#pow(self: number, exponent: number) -> number {
+    return math2#("pow", self, exponent)
+}
+
+fn number#min(self: number, other: number) -> number {
+    if other < self {
+        return other
+    }
+    return self
+}
+
+fn number#max(self: number, other: number) -> number {
+    if other > self {
+        return other
+    }
+    return self
+}
+
+fn number#clamp(self: number, low: number, high: number) -> number {
+    return self.max(low).min(high)
+}
+
+fn bool#to_string(self: bool) -> string {
+    return to_string#(self)
+}
+
+fn list#len<T>(self: list<T>) -> number {
+    return len(self)
+}
+
+fn list#is_empty<T>(self: list<T>) -> bool {
+    return len(self) == 0
+}
+
+fn list#push<T>(self: list<T>, item: T) {
+    push(self, item)
+}
+
+fn list#pop<T>(self: list<T>) -> T? {
+    return pop#(self)
+}
+
+fn list#insert<T>(self: list<T>, index: number, item: T) {
+    insert#(self, index, item)
+}
+
+fn list#remove<T>(self: list<T>, index: number) -> T {
+    return remove#(self, index)
+}
+
+fn list#first<T>(self: list<T>) -> T? {
+    return first#(self)
+}
+
+fn list#last<T>(self: list<T>) -> T? {
+    return last#(self)
+}
+
+fn list#contains<T>(self: list<T>, item: T) -> bool {
+    return contains#(self, item)
+}
+
+fn list#index_of<T>(self: list<T>, item: T) -> number? {
+    return index_of#(self, item)
+}
+
+fn list#slice<T>(self: list<T>, start: number, end: number) -> list<T> {
+    return slice#(self, start, end)
+}
+
+fn list#concat<T>(self: list<T>, other: list<T>) -> list<T> {
+    return concat#(self, other)
+}
+
+fn list#reversed<T>(self: list<T>) -> list<T> {
+    return reversed#(self)
+}
+
+fn list#sorted<T>(self: list<T>) -> list<T> {
+    return sorted#(self)
+}
+
+fn list#join<T>(self: list<T>, separator: string) -> string {
+    return join#(self, separator)
+}
+
+fn list#sum(self: list<number>) -> number {
+    return sum#(self)
+}
+
+fn list#min(self: list<number>) -> number? {
+    return min#(self)
+}
+
+fn list#max(self: list<number>) -> number? {
+    return max#(self)
+}
+
+fn list#map<T, U>(self: list<T>, f: fn(T) -> U) -> list<U> {
+    let out: list<U> = []
+    for item in self {
+        push(out, f(item))
+    }
+    return out
+}
+
+fn list#filter<T>(self: list<T>, keep: fn(T) -> bool) -> list<T> {
+    let out: list<T> = []
+    for item in self {
+        if keep(item) {
+            push(out, item)
+        }
+    }
+    return out
+}
+
+fn list#reduce<T, A>(self: list<T>, start: A, f: fn(A, T) -> A) -> A {
+    let total = start
+    for item in self {
+        total = f(total, item)
+    }
+    return total
+}
+
+fn list#find<T>(self: list<T>, matches: fn(T) -> bool) -> T? {
+    for item in self {
+        if matches(item) {
+            return item
+        }
+    }
+    return none
+}
+
+fn list#any<T>(self: list<T>, test: fn(T) -> bool) -> bool {
+    for item in self {
+        if test(item) {
+            return true
+        }
+    }
+    return false
+}
+
+fn list#all<T>(self: list<T>, test: fn(T) -> bool) -> bool {
+    for item in self {
+        if !test(item) {
+            return false
+        }
+    }
+    return true
+}
+
+fn list#count<T>(self: list<T>, test: fn(T) -> bool) -> number {
+    let total = 0
+    for item in self {
+        if test(item) {
+            total = total + 1
+        }
+    }
+    return total
+}
+
+fn list#sort_by<T>(self: list<T>, key: fn(T) -> any) -> list<T> {
+    let keys = []
+    for item in self {
+        push(keys, key(item))
+    }
+    return sort_by_keys#(self, keys)
+}
+
+struct Math {
+    fn pi() -> number {
+        return 3.141592653589793
+    }
+
+    fn e() -> number {
+        return 2.718281828459045
+    }
+
+    fn sqrt(x: number) -> number {
+        return math#("sqrt", x)
+    }
+
+    fn pow(x: number, exponent: number) -> number {
+        return math2#("pow", x, exponent)
+    }
+
+    fn abs(x: number) -> number {
+        return math#("abs", x)
+    }
+
+    fn floor(x: number) -> number {
+        return math#("floor", x)
+    }
+
+    fn ceil(x: number) -> number {
+        return math#("ceil", x)
+    }
+
+    fn round(x: number) -> number {
+        return math#("round", x)
+    }
+
+    fn min(a: number, b: number) -> number {
+        return a.min(b)
+    }
+
+    fn max(a: number, b: number) -> number {
+        return a.max(b)
+    }
+
+    fn sin(x: number) -> number {
+        return math#("sin", x)
+    }
+
+    fn cos(x: number) -> number {
+        return math#("cos", x)
+    }
+
+    fn tan(x: number) -> number {
+        return math#("tan", x)
+    }
+
+    fn atan2(y: number, x: number) -> number {
+        return math2#("atan2", y, x)
+    }
+
+    fn log(x: number) -> number {
+        return math#("log", x)
+    }
+
+    fn exp(x: number) -> number {
+        return math#("exp", x)
+    }
+
+    fn random() -> number {
+        return random#()
+    }
+
+    fn random_int(low: number, high: number) -> number {
+        return (random#() * (high - low + 1)).floor() + low
+    }
+}
+
+struct File {
+    fn read(path: string) -> string {
+        return read_file#(path)
+    }
+
+    fn lines(path: string) -> list<string> {
+        return lines#(read_file#(path))
+    }
+
+    fn write(path: string, text: string) {
+        write_file#(path, text)
+    }
+
+    fn append(path: string, text: string) {
+        append_file#(path, text)
+    }
+
+    fn exists(path: string) -> bool {
+        return file_exists#(path)
+    }
+
+    fn delete(path: string) {
+        delete_file#(path)
+    }
+
+    fn list(folder: string) -> list<string> {
+        return list_dir#(folder)
+    }
+}
+
+struct Process {
+    fn args() -> list<string> {
+        return args#()
+    }
+
+    fn env(name: string) -> string? {
+        return env#(name)
+    }
+
+    fn exit(code: number) {
+        exit#(code)
+    }
+}
+
+fn input(prompt: string) -> string? {
+    return input#(prompt)
+}

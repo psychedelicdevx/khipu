@@ -128,7 +128,15 @@ pub fn lex(source: &str) -> Result<Tokens, Error> {
     Ok(scan(source)?.0)
 }
 
+pub fn lex_prelude(source: &str) -> Result<Tokens, Error> {
+    Ok(scan_with(source, true)?.0)
+}
+
 pub fn scan(source: &str) -> Result<(Tokens, Vec<Span>), Error> {
+    scan_with(source, false)
+}
+
+fn scan_with(source: &str, hidden: bool) -> Result<(Tokens, Vec<Span>), Error> {
     let chars: Vec<char> = source.chars().collect();
     let mut tokens = Vec::new();
     let mut spans = Vec::new();
@@ -224,7 +232,11 @@ pub fn scan(source: &str) -> Result<(Tokens, Vec<Span>), Error> {
             }
             c if c.is_alphabetic() || c == '_' => {
                 let start = pos;
-                while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
+                while pos < chars.len()
+                    && (chars[pos].is_alphanumeric()
+                        || chars[pos] == '_'
+                        || (hidden && chars[pos] == '#'))
+                {
                     pos += 1;
                 }
                 let word: String = chars[start..pos].iter().collect();

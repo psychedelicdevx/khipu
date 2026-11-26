@@ -53,6 +53,66 @@ $ khipu examples/primes.kp
 29
 ```
 
+## Contracts
+
+A function can say what it needs, what it promises, and show examples. Khipu checks `requires` on every call and `ensures` on every return, and `khipu test` runs every `example`:
+
+```js
+fn divide(a: number, b: number) -> number
+    requires b != 0
+    ensures result * b == a
+    example divide(10, 2) == 5
+{
+    return a / b
+}
+```
+
+A broken promise names the rule, the values and the line that broke it:
+
+```
+error: divide requires b != 0 (a = 3, b = 0)
+ --> shop.kp:12
+   |
+12 | print(divide(total, count))
+   |       ^^^^^^^^^^^^^^^^^^^^
+```
+
+Contracts make intent part of the code, so a person or an AI changing a function finds out at once when the change breaks what callers rely on.
+
+## Standard library
+
+Strings, lists and numbers have methods, and every one is type-checked, including the ones that take a function:
+
+```js
+let words = "  the quick brown fox  ".trim().split(" ")
+let long = words.filter(fn(w: string) -> bool { return w.len() > 3 })
+print(long.map(fn(w: string) -> string { return w.upper() }).join(", "))
+print([5, 3, 9].sorted(), [1, 2, 3].sum(), (2).pow(10), Math.sqrt(16))
+```
+
+| On | Methods |
+|---|---|
+| strings | `len` `is_empty` `upper` `lower` `trim` `split` `lines` `chars` `contains` `starts_with` `ends_with` `replace` `index_of` `slice` `repeat` `to_number` |
+| lists | `len` `is_empty` `push` `pop` `insert` `remove` `first` `last` `contains` `index_of` `slice` `concat` `reversed` `sorted` `sort_by` `join` `map` `filter` `reduce` `find` `any` `all` `count`, and `sum` `min` `max` on numbers |
+| numbers | `sqrt` `floor` `ceil` `round` `abs` `pow` `min` `max` `clamp` `to_string` |
+| `Math` | `pi` `e` `sqrt` `pow` `abs` `floor` `ceil` `round` `min` `max` `sin` `cos` `tan` `atan2` `log` `exp` `random` `random_int` |
+
+Files and the terminal:
+
+```js
+File.write("notes.txt", "first line\n")
+File.append("notes.txt", "second line\n")
+for line in File.lines("notes.txt") {
+    print(line.upper())
+}
+let name = input("Your name? ") ?? "stranger"
+print("hello", name, "you passed", Process.args())
+```
+
+`File` also has `read`, `exists`, `list` and `delete`; `Process` has `args`, `env` and `exit`. A file that cannot be read stops the program with an error that says why, on the line that tried.
+
+Lookups that can miss give back `none` instead of a magic `-1`: `"abc".index_of("z")`, `[].first()` and `"x".to_number()` all return `none`, so the type checker makes you handle it with `??`. Methods that take a callback are written in Khipu itself, in [`src/prelude.kp`](src/prelude.kp).
+
 ## Tasks on every core
 
 `spawn` starts a task. Tasks are cheap: fifty thousand can wait at once in about 100 MB. They run on every core and talk only through channels: whatever you `send` is copied, so two tasks never share a value and data races can't happen.
@@ -161,11 +221,11 @@ khipu test examples/testing.kp
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 7. Ecosystem | `█████░░░░░` 3 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Standard library: math, strings, lists
+**Next up:** HTTP: fetch and a small server
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -241,6 +301,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/checker.rs` | The static type checker, run before anything executes |
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
 | `src/task.rs` | Tasks, channels and `select`: a scheduler with one worker per core |
+| `src/stdlib.rs`, `src/prelude.kp` | The standard library: fast built-ins in Rust, the rest in Khipu |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |

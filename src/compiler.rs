@@ -141,6 +141,7 @@ pub struct Proto {
     pub structs: Vec<StructInfo>,
     pub enums: Vec<Rc<EnumDef>>,
     pub patterns: Vec<PatternTest>,
+    pub builtin: bool,
 }
 
 impl Proto {
@@ -157,6 +158,7 @@ impl Proto {
             structs: Vec::new(),
             enums: Vec::new(),
             patterns: Vec::new(),
+            builtin: false,
         }
     }
 
@@ -244,6 +246,15 @@ pub struct Compiler<'g> {
     globals: &'g mut Globals,
     line: u32,
     promote: bool,
+}
+
+pub fn mark_builtin(proto: &mut Proto) {
+    proto.builtin = true;
+    for inner in &mut proto.protos {
+        if let Some(inner) = Rc::get_mut(inner) {
+            mark_builtin(inner);
+        }
+    }
 }
 
 pub fn compile_script(

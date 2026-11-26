@@ -23,7 +23,7 @@ struct Document {
 
 impl Document {
     fn new(text: String) -> Self {
-        let mut checker = Checker::new();
+        let mut checker = Checker::with_library();
         let error = lex(&text)
             .and_then(|tokens| Parser::new(tokens).parse_program())
             .and_then(|program| checker.check(&program))
@@ -43,7 +43,7 @@ impl Document {
             (Some(_), good) => good.or_else(|| {
                 self.error
                     .is_none()
-                    .then(|| std::mem::take(&mut self.latest))
+                    .then(|| std::mem::replace(&mut self.latest, Checker::with_library()))
             }),
         };
         *self = Document { good, ..next };
@@ -183,7 +183,9 @@ impl Document {
         let checker = self.checker();
         let mut seen: HashMap<&str, &Type> = HashMap::new();
         for (name, ty) in checker.globals() {
-            seen.insert(name, ty);
+            if !name.contains('#') {
+                seen.insert(name, ty);
+            }
         }
         for (declared, name, ty) in &checker.names {
             if *declared <= line + 1 || !seen.contains_key(name.as_str()) {
@@ -394,6 +396,27 @@ mod tests {
         let everything = document.completions(11, 0);
         let has = |label: &str| everything.iter().any(|item| item["label"] == label);
         assert!(has("total") && has("Point") && has("print") && has("while"));
+    }
+
+    #[test]
+    fn knows_the_standard_library() {
+        let clean = "let name = \"khipu\"\nlet loud = name.upper()\n";
+        let mut document = Document::new(clean.to_string());
+        assert_eq!(document.hover(1, 5).unwrap(), "```khipu\nloud: string\n```");
+        document.update(format!("{clean}name.\n"));
+        let labels: Vec<String> = document
+            .completions(2, 5)
+            .iter()
+            .map(|item| item["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(labels.contains(&"upper".to_string()) && labels.contains(&"split".to_string()));
+        let everything = document.completions(2, 0);
+        assert!(everything.iter().any(|item| item["label"] == "Math"));
+        assert!(
+            !everything
+                .iter()
+                .any(|item| item["label"].as_str().unwrap().contains('#'))
+        );
     }
 
     #[test]
