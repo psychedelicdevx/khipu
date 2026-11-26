@@ -74,6 +74,29 @@ impl Interpreter {
         self.execute(program, true, false)
     }
 
+    pub fn run_with_budget(
+        &mut self,
+        program: &Block,
+        slices: usize,
+    ) -> Result<Option<Value>, Error> {
+        self.vm.preemptive = true;
+        let mut result = self.execute(program, true, false);
+        for _ in 0..slices {
+            match &result {
+                Err(error) if error.message == crate::task::YIELDED => {
+                    result = self.vm.resume().map(Some);
+                }
+                _ => break,
+            }
+        }
+        self.vm.preemptive = false;
+        if matches!(&result, Err(error) if error.message == crate::task::YIELDED) {
+            self.vm.resume_abandon();
+            return Err(Error::new(0, "out of time"));
+        }
+        result
+    }
+
     fn execute(
         &mut self,
         program: &Block,
@@ -272,6 +295,33 @@ mod tests {
             }
         }
         assert_eq!(answer, "200 5 404 missing /nope");
+
+        for (port_offset, handler, expected) in [
+            (
+                1,
+                "Response.error(42, \"x\")",
+                "a response status must be from 100 to 599, got 42",
+            ),
+            (
+                2,
+                "Response { status: 200, body: \"x\", headers: { \"x-bad\": \"a\\nb\" } }",
+                "header 'x-bad' contains a line break",
+            ),
+        ] {
+            let port = port + port_offset;
+            let server = format!(
+                "fn handle(request: Request) -> Response {{\n    return {handler}\n}}\nHttp.serve({port}, handle)"
+            );
+            let serving = std::thread::spawn(move || run(&server).unwrap_err().message);
+            for _ in 0..50 {
+                if serving.is_finished() {
+                    break;
+                }
+                let _ = run(&format!("Http.get(\"http://localhost:{port}/\")"));
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(serving.join().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -332,6 +382,29 @@ mod tests {
             error("send(1, 2)").message,
             "argument 1 of 'send' should be channel, got number"
         );
+        let runtime_send = error("fn f(x) {\n    send(x, 1)\n}\nf(1)");
+        assert_eq!(
+            (runtime_send.line, runtime_send.message.as_str()),
+            (2, "send needs a channel, got number")
+        );
+        let runtime_select =
+            error("fn f(x) {\n    select {\n        v = receive(x) => print(v)\n    }\n}\nf(1)");
+        assert_eq!(
+            (runtime_select.line, runtime_select.message.as_str()),
+            (2, "select can only receive from a channel, got number")
+        );
+    }
+
+    #[test]
+    fn a_budget_stops_a_program_that_never_ends() {
+        let program = Parser::new(lex("let i = 0\nwhile true {\n    i = i + 1\n}").unwrap())
+            .parse_program()
+            .unwrap();
+        let mut interpreter = Interpreter::new();
+        let stopped = interpreter.run_with_budget(&program, 3).unwrap_err();
+        assert_eq!(stopped.message, "out of time");
+        let again = Parser::new(lex("1 + 1").unwrap()).parse_program().unwrap();
+        assert!(matches!(interpreter.run(&again).unwrap(), Some(Value::Number(n)) if n == 2.0));
     }
 
     #[test]
@@ -355,6 +428,241 @@ mod tests {
         assert_eq!(paused.message, crate::task::YIELDED);
         let finished = task.resume().unwrap();
         assert!(matches!(finished, Value::Number(n) if n == 16000.0));
+    }
+
+    #[test]
+    fn reports_every_error_with_its_line() {
+        let cases: &[(&str, usize, &str)] = &[
+            ("let x: Thing = 1", 1, "unknown type 'Thing'"),
+            (
+                "struct A {\n    x: number,\n    fn x(self) -> number {\n        return 1\n    }\n}",
+                1,
+                "A has both a field and a method called 'x'",
+            ),
+            (
+                "let xs: list? = none\nxs[0]",
+                2,
+                "cannot index into a value that might be none",
+            ),
+            ("let n = 5\nn[0]", 2, "cannot index into number"),
+            ("let s = -\"a\"", 1, "'-' needs a number, got string"),
+            ("let b = !1", 1, "'!' needs true or false, got number"),
+            (
+                "struct A {\n    fn go(self) -> number {\n        return 1\n    }\n}\nlet a = A {}\nprint(a.go)",
+                7,
+                "'go' is a method of A, call it like value.go(...)",
+            ),
+            (
+                "struct A {\n    fn go(self) -> number {\n        return 1\n    }\n}\nA.go()",
+                6,
+                "A.go needs a A, call it on a value instead",
+            ),
+            (
+                "enum E {\n    A(number),\n}\nlet e = E.A",
+                4,
+                "E.A holds 1 value, write E.A(...)",
+            ),
+            (
+                "enum E {\n    A,\n}\nlet e = E.B",
+                4,
+                "E has no variant 'B'",
+            ),
+            (
+                "struct A {\n    fn make() -> number {\n        return 1\n    }\n}\nlet a = A {}\na.make()",
+                7,
+                "A.make has no 'self', call it as A.make(...)",
+            ),
+            ("push([1])", 1, "push expects 2 arguments, got 1"),
+            (
+                "let n = 1\nmatch n {\n    \"a\" => print(1),\n    _ => print(2),\n}",
+                3,
+                "this match is on number, but the pattern is a string",
+            ),
+            (
+                "enum E {\n    A,\n}\nenum F {\n    B,\n}\nlet e = E.A\nmatch e {\n    F.B => print(1),\n    _ => print(2),\n}",
+                9,
+                "this match is on E, but the pattern is F.B",
+            ),
+            (
+                "let n = 1\nmatch n {\n    E.A => print(1),\n    _ => print(2),\n}",
+                3,
+                "this match is on number, which has no variants like A",
+            ),
+            (
+                "let b = true\nmatch b {\n    true => print(1),\n}",
+                2,
+                "match on bool needs both true and false, or a '_' arm",
+            ),
+            (
+                "let n = 1\nlet x = 1 + match n {\n    _ => 2,\n}",
+                2,
+                "match can only be used as a statement, or right after let, = or return",
+            ),
+            ("let x = 1.2.3", 1, "'1.2.3' is not a valid number"),
+            ("let x = 1 @ 2", 1, "unexpected character '@'"),
+            ("let s = \"\\q\"", 1, "unknown escape '\\q'"),
+            (
+                "\"a\".repeat(-1)",
+                1,
+                "repeat needs a count of 0 or more, got -1",
+            ),
+            (
+                "[1, \"a\"].sorted()",
+                1,
+                "can only sort numbers or strings, got string and number",
+            ),
+            ("Math.log(0)", 1, "log needs a number above 0, got 0"),
+            (
+                "fn f(n: number) -> number {\n    return f(n + 1)\n}\nf(0)",
+                2,
+                "too much recursion: more than 10000 calls deep",
+            ),
+            (
+                "x = x + 1",
+                1,
+                "'x' is not defined, use 'let x = ...' first",
+            ),
+            (
+                "fn f(x) {\n    return -x\n}\nf(\"a\")",
+                2,
+                "'-' needs a number, got string",
+            ),
+            (
+                "fn f(x) {\n    return !x\n}\nf(1)",
+                2,
+                "'!' needs true or false, got number",
+            ),
+            (
+                "fn f(e) {\n    return e.Nope(1)\n}\nenum E {\n    A(number),\n}\nf(E)",
+                2,
+                "E has no variant 'Nope'",
+            ),
+            (
+                "fn f(e) {\n    return e.A(1, 2)\n}\nenum E {\n    A(number),\n}\nf(E)",
+                2,
+                "E.A holds 1 value, got 2",
+            ),
+            (
+                "fn f(x) {\n    x.name = 1\n}\nf(5)",
+                2,
+                "cannot set field 'name' on number",
+            ),
+            (
+                "fn f(x) {\n    return match x {\n        1 => 2,\n    }\n}\nf(3)",
+                2,
+                "no match arm for 3",
+            ),
+            (
+                "fn f(x) {\n    for k in x {\n    }\n}\nf({ a: 1 })",
+                2,
+                "for needs a list or a string, got record, try 'for key in keys(record)'",
+            ),
+            (
+                "fn f(x) {\n    return x[0]\n}\nf(5)",
+                2,
+                "cannot index into number",
+            ),
+            (
+                "struct A {\n    fn go(self) -> number {\n        return 1\n    }\n}\nfn f(x) {\n    return x.go\n}\nf(A {})",
+                7,
+                "'go' is a method of A, call it like value.go(...)",
+            ),
+            (
+                "enum E {\n    A(number),\n}\nfn f(x) {\n    return x.A\n}\nf(E)",
+                5,
+                "E.A holds 1 value, write E.A(...)",
+            ),
+            (
+                "enum E {\n    A,\n}\nfn f(x) {\n    return x.B\n}\nf(E)",
+                5,
+                "E has no variant 'B'",
+            ),
+            (
+                "fn f(x) {\n    return len(x)\n}\nf(5)",
+                2,
+                "len needs a list, a string or a record, got number",
+            ),
+            (
+                "range(\"a\")",
+                1,
+                "range expects one or two numbers: range(end) or range(start, end)",
+            ),
+            (
+                "fn f(x) {\n    return keys(x)\n}\nf(5)",
+                2,
+                "keys needs a record, got number",
+            ),
+            (
+                "fn f(x) {\n    assert(x)\n}\nf(5)",
+                2,
+                "assert needs a bool, got number",
+            ),
+            (
+                "assert()",
+                1,
+                "assert expects a condition and an optional message",
+            ),
+            (
+                "[1, 2].slice(0.5, 1)",
+                1,
+                "slice needs a whole number, got 0.5",
+            ),
+            (
+                "fn f(x) {\n    return x.sqrt()\n}\nf(\"a\")",
+                2,
+                "string has no method 'sqrt'",
+            ),
+            (
+                "let a: list = []\nlet b: list = []\npush(a, a)\npush(b, b)\na == b",
+                5,
+                "cannot compare values nested more than 32 levels deep, does one contain itself?",
+            ),
+            (
+                "let a: list = []\npush(a, a)\nJson.stringify(a)",
+                3,
+                "cannot write values nested more than 32 levels deep as JSON, does one contain itself?",
+            ),
+            (
+                "Http.request(\"FLY\", \"http://localhost:1\", \"\", {})",
+                1,
+                "unknown HTTP method 'FLY'",
+            ),
+            (
+                "Http.serve(70000, fn(r: Request) -> Response { return Response.text(\"\") })",
+                1,
+                "Http.serve needs a port from 1 to 65535, got 70000",
+            ),
+            ("channel(1)", 1, "channel expects 0 arguments, got 1"),
+            ("send(channel())", 1, "send expects 2 arguments, got 1"),
+            (
+                "fn f(x) {\n    receive(x)\n}\nf(1)",
+                2,
+                "receive needs a channel, got number",
+            ),
+            ("receive()", 1, "receive expects 1 argument, got 0"),
+            ("spawn()", 1, "spawn needs a function to run"),
+            ("spawn(1)", 1, "spawn needs a function, got number"),
+            (
+                "let p = { a: 1 }\nfn f(x) {\n    x.b = 2\n}\nf(p)",
+                3,
+                "record has no field 'b', fields can only be added when the record is created",
+            ),
+        ];
+        for (source, line, message) in cases {
+            let error = error(source);
+            assert_eq!(
+                (error.line, error.message.as_str()),
+                (*line, *message),
+                "for the program:\n{source}"
+            );
+        }
+        let deep = format!("let x = {}1{}", "(".repeat(201), ")".repeat(201));
+        assert_eq!(
+            error(&deep).message,
+            "the code is nested more than 200 levels deep"
+        );
+        let shown = string("let a: list = []\npush(a, a)\n\"${a}\"");
+        assert!(shown.starts_with("[[[") && shown.contains("..."));
     }
 
     #[test]

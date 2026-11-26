@@ -122,7 +122,10 @@ impl Vm {
             return_to: bottom,
         });
         let result = self.execute();
-        if result.is_err() {
+        if let Err(error) = &result
+            && error.message != task::YIELDED
+            && error.message != task::BLOCKED
+        {
             self.frames.clear();
             self.stack.truncate(bottom);
         }
@@ -169,6 +172,11 @@ impl Vm {
             return_to: bottom,
         });
         Ok(())
+    }
+
+    pub fn resume_abandon(&mut self) {
+        self.frames.clear();
+        self.stack.clear();
     }
 
     pub fn resume(&mut self) -> Result<Value, Error> {

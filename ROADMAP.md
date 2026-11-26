@@ -12,7 +12,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `████░░░░░░` 7 / 18 |
+| 8. Performance and final audit | `██████░░░░` 10 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
 **Next up:** Beat Python on every sustained benchmark
@@ -126,9 +126,9 @@ Speed
 - [x] Tasks also take turns inside deep recursion, not only in loops
 
 Robustness
-- [ ] Fuzzing the lexer, parser, checker and VM finds no crash
-- [ ] Every error message tested, with line numbers
-- [ ] No `unsafe` code, or every use justified and tested
+- [x] Fuzzing the lexer, parser, checker and VM finds no crash
+- [x] Every error message tested, with line numbers
+- [x] No `unsafe` code, or every use justified and tested
 
 Final audit
 - [ ] Every roadmap item re-checked against the code and tests

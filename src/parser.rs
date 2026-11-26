@@ -170,7 +170,10 @@ pub struct Parser {
     loop_depth: usize,
     no_struct: bool,
     examples: Block,
+    nesting: usize,
 }
+
+const MAX_NESTING: usize = 200;
 
 impl Parser {
     pub fn new(tokens: Vec<(Token, usize)>) -> Self {
@@ -182,6 +185,7 @@ impl Parser {
             loop_depth: 0,
             no_struct: false,
             examples: Vec::new(),
+            nesting: 0,
         }
     }
 
@@ -394,7 +398,7 @@ impl Parser {
     }
 
     fn select_statement(&mut self) -> Result<Stmt, Error> {
-        let line = self.line;
+        let line = self.tokens[self.pos - 1].1;
         let hidden = format!("select#{}", self.pos);
         let mut channels = Vec::new();
         let mut arms: Vec<(Option<String>, Block)> = Vec::new();
@@ -500,10 +504,31 @@ impl Parser {
 
     fn block(&mut self) -> Result<Block, Error> {
         self.expect(Token::LeftBrace)?;
-        self.statements(Some(Token::RightBrace))
+        self.deeper()?;
+        let block = self.statements(Some(Token::RightBrace));
+        self.nesting -= 1;
+        block
+    }
+
+    fn deeper(&mut self) -> Result<(), Error> {
+        self.nesting += 1;
+        if self.nesting > MAX_NESTING {
+            return Err(Error::new(
+                self.line,
+                format!("the code is nested more than {MAX_NESTING} levels deep"),
+            ));
+        }
+        Ok(())
     }
 
     fn expression(&mut self) -> Result<Expr, Error> {
+        self.deeper()?;
+        let result = self.coalesce();
+        self.nesting -= 1;
+        result
+    }
+
+    fn coalesce(&mut self) -> Result<Expr, Error> {
         let mut left = self.or()?;
         while self.peek() == Some(&Token::QuestionQuestion) {
             self.pos += 1;

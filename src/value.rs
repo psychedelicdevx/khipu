@@ -295,8 +295,44 @@ impl Value {
     }
 }
 
+pub const MAX_DEPTH: usize = 32;
+
+thread_local! {
+    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TOO_DEEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub struct Nesting;
+
+impl Nesting {
+    pub fn enter() -> Option<Nesting> {
+        let depth = DEPTH.get();
+        if depth >= MAX_DEPTH {
+            TOO_DEEP.set(true);
+            return None;
+        }
+        DEPTH.set(depth + 1);
+        Some(Nesting)
+    }
+}
+
+impl Drop for Nesting {
+    fn drop(&mut self) {
+        DEPTH.set(DEPTH.get() - 1);
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let nested = matches!(
+            self,
+            Value::List(_) | Value::Record(_) | Value::Instance(_) | Value::Enum(_)
+        );
+        let _guard = match Nesting::enter() {
+            Some(guard) => guard,
+            None if nested => return write!(f, "..."),
+            None => Nesting,
+        };
         match self {
             Value::Number(n) => write_number(f, *n),
             Value::Bool(b) => write!(f, "{b}"),
@@ -381,6 +417,7 @@ pub fn write_number(out: &mut impl fmt::Write, n: f64) -> fmt::Result {
 }
 
 pub fn equal(a: &Value, b: &Value) -> Option<bool> {
+    let _guard = Nesting::enter()?;
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Some(x == y),
         (Value::Bool(x), Value::Bool(y)) => Some(x == y),
@@ -442,7 +479,14 @@ pub fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
     use Value::{Bool, Number, Str};
 
     if let Op::Equal | Op::NotEqual = op {
-        return match equal(&a, &b) {
+        TOO_DEEP.set(false);
+        let same = equal(&a, &b);
+        if TOO_DEEP.replace(false) {
+            return Err(format!(
+                "cannot compare values nested more than {MAX_DEPTH} levels deep, does one contain itself?"
+            ));
+        }
+        return match same {
             Some(same) => Ok(Bool(same == matches!(op, Op::Equal))),
             None => Err(mismatch(op, &a, &b)),
         };

@@ -261,7 +261,7 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `████░░░░░░` 7 / 18 |
+| 8. Performance and final audit | `██████░░░░` 10 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
 **Next up:** Beat Python on every sustained benchmark
@@ -371,3 +371,11 @@ git config core.hooksPath .githooks
 ```
 
 Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo clippy`, `cargo test`, `khipu fmt --check` on every `.kp` file and `khipu test`. If any of them fail, the commit is stopped.
+
+`cargo test` includes a short fuzz run: `tests/fuzz.rs` mutates the examples and benchmarks into thousands of broken programs and checks that lexing, parsing, formatting, checking and running them never crashes or hangs. For a longer run:
+
+```bash
+KHIPU_FUZZ=100000 cargo test --release --test fuzz -- --ignored
+```
+
+Every user-facing error message has a test that checks its wording and the line it points at. The codebase has no `unsafe` blocks; the only `unsafe` is the `#[unsafe(no_mangle)]` attribute on the six functions in `src/wasm.rs` that the browser calls by name, which the playground build exercises.

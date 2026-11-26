@@ -59,6 +59,12 @@ fn headers(value: &Value) -> Vec<(String, String)> {
 }
 
 fn to_json(value: &Value) -> Result<Json, String> {
+    let Some(_guard) = crate::value::Nesting::enter() else {
+        return Err(format!(
+            "cannot write values nested more than {} levels deep as JSON, does one contain itself?",
+            crate::value::MAX_DEPTH
+        ));
+    };
     Ok(match value {
         Value::None => Json::Null,
         Value::Bool(b) => Json::Bool(*b),

@@ -627,4 +627,110 @@ mod tests {
         assert!(locate(&app, "greet").unwrap_err().contains("not installed"));
         fs::remove_dir_all(&base).unwrap();
     }
+
+    #[test]
+    fn explains_every_package_mistake() {
+        let base =
+            std::env::temp_dir().join(format!("khipu-package-errors-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let app = base.join("app");
+        fs::create_dir_all(&app).unwrap();
+        let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let fails = |list: &[&str]| command(&words(list), &app).unwrap_err();
+
+        assert_eq!(
+            fails(&["install"]),
+            "no khipu.json here or in any parent folder; start one with: khipu init"
+        );
+        assert_eq!(
+            fails(&["frobnicate"]),
+            "usage: khipu init | khipu add <name> <git url[#tag] or path:folder> | khipu remove <name> | khipu install"
+        );
+        command(&words(&["init"]), &app).unwrap();
+        assert_eq!(fails(&["init"]), "khipu.json already exists here");
+        assert_eq!(
+            fails(&["add", "Bad", "x"]),
+            "'Bad' is not a valid package name (use lowercase letters, digits, - and _)"
+        );
+        assert_eq!(
+            fails(&["add", "evil", "--upload-pack=x"]),
+            "evil: '--upload-pack=x' is not a valid source"
+        );
+        assert_eq!(
+            fails(&["add", "lost", "path:nowhere"]),
+            "lost: cannot find the folder nowhere"
+        );
+        assert!(
+            fails(&["add", "web", "https://127.0.0.1:1/nothing.git"]).starts_with("git clone: ")
+        );
+        assert_eq!(fails(&["remove", "ghost"]), "'ghost' is not a dependency");
+        assert_eq!(
+            locate(&app, "../x").unwrap_err(),
+            "'../x' is not a package name; to import a file, give its path with .kp at the end"
+        );
+
+        let manifest = app.join("khipu.json");
+        let shown = app.canonicalize().unwrap().join("khipu.json");
+        fs::write(&manifest, "[1]").unwrap();
+        assert_eq!(
+            fails(&["install"]),
+            format!("{} should hold a JSON object", shown.display())
+        );
+        fs::write(&manifest, "{oops").unwrap();
+        assert!(
+            fails(&["install"]).starts_with(&format!("{} is not valid JSON: ", shown.display()))
+        );
+
+        fs::write(
+            &manifest,
+            "{ \"dependencies\": { \"Bad Name\": \"path:.\" } }",
+        )
+        .unwrap();
+        assert_eq!(
+            fails(&["install"]),
+            "'Bad Name' is not a valid package name (use lowercase letters, digits, - and _)"
+        );
+
+        let one = base.join("one");
+        let two = base.join("two");
+        fs::create_dir_all(&one).unwrap();
+        fs::create_dir_all(&two).unwrap();
+        fs::write(one.join("main.kp"), "let a = 1\n").unwrap();
+        fs::write(two.join("main.kp"), "let b = 1\n").unwrap();
+        fs::write(
+            one.join("khipu.json"),
+            "{ \"dependencies\": { \"shared\": \"https://example.invalid/b.git\" } }",
+        )
+        .unwrap();
+        fs::write(
+            &manifest,
+            "{ \"dependencies\": { \"one\": \"path:../one\", \"shared\": \"https://example.invalid/a.git\" } }",
+        )
+        .unwrap();
+        let conflict = fails(&["install"]);
+        assert!(
+            conflict
+                == "two packages need 'shared' from different places: https://example.invalid/a.git and https://example.invalid/b.git"
+                || conflict.starts_with("git clone: "),
+            "{conflict}"
+        );
+
+        fs::write(&manifest, "{ \"main\": \"../one/main.kp\" }").unwrap();
+        assert_eq!(
+            super::main_file(&app).unwrap_err(),
+            format!(
+                "{}: main file ../one/main.kp is outside the package",
+                app.canonicalize().unwrap().display()
+            )
+        );
+        fs::write(&manifest, "{ \"main\": \"missing.kp\" }").unwrap();
+        assert_eq!(
+            super::main_file(&app).unwrap_err(),
+            format!(
+                "{} has no missing.kp",
+                app.canonicalize().unwrap().display()
+            )
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
 }
