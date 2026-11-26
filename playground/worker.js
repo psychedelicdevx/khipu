@@ -1,4 +1,5 @@
-const ready = WebAssembly.instantiateStreaming(fetch("khipu.wasm"), {}).then(
+const env = { native_call: () => NaN, native_failed: () => 0 };
+const ready = WebAssembly.instantiateStreaming(fetch("khipu.wasm"), { env }).then(
   ({ instance }) => instance.exports
 );
 

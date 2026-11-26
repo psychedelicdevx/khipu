@@ -719,6 +719,7 @@ static POOL: Mutex<Pool> = Mutex::new(Pool {
 #[derive(Default)]
 struct Inbox {
     woken: Vec<u64>,
+    #[cfg(not(target_arch = "wasm32"))]
     poked: bool,
 }
 

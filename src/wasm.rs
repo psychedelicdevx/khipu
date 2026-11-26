@@ -74,6 +74,14 @@ pub extern "C" fn check(len: usize) -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel(len: usize, index: u32, arity: u32) {
+    let name = source(len);
+    crate::native::KERNELS.with(|kernels| {
+        kernels.borrow_mut().insert((name, arity as usize), index);
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn tidy(len: usize) -> usize {
     let source = source(len);
     finish(format(&source).unwrap_or(source))

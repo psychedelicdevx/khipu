@@ -409,3 +409,57 @@ pub fn group(root: &str, find: &dyn Fn(&str) -> Option<Rc<Source>>) -> Lowered<V
         order.push(source);
     }
 }
+
+pub fn group_all(roots: &[Rc<Source>]) -> Vec<Kernel> {
+    let mut candidates: Vec<Rc<Source>> = roots.to_vec();
+    loop {
+        let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
+        for (index, source) in candidates.iter().enumerate() {
+            if let Ok(signature) = assumed_signature(source) {
+                signatures.insert(source.name.clone(), (index as u32, signature));
+            }
+        }
+        let mut kernels = Vec::new();
+        let mut failed = Vec::new();
+        for source in &candidates {
+            let lowered = signatures.get(&source.name).and_then(|(_, signature)| {
+                lower(source, signature, &|callee| signatures.get(callee).cloned()).ok()
+            });
+            match lowered {
+                Some(kernel) => kernels.push(kernel),
+                None => failed.push(source.name.clone()),
+            }
+        }
+        if failed.is_empty() {
+            return kernels;
+        }
+        candidates.retain(|source| !failed.contains(&source.name));
+    }
+}
+
+pub fn top_level(program: &Block) -> Vec<Rc<Source>> {
+    program
+        .iter()
+        .filter_map(|(_, stmt)| match stmt {
+            AstStmt::Let(
+                name,
+                _,
+                crate::parser::Expr::Function {
+                    params,
+                    param_types,
+                    returns,
+                    body,
+                    ..
+                },
+            ) => Some(Rc::new(Source {
+                name: name.clone(),
+                params: params.clone(),
+                param_types: param_types.clone(),
+                returns: returns.clone(),
+                looping: has_loop(body),
+                body: Rc::clone(body),
+            })),
+            _ => None,
+        })
+        .collect()
+}
