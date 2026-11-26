@@ -2,11 +2,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use crate::value::{Closure, EnumValue, Fields, Globals, Instance, List, StructDef, Value};
+use crate::value::{Closure, EnumValue, Globals, Instance, List, Record, StructDef, Value};
 
 pub enum Tracked {
     List(Weak<RefCell<List>>),
-    Record(Weak<RefCell<Fields>>),
+    Record(Weak<RefCell<Record>>),
     Instance(Weak<Instance>),
     Closure(Weak<Closure>),
     Enum(Weak<EnumValue>),
@@ -17,7 +17,7 @@ pub enum Tracked {
 
 enum Live {
     List(Rc<RefCell<List>>),
-    Record(Rc<RefCell<Fields>>),
+    Record(Rc<RefCell<Record>>),
     Instance(Rc<Instance>),
     Closure(Rc<Closure>),
     Enum(Rc<EnumValue>),
@@ -112,9 +112,9 @@ impl Live {
                     list.visit(&mut |value| visit_value(value, visit));
                 }
             }
-            Live::Record(fields) => {
-                if let Ok(fields) = fields.try_borrow() {
-                    visit_values(fields.iter().map(|(_, value)| value), visit);
+            Live::Record(record) => {
+                if let Ok(record) = record.try_borrow() {
+                    visit_values(record.values.iter(), visit);
                 }
             }
             Live::Instance(instance) => {
@@ -151,9 +151,9 @@ impl Live {
                     *list = List::default();
                 }
             }
-            Live::Record(fields) => {
-                if let Ok(mut fields) = fields.try_borrow_mut() {
-                    fields.clear();
+            Live::Record(record) => {
+                if let Ok(mut record) = record.try_borrow_mut() {
+                    record.values.clear();
                 }
             }
             Live::Instance(instance) => {
@@ -322,7 +322,7 @@ mod tests {
         let Value::Record(fields) = &record else {
             unreachable!()
         };
-        fields.borrow_mut()[0].1 = record.clone();
+        fields.borrow_mut().values[0] = record.clone();
         let weak = Rc::downgrade(fields);
         drop(record);
         assert!(weak.upgrade().is_some(), "the cycle keeps it alive");

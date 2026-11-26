@@ -44,8 +44,8 @@ python3 scripts/bench.py
 
 | | |
 |---|---|
-| date | 2026-11-26T19:44:29 |
-| khipu | b2e8325 |
+| date | 2026-11-26T20:11:06 |
+| khipu | 0099263 (uncommitted changes) |
 | cpu | Apple M5 |
 | os | macOS-27.2-arm64-arm-64bit-Mach-O |
 | python | Python 3.15.2 |
@@ -55,7 +55,7 @@ python3 scripts/bench.py
 
 ### Start-up
 
-An empty program, median of 21 runs: Khipu 3.8 ms · Python 14 ms · Node 23 ms · C 2.4 ms · Rust 2.7 ms.
+An empty program, median of 21 runs: Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms.
 
 ### Sustained
 
@@ -63,23 +63,23 @@ Median of 5 runs, with the fastest and slowest run in brackets.
 
 | Benchmark | Khipu | Python | Node | C | Rust | vs Python | vs Node |
 |---|---|---|---|---|---|---|---|
-| fib | 21 ms (21–21) | 136 ms (134–147) | 33 ms (33–35) | 5.9 ms (6–6) | 6.2 ms (6–10) | **6.5× faster** | **1.6× faster** |
-| fib_iterative | 119 ms (116–137) | 421 ms (417–428) | 42 ms (42–43) | 9.5 ms (9–10) | 9.7 ms (9–10) | **3.6× faster** | 2.8× slower |
-| loop | 25 ms (25–38) | 2095 ms (2034–2335) | 149 ms (146–154) | 2.6 ms (2–5) | 2.9 ms (2–3) | **83.3× faster** | **5.9× faster** |
-| nested_loops | 9.4 ms (9–11) | 230 ms (221–238) | 26 ms (25–38) | 4.6 ms (4–5) | 4.3 ms (4–5) | **24.5× faster** | **2.8× faster** |
-| sieve | 161 ms (155–168) | 561 ms (526–587) | 53 ms (50–54) | 5.0 ms (5–5) | 5.5 ms (5–6) | **3.5× faster** | 3.0× slower |
-| matrix | 112 ms (106–130) | 272 ms (243–348) | 29 ms (27–33) | 3.5 ms (3–4) | 4.7 ms (4–6) | **2.4× faster** | 3.9× slower |
-| mandelbrot | 6.2 ms (6–10) | 214 ms (211–291) | 25 ms (23–33) | 3.9 ms (4–7) | 4.2 ms (4–18) | **34.7× faster** | **4.0× faster** |
-| lists | 76 ms (76–78) | 274 ms (264–300) | 72 ms (71–90) | 5.2 ms (5–5) | 6.1 ms (5–10) | **3.6× faster** | 1.1× slower |
-| records | 197 ms (191–223) | 320 ms (313–324) | 26 ms (25–27) | 2.2 ms (2–2) | 2.5 ms (2–5) | **1.6× faster** | 7.6× slower |
-| strings | 194 ms (188–196) | 282 ms (274–294) | 41 ms (40–44) | 83 ms (82–83) | 105 ms (104–108) | **1.5× faster** | 4.7× slower |
-| calls | 52 ms (50–139) | 195 ms (185–324) | 37 ms (34–71) | 2.5 ms (2–3) | 2.3 ms (2–3) | **3.7× faster** | 1.4× slower |
-| closures | 112 ms (106–141) | 262 ms (227–285) | 28 ms (25–37) | 5.0 ms (4–7) | 5.2 ms (4–7) | **2.3× faster** | 4.0× slower |
-| locals | 15 ms (13–27) | 484 ms (342–868) | 82 ms (77–112) | 3.6 ms (2–5) | 3.1 ms (3–5) | **32.8× faster** | **5.6× faster** |
-| globals | 149 ms (134–171) | 503 ms (479–544) | 37 ms (34–51) | 6.2 ms (6–8) | 16 ms (14–21) | **3.4× faster** | 4.1× slower |
-| record_access | 365 ms (325–769) | 1394 ms (1028–2041) | 35 ms (24–65) | 8.6 ms (4–14) | 9.3 ms (6–16) | **3.8× faster** | 10.4× slower |
-| struct_access | 290 ms (227–632) | 826 ms (781–1037) | 37 ms (29–55) | 6.4 ms (5–10) | 7.6 ms (7–9) | **2.8× faster** | 7.9× slower |
-| parallel | 209 ms (200–292) | 428 ms (418–490) | 70 ms (66–76) | 24 ms (21–26) | 22 ms (22–24) | **2.1× faster** | 3.0× slower |
+| fib | 21 ms (20–21) | 145 ms (133–150) | 34 ms (32–35) | 6.0 ms (6–6) | 6.2 ms (6–9) | **7.0× faster** | **1.6× faster** |
+| fib_iterative | 123 ms (120–147) | 425 ms (419–433) | 42 ms (41–45) | 9.7 ms (9–16) | 9.8 ms (10–10) | **3.5× faster** | 2.9× slower |
+| loop | 24 ms (23–42) | 2039 ms (1980–2223) | 147 ms (143–150) | 2.4 ms (2–6) | 2.6 ms (2–3) | **84.4× faster** | **6.1× faster** |
+| nested_loops | 9.5 ms (9–11) | 233 ms (226–243) | 26 ms (24–47) | 4.2 ms (4–5) | 4.5 ms (4–5) | **24.5× faster** | **2.8× faster** |
+| sieve | 164 ms (161–170) | 506 ms (498–538) | 50 ms (50–52) | 4.9 ms (5–6) | 4.9 ms (5–5) | **3.1× faster** | 3.2× slower |
+| matrix | 110 ms (108–136) | 248 ms (241–251) | 28 ms (26–28) | 3.0 ms (3–3) | 4.5 ms (4–5) | **2.3× faster** | 4.0× slower |
+| mandelbrot | 6.3 ms (6–12) | 223 ms (210–230) | 24 ms (23–36) | 3.7 ms (3–7) | 3.9 ms (3–6) | **35.5× faster** | **3.8× faster** |
+| lists | 88 ms (87–91) | 275 ms (262–293) | 80 ms (72–88) | 4.6 ms (4–5) | 6.3 ms (5–8) | **3.1× faster** | 1.1× slower |
+| records | 160 ms (158–182) | 319 ms (312–323) | 25 ms (25–27) | 2.3 ms (2–2) | 2.5 ms (2–8) | **2.0× faster** | 6.3× slower |
+| strings | 200 ms (194–202) | 270 ms (270–273) | 39 ms (39–46) | 82 ms (81–83) | 105 ms (104–106) | **1.4× faster** | 5.1× slower |
+| calls | 54 ms (52–79) | 187 ms (183–188) | 34 ms (33–35) | 2.3 ms (2–3) | 2.2 ms (2–3) | **3.5× faster** | 1.6× slower |
+| closures | 100 ms (99–103) | 224 ms (219–231) | 28 ms (25–50) | 4.7 ms (4–5) | 4.1 ms (4–5) | **2.2× faster** | 3.6× slower |
+| locals | 11 ms (10–11) | 262 ms (261–265) | 62 ms (62–85) | 2.4 ms (2–5) | 2.4 ms (2–3) | **24.7× faster** | **5.8× faster** |
+| globals | 94 ms (93–95) | 318 ms (311–341) | 26 ms (24–27) | 4.8 ms (4–5) | 11 ms (11–11) | **3.4× faster** | 3.5× slower |
+| record_access | 209 ms (207–238) | 801 ms (797–848) | 26 ms (24–30) | 4.9 ms (5–6) | 6.4 ms (6–7) | **3.8× faster** | 8.2× slower |
+| struct_access | 220 ms (208–269) | 746 ms (730–959) | 27 ms (25–34) | 4.9 ms (5–9) | 6.3 ms (6–7) | **3.4× faster** | 8.2× slower |
+| parallel | 219 ms (219–284) | 398 ms (385–434) | 69 ms (67–72) | 21 ms (20–28) | 22 ms (21–25) | **1.8× faster** | 3.2× slower |
 
 ### Cold start
 
@@ -87,23 +87,23 @@ Small inputs where start-up time matters. Median of 21 runs.
 
 | Benchmark | Khipu | Python | Node | C | Rust | vs Python | vs Node |
 |---|---|---|---|---|---|---|---|
-| fib | 5.4 ms (5–7) | 25 ms (24–57) | 24 ms (23–46) | 2.9 ms (2–4) | 3.0 ms (3–4) | **4.7× faster** | **4.5× faster** |
-| fib_iterative | 15 ms (15–18) | 55 ms (54–59) | 25 ms (24–36) | 3.1 ms (3–4) | 3.4 ms (3–6) | **3.6× faster** | **1.6× faster** |
-| loop | 6.1 ms (5–8) | 227 ms (214–264) | 34 ms (32–41) | 2.3 ms (2–3) | 2.6 ms (2–3) | **37.3× faster** | **5.6× faster** |
-| nested_loops | 4.2 ms (3–9) | 19 ms (18–23) | 23 ms (22–35) | 2.4 ms (2–3) | 2.9 ms (2–5) | **4.4× faster** | **5.6× faster** |
-| sieve | 9.0 ms (8–10) | 27 ms (25–40) | 25 ms (24–45) | 2.4 ms (2–4) | 2.7 ms (2–3) | **3.0× faster** | **2.8× faster** |
-| matrix | 6.0 ms (6–7) | 18 ms (18–27) | 23 ms (22–30) | 2.3 ms (2–3) | 2.5 ms (2–3) | **3.1× faster** | **3.8× faster** |
-| mandelbrot | 3.9 ms (3–5) | 26 ms (24–31) | 23 ms (21–37) | 2.4 ms (2–5) | 2.5 ms (2–4) | **6.7× faster** | **5.8× faster** |
-| lists | 11 ms (10–12) | 39 ms (38–59) | 27 ms (26–36) | 2.9 ms (2–6) | 3.1 ms (3–4) | **3.5× faster** | **2.4× faster** |
-| records | 23 ms (22–39) | 44 ms (42–53) | 24 ms (23–25) | 2.3 ms (2–3) | 2.6 ms (2–3) | **1.9× faster** | **1.1× faster** |
-| strings | 23 ms (22–33) | 41 ms (39–48) | 27 ms (23–46) | 11 ms (10–12) | 11 ms (10–18) | **1.8× faster** | **1.2× faster** |
-| calls | 8.8 ms (8–32) | 33 ms (30–262) | 26 ms (22–264) | 2.4 ms (2–11) | 2.9 ms (2–124) | **3.7× faster** | **2.9× faster** |
-| closures | 13 ms (12–15) | 33 ms (32–44) | 21 ms (19–29) | 2.1 ms (2–5) | 2.2 ms (2–4) | **2.6× faster** | **1.7× faster** |
-| locals | 4.9 ms (4–7) | 45 ms (41–58) | 29 ms (26–36) | 2.4 ms (2–4) | 2.5 ms (2–3) | **9.2× faster** | **6.0× faster** |
-| globals | 31 ms (25–43) | 117 ms (96–148) | 32 ms (27–46) | 3.6 ms (3–5) | 5.9 ms (5–8) | **3.8× faster** | **1.0× faster** |
-| record_access | 26 ms (25–31) | 90 ms (87–192) | 21 ms (20–69) | 2.4 ms (2–4) | 2.6 ms (2–4) | **3.5× faster** | 1.3× slower |
-| struct_access | 33 ms (25–49) | 95 ms (82–134) | 26 ms (20–51) | 2.7 ms (2–3) | 3.1 ms (2–6) | **2.9× faster** | 1.3× slower |
-| parallel | 11 ms (8–18) | 193 ms (146–2484) | 50 ms (40–93) | 3.0 ms (2–8) | 3.3 ms (3–12) | **18.0× faster** | **4.7× faster** |
+| fib | 5.2 ms (5–6) | 24 ms (23–42) | 23 ms (22–47) | 2.6 ms (2–3) | 2.8 ms (2–5) | **4.6× faster** | **4.4× faster** |
+| fib_iterative | 16 ms (14–20) | 56 ms (53–65) | 25 ms (23–42) | 3.3 ms (3–5) | 3.3 ms (3–7) | **3.5× faster** | **1.6× faster** |
+| loop | 5.8 ms (5–6) | 221 ms (208–265) | 34 ms (32–55) | 2.3 ms (2–4) | 2.5 ms (2–3) | **37.9× faster** | **5.7× faster** |
+| nested_loops | 4.0 ms (3–10) | 18 ms (17–22) | 22 ms (21–38) | 2.2 ms (2–3) | 2.5 ms (2–5) | **4.4× faster** | **5.5× faster** |
+| sieve | 8.9 ms (8–10) | 26 ms (25–32) | 24 ms (23–44) | 2.3 ms (2–4) | 2.5 ms (2–3) | **3.0× faster** | **2.7× faster** |
+| matrix | 5.9 ms (5–7) | 18 ms (17–34) | 23 ms (21–49) | 2.2 ms (2–6) | 2.5 ms (2–8) | **3.1× faster** | **3.9× faster** |
+| mandelbrot | 4.0 ms (4–5) | 26 ms (24–32) | 23 ms (21–39) | 2.4 ms (2–6) | 2.7 ms (2–4) | **6.5× faster** | **5.7× faster** |
+| lists | 13 ms (12–21) | 41 ms (40–67) | 29 ms (27–103) | 2.7 ms (2–6) | 3.3 ms (3–19) | **3.3× faster** | **2.2× faster** |
+| records | 20 ms (18–36) | 44 ms (43–53) | 24 ms (22–27) | 2.3 ms (2–3) | 2.5 ms (2–3) | **2.2× faster** | **1.2× faster** |
+| strings | 23 ms (22–24) | 39 ms (38–41) | 24 ms (23–30) | 10 ms (10–11) | 10 ms (10–15) | **1.7× faster** | **1.1× faster** |
+| calls | 8.6 ms (8–18) | 31 ms (30–44) | 23 ms (22–27) | 2.2 ms (2–3) | 2.5 ms (2–4) | **3.6× faster** | **2.7× faster** |
+| closures | 13 ms (13–17) | 34 ms (34–37) | 23 ms (21–38) | 2.5 ms (2–6) | 2.6 ms (2–3) | **2.6× faster** | **1.7× faster** |
+| locals | 4.2 ms (4–5) | 38 ms (37–62) | 25 ms (24–29) | 2.3 ms (2–3) | 2.2 ms (2–3) | **9.1× faster** | **6.1× faster** |
+| globals | 22 ms (21–40) | 74 ms (72–88) | 23 ms (22–29) | 2.6 ms (2–3) | 4.1 ms (4–4) | **3.4× faster** | **1.1× faster** |
+| record_access | 24 ms (23–75) | 94 ms (90–120) | 23 ms (21–26) | 2.7 ms (2–4) | 2.8 ms (2–4) | **3.9× faster** | 1.1× slower |
+| struct_access | 25 ms (23–29) | 85 ms (80–91) | 22 ms (21–44) | 2.5 ms (2–3) | 2.9 ms (2–4) | **3.4× faster** | 1.1× slower |
+| parallel | 9.6 ms (9–10) | 159 ms (151–213) | 44 ms (42–66) | 2.8 ms (2–6) | 3.3 ms (3–4) | **16.6× faster** | **4.5× faster** |
 
 ### Peak memory
 
@@ -111,23 +111,23 @@ Highest resident memory of any sustained run (cold run for start-up).
 
 | Benchmark | Khipu | Python | Node | C | Rust |
 |---|---|---|---|---|---|
-| fib | 5.8 MiB | 12.8 MiB | 52.0 MiB | 1.6 MiB | 1.8 MiB |
-| fib_iterative | 5.7 MiB | 12.9 MiB | 53.1 MiB | 1.6 MiB | 1.8 MiB |
-| loop | 5.7 MiB | 12.8 MiB | 54.1 MiB | 1.6 MiB | 1.8 MiB |
-| nested_loops | 5.9 MiB | 12.9 MiB | 52.4 MiB | 1.6 MiB | 1.8 MiB |
+| fib | 5.8 MiB | 12.8 MiB | 52.1 MiB | 1.6 MiB | 1.8 MiB |
+| fib_iterative | 5.8 MiB | 12.9 MiB | 53.3 MiB | 1.6 MiB | 1.8 MiB |
+| loop | 5.8 MiB | 12.8 MiB | 54.4 MiB | 1.6 MiB | 1.8 MiB |
+| nested_loops | 6.0 MiB | 12.8 MiB | 52.3 MiB | 1.6 MiB | 1.8 MiB |
 | sieve | 9.0 MiB | 35.8 MiB | 80.0 MiB | 4.5 MiB | 4.7 MiB |
-| matrix | 7.0 MiB | 13.4 MiB | 55.2 MiB | 2.0 MiB | 2.2 MiB |
-| mandelbrot | 6.1 MiB | 12.9 MiB | 54.0 MiB | 1.6 MiB | 1.8 MiB |
-| lists | 29.0 MiB | 129.8 MiB | 226.4 MiB | 26.6 MiB | 26.8 MiB |
-| records | 6.4 MiB | 12.8 MiB | 55.0 MiB | 1.6 MiB | 1.8 MiB |
+| matrix | 7.1 MiB | 13.4 MiB | 55.2 MiB | 2.0 MiB | 2.2 MiB |
+| mandelbrot | 6.2 MiB | 12.9 MiB | 54.1 MiB | 1.6 MiB | 1.8 MiB |
+| lists | 29.1 MiB | 129.8 MiB | 226.4 MiB | 26.6 MiB | 26.8 MiB |
+| records | 7.2 MiB | 12.8 MiB | 55.0 MiB | 1.6 MiB | 1.8 MiB |
 | strings | 4.3 MiB | 12.8 MiB | 60.5 MiB | 1.6 MiB | 1.9 MiB |
-| calls | 4.3 MiB | 12.8 MiB | 54.2 MiB | 1.6 MiB | 1.8 MiB |
+| calls | 4.3 MiB | 12.8 MiB | 54.1 MiB | 1.6 MiB | 1.8 MiB |
 | closures | 4.3 MiB | 12.9 MiB | 52.5 MiB | 1.6 MiB | 1.8 MiB |
-| locals | 5.7 MiB | 12.9 MiB | 54.0 MiB | 1.6 MiB | 1.8 MiB |
-| globals | 4.2 MiB | 12.9 MiB | 52.5 MiB | 1.6 MiB | 1.8 MiB |
-| record_access | 4.2 MiB | 12.8 MiB | 52.4 MiB | 1.6 MiB | 1.8 MiB |
-| struct_access | 4.3 MiB | 12.8 MiB | 52.6 MiB | 1.6 MiB | 1.8 MiB |
-| parallel | 13.1 MiB | 25.3 MiB | 130.2 MiB | 1.8 MiB | 1.9 MiB |
-| empty | 4.2 MiB | 12.8 MiB | 48.4 MiB | 1.6 MiB | 1.8 MiB |
+| locals | 5.8 MiB | 12.8 MiB | 54.3 MiB | 1.6 MiB | 1.8 MiB |
+| globals | 4.3 MiB | 12.9 MiB | 52.5 MiB | 1.6 MiB | 1.8 MiB |
+| record_access | 4.3 MiB | 12.8 MiB | 52.5 MiB | 1.6 MiB | 1.8 MiB |
+| struct_access | 4.3 MiB | 12.9 MiB | 52.5 MiB | 1.6 MiB | 1.8 MiB |
+| parallel | 13.6 MiB | 25.4 MiB | 129.4 MiB | 1.8 MiB | 1.9 MiB |
+| empty | 4.3 MiB | 12.7 MiB | 48.3 MiB | 1.6 MiB | 1.8 MiB |
 
 Raw samples for every run are in [`benchmarks/results/latest.json`](benchmarks/results/latest.json).

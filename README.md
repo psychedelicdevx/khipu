@@ -275,7 +275,7 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.5× on 2 more, 4–10× slower on records, structs, strings and closures; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -285,25 +285,25 @@ Sustained runs use inputs large enough that start-up is a small share of the tim
 
 | Benchmark | Khipu | Python | Node | C | Rust | vs Python | vs Node |
 |---|---|---|---|---|---|---|---|
-| fib | 21 ms | 136 ms | 33 ms | 5.9 ms | 6.2 ms | **6.5× faster** | **1.6× faster** |
-| fib_iterative | 119 ms | 421 ms | 42 ms | 9.5 ms | 9.7 ms | **3.6× faster** | 2.8× slower |
-| loop | 25 ms | 2095 ms | 149 ms | 2.6 ms | 2.9 ms | **83.3× faster** | **5.9× faster** |
-| nested_loops | 9.4 ms | 230 ms | 26 ms | 4.6 ms | 4.3 ms | **24.5× faster** | **2.8× faster** |
-| sieve | 161 ms | 561 ms | 53 ms | 5.0 ms | 5.5 ms | **3.5× faster** | 3.0× slower |
-| matrix | 112 ms | 272 ms | 29 ms | 3.5 ms | 4.7 ms | **2.4× faster** | 3.9× slower |
-| mandelbrot | 6.2 ms | 214 ms | 25 ms | 3.9 ms | 4.2 ms | **34.7× faster** | **4.0× faster** |
-| lists | 76 ms | 274 ms | 72 ms | 5.2 ms | 6.1 ms | **3.6× faster** | 1.1× slower |
-| records | 197 ms | 320 ms | 26 ms | 2.2 ms | 2.5 ms | **1.6× faster** | 7.6× slower |
-| strings | 194 ms | 282 ms | 41 ms | 83 ms | 105 ms | **1.5× faster** | 4.7× slower |
-| calls | 52 ms | 195 ms | 37 ms | 2.5 ms | 2.3 ms | **3.7× faster** | 1.4× slower |
-| closures | 112 ms | 262 ms | 28 ms | 5.0 ms | 5.2 ms | **2.3× faster** | 4.0× slower |
-| locals | 15 ms | 484 ms | 82 ms | 3.6 ms | 3.1 ms | **32.8× faster** | **5.6× faster** |
-| globals | 149 ms | 503 ms | 37 ms | 6.2 ms | 16 ms | **3.4× faster** | 4.1× slower |
-| record_access | 365 ms | 1394 ms | 35 ms | 8.6 ms | 9.3 ms | **3.8× faster** | 10.4× slower |
-| struct_access | 290 ms | 826 ms | 37 ms | 6.4 ms | 7.6 ms | **2.8× faster** | 7.9× slower |
-| parallel | 209 ms | 428 ms | 70 ms | 24 ms | 22 ms | **2.1× faster** | 3.0× slower |
+| fib | 21 ms | 145 ms | 34 ms | 6.0 ms | 6.2 ms | **7.0× faster** | **1.6× faster** |
+| fib_iterative | 123 ms | 425 ms | 42 ms | 9.7 ms | 9.8 ms | **3.5× faster** | 2.9× slower |
+| loop | 24 ms | 2039 ms | 147 ms | 2.4 ms | 2.6 ms | **84.4× faster** | **6.1× faster** |
+| nested_loops | 9.5 ms | 233 ms | 26 ms | 4.2 ms | 4.5 ms | **24.5× faster** | **2.8× faster** |
+| sieve | 164 ms | 506 ms | 50 ms | 4.9 ms | 4.9 ms | **3.1× faster** | 3.2× slower |
+| matrix | 110 ms | 248 ms | 28 ms | 3.0 ms | 4.5 ms | **2.3× faster** | 4.0× slower |
+| mandelbrot | 6.3 ms | 223 ms | 24 ms | 3.7 ms | 3.9 ms | **35.5× faster** | **3.8× faster** |
+| lists | 88 ms | 275 ms | 80 ms | 4.6 ms | 6.3 ms | **3.1× faster** | 1.1× slower |
+| records | 160 ms | 319 ms | 25 ms | 2.3 ms | 2.5 ms | **2.0× faster** | 6.3× slower |
+| strings | 200 ms | 270 ms | 39 ms | 82 ms | 105 ms | **1.4× faster** | 5.1× slower |
+| calls | 54 ms | 187 ms | 34 ms | 2.3 ms | 2.2 ms | **3.5× faster** | 1.6× slower |
+| closures | 100 ms | 224 ms | 28 ms | 4.7 ms | 4.1 ms | **2.2× faster** | 3.6× slower |
+| locals | 11 ms | 262 ms | 62 ms | 2.4 ms | 2.4 ms | **24.7× faster** | **5.8× faster** |
+| globals | 94 ms | 318 ms | 26 ms | 4.8 ms | 11 ms | **3.4× faster** | 3.5× slower |
+| record_access | 209 ms | 801 ms | 26 ms | 4.9 ms | 6.4 ms | **3.8× faster** | 8.2× slower |
+| struct_access | 220 ms | 746 ms | 27 ms | 4.9 ms | 6.3 ms | **3.4× faster** | 8.2× slower |
+| parallel | 219 ms | 398 ms | 69 ms | 21 ms | 22 ms | **1.8× faster** | 3.2× slower |
 
-Start-up, an empty program (median of 21 runs): Khipu 3.8 ms · Python 14 ms · Node 23 ms · C 2.4 ms · Rust 2.7 ms.
+Start-up, an empty program (median of 21 runs): Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms.
 
 On sustained runs Khipu beats Python on 17 of 17 benchmarks and Node on 5 of 17. Cold-start results, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -367,7 +367,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/kernel.rs` | Finds functions that work only with numbers and bools, and lowers them to a small typed IR |
 | `src/jit.rs`, `src/native.rs` | Compiles that IR to machine code with Cranelift, and switches hot functions over to it |
 | `src/wasmgen.rs` | Compiles the same IR to WebAssembly instructions for `khipu web` pages |
-| `src/value.rs` | Runtime values, operators and built-in functions |
+| `src/value.rs` | Runtime values, operators and built-in functions; records are a shape plus values, and field reads cache the shape they saw last |
 | `src/gc.rs` | The cycle collector: reference counting frees most values, this frees the cycles |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
 | `src/lib.rs` | The library the `khipu` command and the playground share |

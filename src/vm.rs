@@ -12,14 +12,14 @@ use crate::lexer::lex;
 use crate::parser::{Op, Parser};
 use crate::task;
 use crate::value::{
-    Closure, EnumValue, Fields, GlobalStore, Globals, Instance, StructDef, Value, binary, equal,
-    write_number,
+    Closure, EnumValue, FieldCache, Fields, GlobalStore, Globals, Instance, Record, StructDef,
+    Value, binary, equal, write_number,
 };
 
 const MAX_FRAMES: usize = 10_000;
 const SLICE: u32 = 10_000;
 
-pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Fields>>>>>;
+pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Record>>>>>;
 pub type Loading = Rc<RefCell<Vec<PathBuf>>>;
 pub type Methods = Rc<[HashMap<String, Value>; 4]>;
 
@@ -724,11 +724,8 @@ impl Vm {
                                     }
                                     enter!(function, argc + 1, target_at, target_at)
                                 }
-                                let field = instance
-                                    .def
-                                    .fields
-                                    .iter()
-                                    .position(|field| **field == ***name)
+                                let field = proto.caches[ip - 1]
+                                    .position(&instance.def.fields, name)
                                     .map(|at| instance.fields.borrow()[at].clone());
                                 match field {
                                     Some(value) => {
@@ -771,13 +768,15 @@ impl Vm {
                                     values,
                                 });
                             }
-                            Value::Record(fields) => match get_field(fields, name) {
-                                Ok(value) => {
-                                    self.stack[target_at] = value;
-                                    call_at!(target_at, argc)
+                            Value::Record(record) => {
+                                match get_field(record, name, &proto.caches[ip - 1]) {
+                                    Ok(value) => {
+                                        self.stack[target_at] = value;
+                                        call_at!(target_at, argc)
+                                    }
+                                    Err(message) => fail!(message),
                                 }
-                                Err(message) => fail!(message),
-                            },
+                            }
                             Value::List(_) | Value::Str(_) | Value::Number(_) | Value::Bool(_) => {
                                 let kind = match &target {
                                     Value::List(_) => 0,
@@ -852,13 +851,15 @@ impl Vm {
                     Code::Record(shape) => {
                         let shape = &proto.shapes[shape as usize];
                         let values = self.stack.split_off(self.stack.len() - shape.len());
-                        let fields: Fields = shape.iter().cloned().zip(values).collect();
-                        self.stack.push(Value::record(fields));
+                        self.stack.push(Value::shaped(Record {
+                            shape: Rc::clone(shape),
+                            values,
+                        }));
                     }
                     Code::Index => {
                         let index = self.stack.pop().expect("index");
                         let target = self.stack.pop().expect("target");
-                        match index_into(&target, &index) {
+                        match index_into(&target, &index, &proto.caches[ip - 1]) {
                             Ok(value) => self.stack.push(value),
                             Err(message) => fail!(message),
                         }
@@ -875,9 +876,11 @@ impl Vm {
                                     Err(message) => fail!(message),
                                 }
                             }
-                            Value::Record(fields) => match &index {
+                            Value::Record(record) => match &index {
                                 Value::Str(name) => {
-                                    if let Err(message) = set_field(fields, name, value) {
+                                    if let Err(message) =
+                                        set_field(record, name, value, &proto.caches[ip - 1])
+                                    {
                                         fail!(message);
                                     }
                                 }
@@ -895,7 +898,7 @@ impl Vm {
                             fail!("internal error: field name is not a string");
                         };
                         let target = self.stack.pop().expect("target");
-                        match field_of(&target, name) {
+                        match field_of(&target, name, &proto.caches[ip - 1]) {
                             Ok(value) => self.stack.push(value),
                             Err(message) => fail!(message),
                         }
@@ -907,18 +910,15 @@ impl Vm {
                         let value = self.stack.pop().expect("value");
                         let target = self.stack.pop().expect("target");
                         match &target {
-                            Value::Record(fields) => {
-                                if let Err(message) = set_field(fields, name, value) {
+                            Value::Record(record) => {
+                                if let Err(message) =
+                                    set_field(record, name, value, &proto.caches[ip - 1])
+                                {
                                     fail!(message);
                                 }
                             }
                             Value::Instance(instance) => {
-                                match instance
-                                    .def
-                                    .fields
-                                    .iter()
-                                    .position(|field| **field == ***name)
-                                {
+                                match proto.caches[ip - 1].position(&instance.def.fields, name) {
                                     Some(at) => instance.fields.borrow_mut()[at] = value,
                                     None => fail!(format!(
                                         "{} has no field '{name}'",
@@ -1204,7 +1204,7 @@ impl Vm {
                                 )),
                             },
                         };
-                        match field_of(&target, name) {
+                        match field_of(&target, name, &proto.caches[ip - 1]) {
                             Ok(value) => self.stack.push(value),
                             Err(message) => fail!(message),
                         }
@@ -1305,10 +1305,12 @@ impl Vm {
                                     Err(message) => fail!(message),
                                 }
                             }
-                            (target, index) => match index_into(target, index) {
-                                Ok(value) => value,
-                                Err(message) => fail!(message),
-                            },
+                            (target, index) => {
+                                match index_into(target, index, &proto.caches[ip - 1]) {
+                                    Ok(value) => value,
+                                    Err(message) => fail!(message),
+                                }
+                            }
                         };
                         self.stack.push(value);
                     }
@@ -1332,11 +1334,7 @@ impl Vm {
                         let Value::Record(module) = self.stack.pop().expect("module") else {
                             fail!("internal error: module is not a record");
                         };
-                        let found = module
-                            .borrow()
-                            .iter()
-                            .find(|(field, _)| **field == ***name)
-                            .map(|(_, value)| value.clone());
+                        let found = module.borrow().get(name);
                         match found {
                             Some(value) => self.stack.push(value),
                             None => fail!(format!("{path} has no '{name}'")),
@@ -1347,7 +1345,7 @@ impl Vm {
         }
     }
 
-    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, Error> {
+    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Record>>, Error> {
         let file = if path.ends_with(".kp") {
             self.dir
                 .join(path)
@@ -1413,7 +1411,7 @@ fn compare(op: Op, x: f64, y: f64) -> bool {
     }
 }
 
-fn index_into(target: &Value, index: &Value) -> Result<Value, String> {
+fn index_into(target: &Value, index: &Value, cache: &FieldCache) -> Result<Value, String> {
     match target {
         Value::List(items) => {
             let items = items.borrow();
@@ -1425,8 +1423,8 @@ fn index_into(target: &Value, index: &Value) -> Result<Value, String> {
             let at = position(index, chars.len())?;
             Ok(Value::str(&chars[at].to_string()))
         }
-        Value::Record(fields) => match index {
-            Value::Str(name) => get_field(fields, name),
+        Value::Record(record) => match index {
+            Value::Str(name) => get_field(record, name, cache),
             other => Err(format!(
                 "record fields are named with strings, got {}",
                 other.type_name()
@@ -1436,24 +1434,17 @@ fn index_into(target: &Value, index: &Value) -> Result<Value, String> {
     }
 }
 
-fn field_of(target: &Value, name: &str) -> Result<Value, String> {
+fn field_of(target: &Value, name: &str, cache: &FieldCache) -> Result<Value, String> {
     match target {
-        Value::Record(fields) => get_field(fields, name),
-        Value::Instance(instance) => {
-            match instance
-                .def
-                .fields
-                .iter()
-                .position(|field| &**field == name)
-            {
-                Some(at) => Ok(instance.fields.borrow()[at].clone()),
-                None if instance.def.methods.iter().any(|(m, _)| &**m == name) => Err(format!(
-                    "'{name}' is a method of {}, call it like value.{name}(...)",
-                    instance.def.name
-                )),
-                None => Err(format!("{} has no field '{name}'", instance.def.name)),
-            }
-        }
+        Value::Record(record) => get_field(record, name, cache),
+        Value::Instance(instance) => match cache.position(&instance.def.fields, name) {
+            Some(at) => Ok(instance.fields.borrow()[at].clone()),
+            None if instance.def.methods.iter().any(|(m, _)| &**m == name) => Err(format!(
+                "'{name}' is a method of {}, call it like value.{name}(...)",
+                instance.def.name
+            )),
+            None => Err(format!("{} has no field '{name}'", instance.def.name)),
+        },
         Value::StructDef(def) => match def.methods.iter().find(|(m, _)| &**m == name) {
             Some((_, method)) => Ok(method.clone()),
             None => Err(format!("{} has no method '{name}'", def.name)),
@@ -1496,26 +1487,27 @@ fn position(index: &Value, len: usize) -> Result<usize, String> {
     }
 }
 
-fn get_field(fields: &RefCell<Fields>, name: &str) -> Result<Value, String> {
-    fields
-        .borrow()
-        .iter()
-        .find(|(field, _)| &**field == name)
-        .map(|(_, value)| value.clone())
+fn get_field(record: &RefCell<Record>, name: &str, cache: &FieldCache) -> Result<Value, String> {
+    let record = record.borrow();
+    cache
+        .position(&record.shape, name)
+        .and_then(|at| record.values.get(at).cloned())
         .ok_or_else(|| format!("record has no field '{name}'"))
 }
 
-fn set_field(fields: &RefCell<Fields>, name: &str, value: Value) -> Result<(), String> {
-    match fields
-        .borrow_mut()
-        .iter_mut()
-        .find(|(field, _)| &**field == name)
-    {
-        Some((_, slot)) => {
-            *slot = value;
+fn set_field(
+    record: &RefCell<Record>,
+    name: &str,
+    value: Value,
+    cache: &FieldCache,
+) -> Result<(), String> {
+    let mut record = record.borrow_mut();
+    match cache.position(&record.shape, name) {
+        Some(at) if at < record.values.len() => {
+            record.values[at] = value;
             Ok(())
         }
-        None => Err(format!(
+        _ => Err(format!(
             "record has no field '{name}', fields can only be added when the record is created"
         )),
     }

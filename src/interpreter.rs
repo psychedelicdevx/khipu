@@ -1043,6 +1043,17 @@ mod tests {
     }
 
     #[test]
+    fn one_field_access_serves_records_of_every_shape() {
+        let program = "struct P {\n    y: number,\n    x: number,\n}\nfn read(v) {\n    return v.x\n}\nlet shapes: list = [{ x: 1, y: 2 }, { y: 3, x: 4 }, P { y: 5, x: 6 }, { z: 0, x: 7 }]\nlet total = 0\nfor round in range(50) {\n    for v in shapes {\n        total = total + read(v)\n    }\n}\nfn write(v, n: number) {\n    v.x = n\n}\nwrite(shapes[0], 100)\nwrite(shapes[2], 200)\nwrite(shapes[3], 300)\n\"${total} ${read(shapes[0])} ${read(shapes[2])} ${read(shapes[3])} ${shapes[1]}\"";
+        assert_eq!(string(program), "900 100 200 300 {y: 3, x: 4}");
+        assert_eq!(
+            error("fn read(v) {\n    return v.x\n}\nlet a = read({ x: 1 })\nread({ y: 1 })")
+                .message,
+            "record has no field 'x'"
+        );
+    }
+
+    #[test]
     fn changes_existing_fields() {
         assert_eq!(
             number("let p = { age: 36 }\np.age = p.age + 1\np.age"),

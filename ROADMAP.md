@@ -15,7 +15,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.5× on 2 more, 4–10× slower on records, structs, strings and closures; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
 
 ---
 
@@ -120,7 +120,7 @@ Speed
 - [x] Beat Python on every sustained benchmark
 - [x] Native compilation (Cranelift)
 - [x] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
-- [ ] Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.5× on 2 more, 4–10× slower on records, structs, strings and closures; see AUDIT.md)
+- [ ] Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
 - [x] Start-up stays under 5 ms
 - [x] Work stealing, so a busy core hands tasks to idle ones
 - [x] Tasks also take turns inside deep recursion, not only in loops

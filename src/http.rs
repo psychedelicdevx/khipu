@@ -49,7 +49,7 @@ fn record(pairs: Vec<(String, Value)>) -> Value {
 #[cfg(not(target_arch = "wasm32"))]
 fn headers(value: &Value) -> Vec<(String, String)> {
     match value {
-        Value::Record(fields) => fields
+        Value::Record(record) => record
             .borrow()
             .iter()
             .map(|(name, value)| (name.to_string(), value.to_string()))

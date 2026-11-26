@@ -6,7 +6,7 @@ use crate::error::Error;
 use crate::kernel::{LoopSource, Place, Source};
 use crate::native::Tier;
 use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt, Type};
-use crate::value::{EnumDef, Value};
+use crate::value::{EnumDef, FieldCache, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Check {
@@ -227,6 +227,7 @@ pub struct Proto {
     pub top_level: bool,
     pub tier: Cell<Tier>,
     pub loops: Vec<Rc<LoopSource>>,
+    pub caches: Vec<FieldCache>,
 }
 
 impl Proto {
@@ -248,7 +249,14 @@ impl Proto {
             top_level: false,
             tier: Cell::new(Tier::default()),
             loops: Vec::new(),
+            caches: Vec::new(),
         }
+    }
+
+    pub fn finish(&mut self) {
+        self.caches = (0..self.code.len())
+            .map(|_| FieldCache::default())
+            .collect();
     }
 
     pub fn label(&self) -> &str {
@@ -378,7 +386,9 @@ pub fn compile_script(
         .fns
         .pop()
         .expect("the script function always exists");
-    Ok((state.proto, ends_with_value))
+    let mut proto = state.proto;
+    proto.finish();
+    Ok((proto, ends_with_value))
 }
 
 impl Compiler<'_> {
@@ -1315,6 +1325,7 @@ impl Compiler<'_> {
         }));
         self.line = line;
         let protos = &mut self.current().proto.protos;
+        finished.proto.finish();
         protos.push(Rc::new(finished.proto));
         let index = (protos.len() - 1) as u32;
         self.emit(Code::Closure(index));

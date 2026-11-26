@@ -10,8 +10,8 @@ use crate::compiler::{Capture, Code, PatternTest, Proto, StructInfo};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::Error;
 use crate::value::{
-    Cell, Closure, EnumDef, EnumValue, GlobalStore, Globals, Instance, List, Native, StructDef,
-    Value,
+    Cell, Closure, EnumDef, EnumValue, GlobalStore, Globals, Instance, List, Native, Record,
+    StructDef, Value,
 };
 
 pub struct Channel {
@@ -205,7 +205,7 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
             _ => Value::None,
         })
         .collect();
-    let proto = Rc::new(Proto {
+    let mut proto = Proto {
         name: Rc::from(packed.name.as_str()),
         arity: packed.arity,
         code: packed.code.clone(),
@@ -219,6 +219,7 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         top_level: false,
         tier: Default::default(),
         loops: Vec::new(),
+        caches: Vec::new(),
         structs: packed
             .structs
             .iter()
@@ -249,7 +250,9 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
                 },
             })
             .collect(),
-    });
+    };
+    proto.finish();
+    let proto = Rc::new(proto);
     UNPACKED.with(|cache| {
         cache
             .borrow_mut()
@@ -497,7 +500,7 @@ impl Unpacker {
                     .iter()
                     .map(|(name, v)| (Rc::from(name.as_str()), self.value(v)))
                     .collect();
-                *record.borrow_mut() = fields;
+                *record.borrow_mut() = Record::from_fields(fields);
             }
             (Node::Cell(slot), Some(Made::Value(Value::Cell(cell)))) => {
                 let value = self.value(slot);

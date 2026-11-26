@@ -11,6 +11,58 @@ use crate::task::{self, Channel};
 pub type NativeFn = fn(&[Value]) -> Result<Value, String>;
 pub type Fields = Vec<(Rc<str>, Value)>;
 pub type Cell = Rc<RefCell<Value>>;
+pub type Shape = Rc<[Rc<str>]>;
+
+pub struct Record {
+    pub shape: Shape,
+    pub values: Vec<Value>,
+}
+
+impl Record {
+    pub fn from_fields(fields: Fields) -> Record {
+        let (names, values): (Vec<Rc<str>>, Vec<Value>) = fields.into_iter().unzip();
+        Record {
+            shape: names.into(),
+            values,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn position(&self, name: &str) -> Option<usize> {
+        self.shape.iter().position(|field| &**field == name)
+    }
+
+    pub fn get(&self, name: &str) -> Option<Value> {
+        self.values.get(self.position(name)?).cloned()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Rc<str>, &Value)> {
+        self.shape.iter().zip(&self.values)
+    }
+}
+
+#[derive(Default)]
+pub struct FieldCache(RefCell<Option<(Shape, u32)>>);
+
+impl FieldCache {
+    pub fn position(&self, shape: &Shape, name: &str) -> Option<usize> {
+        if let Some((cached, at)) = &*self.0.borrow()
+            && Rc::ptr_eq(cached, shape)
+        {
+            return Some(*at as usize);
+        }
+        let at = shape.iter().position(|field| &**field == name)?;
+        *self.0.borrow_mut() = Some((Rc::clone(shape), at as u32));
+        Some(at)
+    }
+}
 
 #[derive(Clone)]
 pub enum List {
@@ -161,7 +213,7 @@ pub enum Value {
     None,
     Str(Rc<String>),
     List(Rc<RefCell<List>>),
-    Record(Rc<RefCell<Fields>>),
+    Record(Rc<RefCell<Record>>),
     Function(Rc<Closure>),
     Native(&'static Native),
     Cell(Cell),
@@ -223,7 +275,11 @@ impl Globals {
 
 impl Value {
     pub fn record(fields: Fields) -> Value {
-        let record = Rc::new(RefCell::new(fields));
+        Value::shaped(Record::from_fields(fields))
+    }
+
+    pub fn shaped(record: Record) -> Value {
+        let record = Rc::new(RefCell::new(record));
         gc::track(Tracked::Record(Rc::downgrade(&record)));
         Value::Record(record)
     }
@@ -489,9 +545,7 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
             Some(
                 x.len() == y.len()
                     && x.iter().all(|(name, a)| {
-                        y.iter()
-                            .find(|(other, _)| other == name)
-                            .is_some_and(|(_, b)| equal(a, b).unwrap_or(false))
+                        y.get(name).is_some_and(|b| equal(a, &b).unwrap_or(false))
                     }),
             )
         }
