@@ -5,14 +5,15 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `█████████░` 9 / 10 |
-| 2. Types | `░░░░░░░░░░` 0 / 7 |
-| 3. Tooling | `██░░░░░░░░` 2 / 9 |
-| 4. Speed | `░░░░░░░░░░` 0 / 5 |
+| 1. Core language | `██████████` 10 / 10 |
+| 2. Speed | `░░░░░░░░░░` 0 / 7 |
+| 3. Types | `░░░░░░░░░░` 0 / 7 |
+| 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Modules: `import` other `.kp` files
+**Next up:** Benchmark suite, with timings shown in the README
 
 ---
 
@@ -31,7 +32,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Block scope (`let` inside `{ }` stays inside)
 - [x] No truthiness, no coercion (`if 1` and `1 + true` are errors)
 
-## Phase 1: Core language
+## Phase 1: Core language ✅
 
 - [x] Strings, joining with `+`, escapes like `\n`
 - [x] String interpolation: `"total: ${price + tax}"`
@@ -42,9 +43,19 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Records (objects): `{ name: "Ada", age: 36 }`
 - [x] `for item in list` loops, `break` and `continue`
 - [x] `none` instead of `null` and `undefined`
-- [ ] Modules: `import` other `.kp` files
+- [x] Modules: `import` other `.kp` files
 
-## Phase 2: Types (the C# feel)
+## Phase 2: Speed
+
+- [ ] Benchmark suite, with timings shown in the README
+- [ ] Resolve variables to slots before running
+- [ ] Skip scopes for blocks that declare nothing
+- [ ] Strings that are cheap to share
+- [ ] Bytecode compiler
+- [ ] Virtual machine that runs the bytecode
+- [ ] Faster than Python on every benchmark
+
+## Phase 3: Types (the C# feel)
 
 - [ ] Type annotations: `let age: number = 36`
 - [ ] A type checker that runs before the program does
@@ -54,7 +65,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Enums with values, and `match`
 - [ ] Generics: `List<T>`
 
-## Phase 3: Tooling
+## Phase 4: Tooling
 
 - [x] VS Code syntax highlighting
 - [x] `.kp` file icon (KP, Go style)
@@ -65,14 +76,6 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Web playground (Khipu running in the browser via WASM)
 - [ ] Tree-sitter grammar (Zed, Neovim, GitHub)
 - [ ] Documentation site
-
-## Phase 4: Speed
-
-- [ ] Benchmark suite to measure progress
-- [ ] Bytecode compiler
-- [ ] Virtual machine to run the bytecode
-- [ ] Garbage collector
-- [ ] Native compilation (Cranelift)
 
 ## Phase 5: Concurrency (Khipu's signature)
 
@@ -90,3 +93,9 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Contracts: `requires`, `ensures`, `example` (LLM-proof code)
 - [ ] Package manager
 - [ ] Compile Khipu to WASM for the web
+
+## Phase 7: Native speed
+
+- [ ] Garbage collector
+- [ ] Native compilation (Cranelift)
+- [ ] Competitive with Node on the benchmark suite

@@ -1,0 +1,11 @@
+fn repeat(word, times) {
+    let out = ""
+    for i in range(times) {
+        out = out + word
+    }
+    return out
+}
+
+fn shout(word) {
+    return word + "!"
+}

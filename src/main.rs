@@ -5,6 +5,7 @@ mod parser;
 
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process;
 use std::thread;
 
@@ -45,7 +46,8 @@ fn run_file(path: &str) {
         }
     };
 
-    if let Err(error) = run_source(&source, &mut Interpreter::new()) {
+    let dir = Path::new(path).parent().unwrap_or(Path::new("."));
+    if let Err(error) = run_source(&source, &mut Interpreter::in_dir(dir)) {
         eprintln!("Error on line {}: {}", error.line, error.message);
         process::exit(1);
     }

@@ -50,7 +50,7 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while|for|in|break|continue|return)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return|import|from)\\b"
         },
         {
           "name": "storage.type.khipu",

@@ -1,0 +1,9 @@
+let pi = 3.14159
+
+fn circle_area(radius) {
+    return pi * radius * radius
+}
+
+fn rectangle_area(width, height) {
+    return width * height
+}

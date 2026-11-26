@@ -6,6 +6,12 @@ use crate::lexer::{StringPart, Token, lex};
 pub type Block = Vec<(usize, Stmt)>;
 
 #[derive(Debug)]
+pub enum Import {
+    Module(String),
+    Names(Vec<String>),
+}
+
+#[derive(Debug)]
 pub enum Stmt {
     Let(String, Expr),
     Assign(String, Expr),
@@ -17,6 +23,7 @@ pub enum Stmt {
     Break,
     Continue,
     Return(Option<Expr>),
+    Import(String, Import),
     Expr(Expr),
 }
 
@@ -168,6 +175,41 @@ impl Parser {
                 let iterable = self.expression()?;
                 let body = self.loop_body()?;
                 Ok(Stmt::For(name, iterable, body))
+            }
+            Some(Token::Import) => {
+                self.pos += 1;
+                let binding = if self.peek() == Some(&Token::LeftBrace) {
+                    self.pos += 1;
+                    let mut names = Vec::new();
+                    loop {
+                        self.skip_newlines();
+                        names.push(self.identifier()?);
+                        self.skip_newlines();
+                        match self.advance() {
+                            Some(Token::Comma) => {}
+                            Some(Token::RightBrace) => break,
+                            Some(token) => {
+                                return Err(
+                                    self.error(format!("expected ',' or '}}', found {token:?}"))
+                                );
+                            }
+                            None => {
+                                return Err(self.error("import list is never closed".to_string()));
+                            }
+                        }
+                    }
+                    Import::Names(names)
+                } else {
+                    Import::Module(self.identifier()?)
+                };
+                self.expect(Token::From)?;
+                match self.advance() {
+                    Some(Token::Str(path)) => Ok(Stmt::Import(path, binding)),
+                    Some(token) => Err(self.error(format!(
+                        "expected a file path like \"math.kp\", found {token:?}"
+                    ))),
+                    None => Err(self.error("expected a file path like \"math.kp\"".to_string())),
+                }
             }
             Some(Token::Break) | Some(Token::Continue) => {
                 let stmt = match self.advance() {

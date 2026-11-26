@@ -1,10 +1,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::parser::{Block, Expr, Op, Stmt};
+use crate::lexer::lex;
+use crate::parser::{Block, Expr, Import, Op, Parser, Stmt};
 
 const MAX_CALL_DEPTH: usize = 1000;
 
@@ -113,31 +116,30 @@ fn function_label(function: &Function) -> &str {
     }
 }
 
+type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Fields>>>>>;
+
 pub struct Interpreter {
     env: Env,
     line: usize,
     depth: usize,
+    dir: PathBuf,
+    modules: Modules,
+    loading: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        let globals = Scope::new(None);
-        for (name, native) in [
-            ("print", print as NativeFn),
-            ("len", len),
-            ("push", push),
-            ("range", range),
-            ("keys", keys),
-        ] {
-            globals
-                .borrow_mut()
-                .vars
-                .insert(name.to_string(), Value::Native(name, native));
-        }
+        Interpreter::in_dir(Path::new("."))
+    }
+
+    pub fn in_dir(dir: &Path) -> Self {
         Interpreter {
-            env: globals,
+            env: globals(),
             line: 1,
             depth: 0,
+            dir: dir.to_path_buf(),
+            modules: Rc::default(),
+            loading: Rc::default(),
         }
     }
 
@@ -260,6 +262,35 @@ impl Interpreter {
                         Ok(_) | Err(Exit::Continue) => {}
                         Err(Exit::Break) => break,
                         Err(other) => return Err(other),
+                    }
+                }
+                Ok(None)
+            }
+            Stmt::Import(path, binding) => {
+                let module = self.load_module(path)?;
+                match binding {
+                    Import::Module(name) => {
+                        self.env
+                            .borrow_mut()
+                            .vars
+                            .insert(name.clone(), Value::Record(module));
+                    }
+                    Import::Names(names) => {
+                        for name in names {
+                            let value = module
+                                .borrow()
+                                .iter()
+                                .find(|(field, _)| field == name)
+                                .map(|(_, value)| value.clone());
+                            match value {
+                                Some(value) => {
+                                    self.env.borrow_mut().vars.insert(name.clone(), value);
+                                }
+                                None => {
+                                    return Err(self.fail(format!("{path} has no '{name}'")));
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(None)
@@ -454,6 +485,58 @@ impl Interpreter {
         }
     }
 
+    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, Exit> {
+        let file = self
+            .dir
+            .join(path)
+            .canonicalize()
+            .map_err(|_| self.fail(format!("cannot find {path}")))?;
+
+        if let Some(module) = self.modules.borrow().get(&file) {
+            return Ok(Rc::clone(module));
+        }
+        if self.loading.borrow().contains(&file) {
+            return Err(self.fail(format!("{path} is part of an import loop")));
+        }
+
+        let source = fs::read_to_string(&file)
+            .map_err(|error| self.fail(format!("cannot read {path}: {error}")))?;
+        self.loading.borrow_mut().push(file.clone());
+        let result = self.run_module(&file, &source);
+        self.loading.borrow_mut().pop();
+
+        let fields = result.map_err(|error| {
+            self.fail(format!("in {path}, line {}: {}", error.line, error.message))
+        })?;
+        let module = Rc::new(RefCell::new(fields));
+        self.modules.borrow_mut().insert(file, Rc::clone(&module));
+        Ok(module)
+    }
+
+    fn run_module(&self, file: &Path, source: &str) -> Result<Fields, Error> {
+        let program = Parser::new(lex(source)?).parse_program()?;
+        let mut module = Interpreter {
+            env: globals(),
+            line: 1,
+            depth: self.depth,
+            dir: file.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            modules: Rc::clone(&self.modules),
+            loading: Rc::clone(&self.loading),
+        };
+        module.run(&program)?;
+
+        let mut fields: Fields = module
+            .env
+            .borrow()
+            .vars
+            .iter()
+            .filter(|(_, value)| !matches!(value, Value::Native(..)))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(fields)
+    }
+
     fn get_field(&self, fields: &RefCell<Fields>, name: &str) -> Result<Value, Exit> {
         match fields.borrow().iter().find(|(field, _)| field == name) {
             Some((_, value)) => Ok(value.clone()),
@@ -515,6 +598,23 @@ impl Interpreter {
     fn fail(&self, message: impl Into<String>) -> Exit {
         Exit::Error(self.error(message))
     }
+}
+
+fn globals() -> Env {
+    let globals = Scope::new(None);
+    for (name, native) in [
+        ("print", print as NativeFn),
+        ("len", len),
+        ("push", push),
+        ("range", range),
+        ("keys", keys),
+    ] {
+        globals
+            .borrow_mut()
+            .vars
+            .insert(name.to_string(), Value::Native(name, native));
+    }
+    globals
 }
 
 fn print(args: &[Value]) -> Result<Value, String> {
@@ -1081,5 +1181,129 @@ mod tests {
             "cannot read field 'city' of none, use '?.city' if it might be none"
         );
         assert_eq!(error("5?.x").message, "cannot read field 'x' of number");
+    }
+
+    fn run_files(name: &str, files: &[(&str, &str)]) -> Result<Option<Value>, Error> {
+        let dir = std::env::temp_dir().join(format!("khipu-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, source) in files {
+            std::fs::write(dir.join(file), source).unwrap();
+        }
+        let main = std::fs::read_to_string(dir.join("main.kp")).unwrap();
+        let program = Parser::new(lex(&main)?).parse_program()?;
+        let result = Interpreter::in_dir(&dir).run(&program);
+        std::fs::remove_dir_all(&dir).unwrap();
+        result
+    }
+
+    const GEOMETRY: &str = "let pi = 3\nfn area(r) {\n  return pi * r * r\n}\n";
+
+    #[test]
+    fn imports_a_whole_module() {
+        let result = run_files(
+            "whole",
+            &[
+                ("geometry.kp", GEOMETRY),
+                (
+                    "main.kp",
+                    "import geometry from \"geometry.kp\"\ngeometry.area(2) + geometry.pi",
+                ),
+            ],
+        );
+        assert!(matches!(result.unwrap(), Some(Value::Number(n)) if n == 15.0));
+    }
+
+    #[test]
+    fn imports_chosen_names() {
+        let result = run_files(
+            "names",
+            &[
+                ("geometry.kp", GEOMETRY),
+                (
+                    "main.kp",
+                    "import { area, pi } from \"geometry.kp\"\narea(1) + pi",
+                ),
+            ],
+        );
+        assert!(matches!(result.unwrap(), Some(Value::Number(n)) if n == 6.0));
+    }
+
+    #[test]
+    fn runs_each_module_once() {
+        let main =
+            "import a from \"state.kp\"\nimport b from \"state.kp\"\na.box.count = 5\nb.box.count";
+        let result = run_files(
+            "once",
+            &[("state.kp", "let box = { count: 0 }\n"), ("main.kp", main)],
+        );
+        assert!(matches!(result.unwrap(), Some(Value::Number(n)) if n == 5.0));
+    }
+
+    #[test]
+    fn resolves_paths_from_the_importing_file() {
+        let result = run_files(
+            "nested",
+            &[
+                ("helper.kp", "let answer = 42\n"),
+                (
+                    "middle.kp",
+                    "import { answer } from \"helper.kp\"\nlet doubled = answer * 2\n",
+                ),
+                ("main.kp", "import { doubled } from \"middle.kp\"\ndoubled"),
+            ],
+        );
+        assert!(matches!(result.unwrap(), Some(Value::Number(n)) if n == 84.0));
+    }
+
+    #[test]
+    fn reports_module_mistakes() {
+        let missing_name = run_files(
+            "missing-name",
+            &[
+                ("geometry.kp", GEOMETRY),
+                ("main.kp", "import { volume } from \"geometry.kp\""),
+            ],
+        );
+        assert_eq!(
+            missing_name.unwrap_err().message,
+            "geometry.kp has no 'volume'"
+        );
+
+        let missing_file = run_files(
+            "missing-file",
+            &[("main.kp", "\nimport nope from \"nope.kp\"")],
+        );
+        let error = missing_file.unwrap_err();
+        assert_eq!(
+            (error.line, error.message.as_str()),
+            (2, "cannot find nope.kp")
+        );
+
+        let broken = run_files(
+            "broken",
+            &[
+                ("broken.kp", "let a = 1\nlet b = nope\n"),
+                ("main.kp", "import broken from \"broken.kp\""),
+            ],
+        );
+        assert_eq!(
+            broken.unwrap_err().message,
+            "in broken.kp, line 2: 'nope' is not defined"
+        );
+
+        let looped = run_files(
+            "loop",
+            &[
+                ("a.kp", "import b from \"b.kp\"\n"),
+                ("b.kp", "import a from \"a.kp\"\n"),
+                ("main.kp", "import a from \"a.kp\""),
+            ],
+        );
+        assert!(
+            looped
+                .unwrap_err()
+                .message
+                .contains("a.kp is part of an import loop")
+        );
     }
 }

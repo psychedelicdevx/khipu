@@ -86,14 +86,15 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `█████████░` 9 / 10 |
-| 2. Types | `░░░░░░░░░░` 0 / 7 |
-| 3. Tooling | `██░░░░░░░░` 2 / 9 |
-| 4. Speed | `░░░░░░░░░░` 0 / 5 |
+| 1. Core language | `██████████` 10 / 10 |
+| 2. Speed | `░░░░░░░░░░` 0 / 7 |
+| 3. Types | `░░░░░░░░░░` 0 / 7 |
+| 4. Tooling | `██░░░░░░░░` 2 / 9 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 7. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Modules: `import` other `.kp` files
+**Next up:** Benchmark suite, with timings shown in the README
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
