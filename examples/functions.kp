@@ -1,0 +1,29 @@
+fn fib(n) {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+print("fib(20) = ${fib(20)}")
+
+fn counter(start) {
+    let count = start
+    return fn() {
+        count = count + 1
+        return count
+    }
+}
+
+let next = counter(10)
+next()
+next()
+print("counter is at ${next()}")
+
+fn twice(f, x) {
+    return f(f(x))
+}
+
+let shout = fn(word) { return word + "!" }
+print(twice(shout, "hey"))
+print("print is a value too:", print)

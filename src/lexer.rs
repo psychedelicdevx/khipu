@@ -13,7 +13,8 @@ pub enum Token {
     Template(Vec<StringPart>),
     Ident(String),
     Let,
-    Print,
+    Fn,
+    Return,
     If,
     Else,
     While,
@@ -38,6 +39,7 @@ pub enum Token {
     RightParen,
     LeftBrace,
     RightBrace,
+    Comma,
     Newline,
 }
 
@@ -83,6 +85,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             ')' => Some(Token::RightParen),
             '{' => Some(Token::LeftBrace),
             '}' => Some(Token::RightBrace),
+            ',' => Some(Token::Comma),
             '=' => Some(Token::Equals),
             '<' => Some(Token::Less),
             '>' => Some(Token::Greater),
@@ -130,7 +133,8 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                 let word: String = chars[start..pos].iter().collect();
                 let token = match word.as_str() {
                     "let" => Token::Let,
-                    "print" => Token::Print,
+                    "fn" => Token::Fn,
+                    "return" => Token::Return,
                     "if" => Token::If,
                     "else" => Token::Else,
                     "while" => Token::While,

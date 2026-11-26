@@ -10,6 +10,9 @@
       "include": "#strings"
     },
     {
+      "include": "#functions"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -44,11 +47,11 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while)\\b"
+          "match": "\\b(if|else|while|return)\\b"
         },
         {
           "name": "storage.type.khipu",
-          "match": "\\blet\\b"
+          "match": "\\b(let|fn)\\b"
         }
       ]
     },
@@ -145,6 +148,25 @@
               "include": "$self"
             }
           ]
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.khipu"
+            },
+            "2": {
+              "name": "entity.name.function.khipu"
+            }
+          }
+        },
+        {
+          "name": "entity.name.function.call.khipu",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
         }
       ]
     }

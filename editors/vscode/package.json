@@ -2,7 +2,7 @@
   "name": "khipu",
   "displayName": "Khipu",
   "description": "Syntax highlighting and file icon for the Khipu programming language",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "psychedelicdevx",
   "engines": {
     "vscode": "^1.80.0"

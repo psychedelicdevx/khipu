@@ -6,17 +6,27 @@ mod parser;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
+use std::thread;
 
 use error::Error;
 use interpreter::{Interpreter, Value};
 use parser::Parser;
 
+const STACK_SIZE: usize = 256 * 1024 * 1024;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    match args.get(1) {
-        Some(path) => run_file(path),
-        None => repl(),
+    let khipu = thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(move || match args.get(1) {
+            Some(path) => run_file(path),
+            None => repl(),
+        })
+        .expect("could not start the interpreter thread");
+
+    if khipu.join().is_err() {
+        process::exit(1);
     }
 }
 
@@ -63,8 +73,8 @@ fn repl() {
         }
 
         match run_source(&source, &mut interpreter) {
+            Ok(Some(Value::None)) | Ok(None) => {}
             Ok(Some(value)) => println!("= {value}"),
-            Ok(None) => {}
             Err(error) => println!("Error: {}", error.message),
         }
         source.clear();

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::error::Error;
 use crate::lexer::{StringPart, Token, lex};
 
@@ -7,9 +9,9 @@ pub type Block = Vec<(usize, Stmt)>;
 pub enum Stmt {
     Let(String, Expr),
     Assign(String, Expr),
-    Print(Expr),
     If(Expr, Block, Option<Block>),
     While(Expr, Block),
+    Return(Option<Expr>),
     Expr(Expr),
 }
 
@@ -23,6 +25,12 @@ pub enum Expr {
     Negate(Box<Expr>),
     Not(Box<Expr>),
     Binary(Box<Expr>, Op, Box<Expr>),
+    Function {
+        name: String,
+        params: Vec<String>,
+        body: Rc<Block>,
+    },
+    Call(Box<Expr>, Vec<Expr>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +54,7 @@ pub struct Parser {
     tokens: Vec<(Token, usize)>,
     pos: usize,
     line: usize,
+    function_depth: usize,
 }
 
 impl Parser {
@@ -54,6 +63,7 @@ impl Parser {
             tokens,
             pos: 0,
             line: 1,
+            function_depth: 0,
         }
     }
 
@@ -101,11 +111,33 @@ impl Parser {
                 self.pos += 1;
                 let name = self.identifier()?;
                 self.expect(Token::Equals)?;
-                Ok(Stmt::Let(name, self.expression()?))
+                let value = match self.expression()? {
+                    Expr::Function { params, body, .. } => Expr::Function {
+                        name: name.clone(),
+                        params,
+                        body,
+                    },
+                    other => other,
+                };
+                Ok(Stmt::Let(name, value))
             }
-            Some(Token::Print) => {
+            Some(Token::Fn) if matches!(self.peek_next(), Some(Token::Ident(_))) => {
                 self.pos += 1;
-                Ok(Stmt::Print(self.expression()?))
+                let name = self.identifier()?;
+                let function = self.function(name.clone())?;
+                Ok(Stmt::Let(name, function))
+            }
+            Some(Token::Return) => {
+                self.pos += 1;
+                if self.function_depth == 0 {
+                    return Err(
+                        self.error("'return' can only be used inside a function".to_string())
+                    );
+                }
+                match self.peek() {
+                    None | Some(Token::Newline) | Some(Token::RightBrace) => Ok(Stmt::Return(None)),
+                    _ => Ok(Stmt::Return(Some(self.expression()?))),
+                }
             }
             Some(Token::If) => {
                 self.pos += 1;
@@ -248,8 +280,53 @@ impl Parser {
                 self.pos += 1;
                 Ok(Expr::Not(Box::new(self.unary()?)))
             }
-            _ => self.primary(),
+            _ => self.call(),
         }
+    }
+
+    fn call(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.primary()?;
+        while self.peek() == Some(&Token::LeftParen) {
+            self.pos += 1;
+            let mut args = Vec::new();
+            if self.peek() != Some(&Token::RightParen) {
+                loop {
+                    args.push(self.expression()?);
+                    if self.peek() != Some(&Token::Comma) {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+            }
+            self.expect(Token::RightParen)?;
+            expr = Expr::Call(Box::new(expr), args);
+        }
+        Ok(expr)
+    }
+
+    fn function(&mut self, name: String) -> Result<Expr, Error> {
+        self.expect(Token::LeftParen)?;
+        let mut params = Vec::new();
+        if self.peek() != Some(&Token::RightParen) {
+            loop {
+                params.push(self.identifier()?);
+                if self.peek() != Some(&Token::Comma) {
+                    break;
+                }
+                self.pos += 1;
+            }
+        }
+        self.expect(Token::RightParen)?;
+
+        self.function_depth += 1;
+        let body = self.block();
+        self.function_depth -= 1;
+
+        Ok(Expr::Function {
+            name,
+            params,
+            body: Rc::new(body?),
+        })
     }
 
     fn primary(&mut self) -> Result<Expr, Error> {
@@ -260,6 +337,7 @@ impl Parser {
             Some(Token::Str(text)) => Ok(Expr::Str(text)),
             Some(Token::Template(parts)) => self.template(parts),
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
+            Some(Token::Fn) => self.function(String::new()),
             Some(Token::LeftParen) => {
                 let expr = self.expression()?;
                 self.expect(Token::RightParen)?;
