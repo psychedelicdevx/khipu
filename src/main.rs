@@ -4,8 +4,11 @@ mod parser;
 
 use std::io::{self, Write};
 
+use interpreter::Interpreter;
+
 fn main() {
     let stdin = io::stdin();
+    let mut interpreter = Interpreter::new();
 
     loop {
         print!("> ");
@@ -13,7 +16,7 @@ fn main() {
 
         let mut line = String::new();
         if stdin.read_line(&mut line).unwrap() == 0 {
-            break;
+            break; // Ctrl-D
         }
 
         let tokens = match lexer::lex(line.trim_end()) {
@@ -27,15 +30,18 @@ fn main() {
             continue;
         }
 
-        let expr = match parser::Parser::new(tokens).parse() {
-            Ok(expr) => expr,
+        let stmt = match parser::Parser::new(tokens).parse() {
+            Ok(stmt) => stmt,
             Err(error) => {
                 println!("Error: {error}");
                 continue;
             }
         };
 
-        println!("{expr:?}");
-        println!("= {}", interpreter::eval(&expr));
+        match interpreter.execute(&stmt) {
+            Ok(Some(value)) => println!("= {value}"),
+            Ok(None) => {}
+            Err(error) => println!("Error: {error}"),
+        }
     }
 }

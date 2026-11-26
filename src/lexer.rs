@@ -1,6 +1,10 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
+    Ident(String),
+    Let,
+    Print,
+    Equals,
     Plus,
     Minus,
     Star,
@@ -58,6 +62,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                 tokens.push(Token::RightParen);
                 pos += 1
             }
+            '=' => {
+                tokens.push(Token::Equals);
+                pos += 1
+            }
             c if c.is_ascii_digit() => {
                 let start = pos;
                 while pos < chars.len() && (chars[pos].is_ascii_digit() || chars[pos] == '.') {
@@ -68,6 +76,19 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     Ok(value) => tokens.push(Token::Number(value)),
                     Err(_) => return Err(LexError::BadNumber(text)),
                 }
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                let start = pos;
+                while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
+                    pos += 1;
+                }
+                let word: String = chars[start..pos].iter().collect();
+                let token = match word.as_str() {
+                    "let" => Token::Let,
+                    "print" => Token::Print,
+                    _ => Token::Ident(word),
+                };
+                tokens.push(token);
             }
             other => return Err(LexError::Unexpected(other)),
         }
@@ -86,6 +107,20 @@ mod tests {
         assert_eq!(
             tokens,
             vec![Token::Number(2.0), Token::Plus, Token::Number(3.5)]
+        );
+    }
+
+    #[test]
+    fn lexes_keywords_and_names() {
+        let tokens = lex("let total_2 = x").unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Ident("total_2".to_string()),
+                Token::Equals,
+                Token::Ident("x".to_string()),
+            ]
         );
     }
 }

@@ -1,8 +1,16 @@
 use crate::lexer::Token;
 
 #[derive(Debug)]
+pub enum Stmt {
+    Let(String, Expr),
+    Print(Expr),
+    Expr(Expr),
+}
+
+#[derive(Debug)]
 pub enum Expr {
     Number(f64),
+    Variable(String),
     Negate(Box<Expr>),
     Binary(Box<Expr>, Op, Box<Expr>),
 }
@@ -40,12 +48,32 @@ impl Parser {
         Parser { tokens, pos: 0 }
     }
 
-    pub fn parse(&mut self) -> Result<Expr, ParseError> {
-        let expr = self.expression()?;
+    pub fn parse(&mut self) -> Result<Stmt, ParseError> {
+        let stmt = self.statement()?;
         if let Some(token) = self.peek() {
             return Err(ParseError::UnexpectedToken(token.clone()));
         }
-        Ok(expr)
+        Ok(stmt)
+    }
+
+    fn statement(&mut self) -> Result<Stmt, ParseError> {
+        match self.peek() {
+            Some(Token::Let) => {
+                self.pos += 1;
+                let name = match self.advance() {
+                    Some(Token::Ident(name)) => name,
+                    Some(token) => return Err(ParseError::UnexpectedToken(token)),
+                    None => return Err(ParseError::UnexpectedEnd),
+                };
+                self.expect(Token::Equals)?;
+                Ok(Stmt::Let(name, self.expression()?))
+            }
+            Some(Token::Print) => {
+                self.pos += 1;
+                Ok(Stmt::Print(self.expression()?))
+            }
+            _ => Ok(Stmt::Expr(self.expression()?)),
+        }
     }
 
     fn expression(&mut self) -> Result<Expr, ParseError> {
@@ -89,14 +117,20 @@ impl Parser {
     fn primary(&mut self) -> Result<Expr, ParseError> {
         match self.advance() {
             Some(Token::Number(n)) => Ok(Expr::Number(n)),
+            Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
             Some(Token::LeftParen) => {
                 let expr = self.expression()?;
-                match self.advance() {
-                    Some(Token::RightParen) => Ok(expr),
-                    Some(token) => Err(ParseError::UnexpectedToken(token)),
-                    None => Err(ParseError::UnexpectedEnd),
-                }
+                self.expect(Token::RightParen)?;
+                Ok(expr)
             }
+            Some(token) => Err(ParseError::UnexpectedToken(token)),
+            None => Err(ParseError::UnexpectedEnd),
+        }
+    }
+
+    fn expect(&mut self, expected: Token) -> Result<(), ParseError> {
+        match self.advance() {
+            Some(token) if token == expected => Ok(()),
             Some(token) => Err(ParseError::UnexpectedToken(token)),
             None => Err(ParseError::UnexpectedEnd),
         }
