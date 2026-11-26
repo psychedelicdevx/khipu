@@ -1,0 +1,4 @@
+let price = 20
+let tax = price * 0.2
+
+print(price + tax)

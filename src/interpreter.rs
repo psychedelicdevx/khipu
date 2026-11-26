@@ -1,19 +1,7 @@
 use std::collections::HashMap;
 
+use crate::error::Error;
 use crate::parser::{Expr, Op, Stmt};
-
-#[derive(Debug)]
-pub enum RuntimeError {
-    UndefinedVariable(String),
-}
-
-impl std::fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            RuntimeError::UndefinedVariable(name) => write!(f, "'{name}' is not defined"),
-        }
-    }
-}
 
 pub struct Interpreter {
     variables: HashMap<String, f64>,
@@ -26,7 +14,18 @@ impl Interpreter {
         }
     }
 
-    pub fn execute(&mut self, stmt: &Stmt) -> Result<Option<f64>, RuntimeError> {
+    pub fn run(&mut self, program: &[(usize, Stmt)]) -> Result<Option<f64>, Error> {
+        let mut last = None;
+        for (line, stmt) in program {
+            last = self.execute(stmt).map_err(|message| Error {
+                line: *line,
+                message,
+            })?;
+        }
+        Ok(last)
+    }
+
+    fn execute(&mut self, stmt: &Stmt) -> Result<Option<f64>, String> {
         match stmt {
             Stmt::Let(name, expr) => {
                 let value = self.eval(expr)?;
@@ -41,12 +40,12 @@ impl Interpreter {
         }
     }
 
-    fn eval(&self, expr: &Expr) -> Result<f64, RuntimeError> {
+    fn eval(&self, expr: &Expr) -> Result<f64, String> {
         match expr {
             Expr::Number(n) => Ok(*n),
             Expr::Variable(name) => match self.variables.get(name) {
                 Some(value) => Ok(*value),
-                None => Err(RuntimeError::UndefinedVariable(name.clone())),
+                None => Err(format!("'{name}' is not defined")),
             },
             Expr::Negate(inner) => Ok(-self.eval(inner)?),
             Expr::Binary(left, op, right) => {
@@ -66,34 +65,37 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::Interpreter;
+    use crate::error::Error;
     use crate::{lexer::lex, parser::Parser};
 
-    fn run(lines: &[&str]) -> Option<f64> {
-        let mut interpreter = Interpreter::new();
-        let mut last = None;
-        for line in lines {
-            let stmt = Parser::new(lex(line).unwrap()).parse().unwrap();
-            last = interpreter.execute(&stmt).unwrap();
-        }
-        last
+    fn run(source: &str) -> Result<Option<f64>, Error> {
+        let program = Parser::new(lex(source)?).parse_program()?;
+        Interpreter::new().run(&program)
     }
 
     #[test]
     fn respects_precedence_and_parentheses() {
-        assert_eq!(run(&["2 + 3 * 4"]), Some(14.0));
-        assert_eq!(run(&["(2 + 3) * 4"]), Some(20.0));
-        assert_eq!(run(&["8 / 2 / 2"]), Some(2.0));
-        assert_eq!(run(&["-2 * 3"]), Some(-6.0));
+        assert_eq!(run("2 + 3 * 4").unwrap(), Some(14.0));
+        assert_eq!(run("(2 + 3) * 4").unwrap(), Some(20.0));
+        assert_eq!(run("8 / 2 / 2").unwrap(), Some(2.0));
+        assert_eq!(run("-2 * 3").unwrap(), Some(-6.0));
     }
 
     #[test]
-    fn remembers_variables() {
-        assert_eq!(run(&["let x = 2 + 3", "let y = x * 4", "y"]), Some(20.0));
+    fn runs_a_multi_line_program() {
+        let source = "// set up\nlet x = 2 + 3\n\nlet y = x * 4 // twenty\ny";
+        assert_eq!(run(source).unwrap(), Some(20.0));
     }
 
     #[test]
-    fn reports_undefined_variables() {
-        let stmt = Parser::new(lex("nope + 1").unwrap()).parse().unwrap();
-        assert!(Interpreter::new().execute(&stmt).is_err());
+    fn reports_the_line_of_an_error() {
+        let error = run("let a = 1\n\nprint(b)").unwrap_err();
+        assert_eq!(error.line, 3);
+        assert_eq!(error.message, "'b' is not defined");
+    }
+
+    #[test]
+    fn rejects_two_statements_on_one_line() {
+        assert_eq!(run("let x = 1\n2 3").unwrap_err().line, 2);
     }
 }

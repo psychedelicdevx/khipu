@@ -1,3 +1,4 @@
+use crate::error::Error;
 use crate::lexer::Token;
 
 #[derive(Debug)]
@@ -23,47 +24,53 @@ pub enum Op {
     Div,
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    UnexpectedToken(Token),
-    UnexpectedEnd,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            ParseError::UnexpectedToken(token) => write!(f, "unexpected {token:?}"),
-            ParseError::UnexpectedEnd => write!(f, "unexpected end of input"),
-        }
-    }
-}
-
 pub struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<(Token, usize)>,
     pos: usize,
+    line: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
-    }
-
-    pub fn parse(&mut self) -> Result<Stmt, ParseError> {
-        let stmt = self.statement()?;
-        if let Some(token) = self.peek() {
-            return Err(ParseError::UnexpectedToken(token.clone()));
+    pub fn new(tokens: Vec<(Token, usize)>) -> Self {
+        Parser {
+            tokens,
+            pos: 0,
+            line: 1,
         }
-        Ok(stmt)
     }
 
-    fn statement(&mut self) -> Result<Stmt, ParseError> {
+    pub fn parse_program(&mut self) -> Result<Vec<(usize, Stmt)>, Error> {
+        let mut program = Vec::new();
+
+        loop {
+            while self.peek() == Some(&Token::Newline) {
+                self.pos += 1;
+            }
+            let line = match self.tokens.get(self.pos) {
+                Some((_, line)) => *line,
+                None => break,
+            };
+
+            let stmt = self.statement()?;
+            program.push((line, stmt));
+
+            match self.advance() {
+                None | Some(Token::Newline) => {}
+                Some(token) => return Err(self.error(format!("unexpected {token:?}"))),
+            }
+        }
+
+        Ok(program)
+    }
+
+    fn statement(&mut self) -> Result<Stmt, Error> {
         match self.peek() {
             Some(Token::Let) => {
                 self.pos += 1;
                 let name = match self.advance() {
                     Some(Token::Ident(name)) => name,
-                    Some(token) => return Err(ParseError::UnexpectedToken(token)),
-                    None => return Err(ParseError::UnexpectedEnd),
+                    Some(token) => return Err(self.error(format!("unexpected {token:?}"))),
+                    None => return Err(self.error("unexpected end of input".to_string())),
                 };
                 self.expect(Token::Equals)?;
                 Ok(Stmt::Let(name, self.expression()?))
@@ -76,7 +83,7 @@ impl Parser {
         }
     }
 
-    fn expression(&mut self) -> Result<Expr, ParseError> {
+    fn expression(&mut self) -> Result<Expr, Error> {
         let mut left = self.term()?;
         loop {
             let op = match self.peek() {
@@ -91,7 +98,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn term(&mut self) -> Result<Expr, ParseError> {
+    fn term(&mut self) -> Result<Expr, Error> {
         let mut left = self.unary()?;
         loop {
             let op = match self.peek() {
@@ -106,7 +113,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn unary(&mut self) -> Result<Expr, ParseError> {
+    fn unary(&mut self) -> Result<Expr, Error> {
         if let Some(Token::Minus) = self.peek() {
             self.pos += 1;
             return Ok(Expr::Negate(Box::new(self.unary()?)));
@@ -114,7 +121,7 @@ impl Parser {
         self.primary()
     }
 
-    fn primary(&mut self) -> Result<Expr, ParseError> {
+    fn primary(&mut self) -> Result<Expr, Error> {
         match self.advance() {
             Some(Token::Number(n)) => Ok(Expr::Number(n)),
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
@@ -123,26 +130,34 @@ impl Parser {
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
-            Some(token) => Err(ParseError::UnexpectedToken(token)),
-            None => Err(ParseError::UnexpectedEnd),
+            Some(token) => Err(self.error(format!("unexpected {token:?}"))),
+            None => Err(self.error("unexpected end of input".to_string())),
         }
     }
 
-    fn expect(&mut self, expected: Token) -> Result<(), ParseError> {
+    fn expect(&mut self, expected: Token) -> Result<(), Error> {
         match self.advance() {
             Some(token) if token == expected => Ok(()),
-            Some(token) => Err(ParseError::UnexpectedToken(token)),
-            None => Err(ParseError::UnexpectedEnd),
+            Some(token) => Err(self.error(format!("expected {expected:?}, found {token:?}"))),
+            None => Err(self.error(format!("expected {expected:?}, found end of input"))),
+        }
+    }
+
+    fn error(&self, message: String) -> Error {
+        Error {
+            line: self.line,
+            message,
         }
     }
 
     fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
+        self.tokens.get(self.pos).map(|(token, _)| token)
     }
 
     fn advance(&mut self) -> Option<Token> {
-        let token = self.tokens.get(self.pos).cloned();
+        let (token, line) = self.tokens.get(self.pos).cloned()?;
+        self.line = line;
         self.pos += 1;
-        token
+        Some(token)
     }
 }
