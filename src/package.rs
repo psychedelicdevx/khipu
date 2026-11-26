@@ -48,10 +48,26 @@ mod native {
 
     fn write_json(path: &Path, value: &Map<String, Json>) -> Result<(), String> {
         let text = serde_json::to_string_pretty(value).unwrap_or_default() + "\n";
-        let fresh = path.with_extension("json.tmp");
-        fs::write(&fresh, text)
-            .and_then(|_| fs::rename(&fresh, path))
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+        let failed = |error: std::io::Error| format!("cannot write {}: {error}", path.display());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos());
+        let name = path
+            .file_name()
+            .map_or_else(Default::default, |name| name.to_string_lossy());
+        let fresh = path.with_file_name(format!(".{name}.{}.{stamp}.tmp", std::process::id()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fresh)
+            .map_err(failed)?;
+        let written = std::io::Write::write_all(&mut file, text.as_bytes())
+            .and_then(|_| fs::rename(&fresh, path));
+        if let Err(error) = written {
+            let _ = fs::remove_file(&fresh);
+            return Err(failed(error));
+        }
+        Ok(())
     }
 
     fn store(root: &Path) -> Result<PathBuf, String> {
@@ -557,6 +573,10 @@ mod tests {
         let outside = base.join("outside.txt");
         fs::write(&outside, "untouched").unwrap();
         std::os::unix::fs::symlink(&outside, app.join("khipu.lock")).unwrap();
+        command(&words(&["install"]), &app).unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
+        std::os::unix::fs::symlink(&outside, app.join("khipu.json.tmp")).unwrap();
+        std::os::unix::fs::symlink(&outside, app.join(".khipu.lock.tmp")).unwrap();
         command(&words(&["install"]), &app).unwrap();
         assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
         assert!(

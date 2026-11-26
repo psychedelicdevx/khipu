@@ -30,6 +30,27 @@ fn main() {
                     process::exit(1);
                 }
             }
+            Some("web") => {
+                let (path, output) = match &args[2..] {
+                    [path] => (path, None),
+                    [path, flag, output] if flag == "-o" => (path, Some(Path::new(output))),
+                    _ => {
+                        eprintln!("usage: khipu web <file.kp> [-o page.html]");
+                        process::exit(2);
+                    }
+                };
+                match khipu::web::build(Path::new(path), output) {
+                    Ok(page) => println!("wrote {}", page.display()),
+                    Err(khipu::web::Failure::Program(error, source)) => {
+                        eprintln!("{}", error.render(path, &source));
+                        process::exit(1);
+                    }
+                    Err(khipu::web::Failure::Other(message)) => {
+                        eprintln!("error: {message}");
+                        process::exit(1);
+                    }
+                }
+            }
             Some("run") => {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 match khipu::package::main_file(&cwd) {

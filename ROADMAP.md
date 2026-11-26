@@ -11,11 +11,11 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `████████░░` 5 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
+| 7. Ecosystem | `██████████` 6 / 6 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Compile Khipu to WASM for the web
+**Next up:** Lazy `range()` that never builds a list
 
 ---
 
@@ -97,14 +97,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] `select` across several channels
 - [x] No shared mutable state, so no data races
 
-## Phase 7: Ecosystem
+## Phase 7: Ecosystem ✅
 
 - [x] Standard library: math, strings, lists
 - [x] Files and the terminal
 - [x] HTTP: fetch and a small server
 - [x] Contracts: `requires`, `ensures`, `example` (LLM-proof code)
 - [x] Package manager
-- [ ] Compile Khipu to WASM for the web
+- [x] Compile Khipu to WASM for the web
 
 ## Phase 8: Performance and final audit
 
@@ -119,6 +119,7 @@ Speed
 - [ ] Faster function calls, so `fib` and `fib_iterative` beat Python
 - [ ] Beat Python on every sustained benchmark
 - [ ] Native compilation (Cranelift)
+- [ ] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
 - [ ] Competitive with Node on the benchmark suite
 - [ ] Start-up stays under 5 ms
 - [ ] Work stealing, so a busy core hands tasks to idle ones

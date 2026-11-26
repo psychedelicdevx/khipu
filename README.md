@@ -185,6 +185,7 @@ You need [Rust](https://rustup.rs).
 ```bash
 git clone git@github.com:psychedelicdevx/khipu.git
 cd khipu
+scripts/build-playground.sh   # optional: the web runtime that khipu web embeds
 cargo install --path .
 ```
 
@@ -259,11 +260,11 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `████████░░` 5 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
+| 7. Ecosystem | `██████████` 6 / 6 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Compile Khipu to WASM for the web
+**Next up:** Lazy `range()` that never builds a list
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -316,6 +317,10 @@ If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give
 
 `editors/tree-sitter-khipu` is a tree-sitter grammar with highlight queries, for Zed, Neovim, Helix and anything else built on tree-sitter. It parses every example and benchmark in this repository; run its tests with `npx tree-sitter-cli test` in that folder.
 
+## Web pages
+
+`khipu web app.kp` turns a program into `app.html`: one file with the program and the Khipu runtime (compiled to WebAssembly) inside. It opens with a double-click, works offline, runs the program in the background so the page stays responsive, and shows output and errors just like the terminal. The program is type-checked first, so mistakes are caught before the page is written. Web pages cannot import other files or use files, HTTP or tasks yet.
+
 ## Playground
 
 `playground/` runs Khipu in the browser. The interpreter is compiled to WebAssembly and runs in a web worker, so a long loop never freezes the page and Stop ends it. Errors are underlined as you type, Format tidies the code, and Copy link shares a program.
@@ -342,6 +347,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/stdlib.rs`, `src/prelude.kp` | The standard library: fast built-ins in Rust, the rest in Khipu |
 | `src/http.rs` | HTTP requests (with TLS), the small web server, and JSON |
 | `src/package.rs` | The package manager: `khipu.json`, `khipu.lock` and git sources |
+| `src/web.rs`, `build.rs` | `khipu web`: one self-contained HTML page per program |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |

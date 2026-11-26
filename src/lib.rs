@@ -12,6 +12,8 @@ pub mod stdlib;
 pub mod task;
 pub mod value;
 pub mod vm;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
