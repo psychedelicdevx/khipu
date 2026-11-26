@@ -12,10 +12,16 @@ pub enum Type {
     Bool,
     Str,
     None,
-    List,
+    List(Box<Type>),
     Record,
     Function(Vec<Type>, Box<Type>),
     Optional(Box<Type>),
+    Named(String),
+    Param(String),
+    Struct(String),
+    StructDef(String),
+    Enum(String),
+    EnumDef(String),
 }
 
 impl std::fmt::Display for Type {
@@ -26,13 +32,20 @@ impl std::fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "string"),
             Type::None => write!(f, "none"),
-            Type::List => write!(f, "list"),
+            Type::List(inner) if **inner == Type::Any => write!(f, "list"),
+            Type::List(inner) => write!(f, "list<{inner}>"),
             Type::Record => write!(f, "record"),
             Type::Function(params, returns) => {
                 let params: Vec<String> = params.iter().map(Type::to_string).collect();
                 write!(f, "fn({}) -> {returns}", params.join(", "))
             }
             Type::Optional(inner) => write!(f, "{inner}?"),
+            Type::Named(name)
+            | Type::Param(name)
+            | Type::Struct(name)
+            | Type::StructDef(name)
+            | Type::Enum(name)
+            | Type::EnumDef(name) => write!(f, "{name}"),
         }
     }
 }
@@ -41,6 +54,44 @@ impl std::fmt::Display for Type {
 pub enum Import {
     Module(String),
     Names(Vec<String>),
+}
+
+#[derive(Debug)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+    pub methods: Vec<(String, Expr)>,
+}
+
+#[derive(Debug)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<(String, Vec<Type>)>,
+}
+
+#[derive(Debug)]
+pub enum Pattern {
+    Wildcard,
+    Bind(String),
+    Literal(Expr),
+    Variant {
+        enum_name: Option<String>,
+        variant: String,
+        bindings: Vec<String>,
+    },
+}
+
+#[derive(Debug)]
+pub enum ArmBody {
+    Expr(Expr),
+    Block(Block),
+}
+
+#[derive(Debug)]
+pub struct Arm {
+    pub pattern: Pattern,
+    pub body: ArmBody,
+    pub line: usize,
 }
 
 #[derive(Debug)]
@@ -56,6 +107,8 @@ pub enum Stmt {
     Continue,
     Return(Option<Expr>),
     Import(String, Import),
+    Struct(Rc<StructDecl>),
+    Enum(Rc<EnumDecl>),
     Expr(Expr),
 }
 
@@ -77,12 +130,15 @@ pub enum Expr {
     Binary(Box<Expr>, Op, Box<Expr>),
     Function {
         name: String,
+        type_params: Vec<String>,
         params: Vec<String>,
         param_types: Vec<Option<Type>>,
         returns: Option<Type>,
         body: Rc<Block>,
     },
     Call(Box<Expr>, Vec<Expr>),
+    StructLit(String, Vec<(String, Expr)>),
+    Match(Box<Expr>, Vec<Arm>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +165,7 @@ pub struct Parser {
     line: usize,
     function_depth: usize,
     loop_depth: usize,
+    no_struct: bool,
 }
 
 impl Parser {
@@ -119,6 +176,7 @@ impl Parser {
             line: 1,
             function_depth: 0,
             loop_depth: 0,
+            no_struct: false,
         }
     }
 
@@ -127,6 +185,27 @@ impl Parser {
     }
 
     fn statements(&mut self, closing: Option<Token>) -> Result<Block, Error> {
+        let outer = std::mem::replace(&mut self.no_struct, false);
+        let result = self.statements_inner(closing);
+        self.no_struct = outer;
+        result
+    }
+
+    fn restricted_expression(&mut self) -> Result<Expr, Error> {
+        let outer = std::mem::replace(&mut self.no_struct, true);
+        let result = self.expression();
+        self.no_struct = outer;
+        result
+    }
+
+    fn free_expression(&mut self) -> Result<Expr, Error> {
+        let outer = std::mem::replace(&mut self.no_struct, false);
+        let result = self.expression();
+        self.no_struct = outer;
+        result
+    }
+
+    fn statements_inner(&mut self, closing: Option<Token>) -> Result<Block, Error> {
         let mut statements = Vec::new();
 
         loop {
@@ -195,9 +274,17 @@ impl Parser {
                 self.pos += 1;
                 self.if_statement()
             }
+            Some(Token::Struct) => {
+                self.pos += 1;
+                self.struct_decl()
+            }
+            Some(Token::Enum) => {
+                self.pos += 1;
+                self.enum_decl()
+            }
             Some(Token::While) => {
                 self.pos += 1;
-                let condition = self.expression()?;
+                let condition = self.restricted_expression()?;
                 let body = self.loop_body()?;
                 Ok(Stmt::While(condition, body))
             }
@@ -205,7 +292,7 @@ impl Parser {
                 self.pos += 1;
                 let name = self.identifier()?;
                 self.expect(Token::In)?;
-                let iterable = self.expression()?;
+                let iterable = self.restricted_expression()?;
                 let body = self.loop_body()?;
                 Ok(Stmt::For(name, iterable, body))
             }
@@ -286,7 +373,7 @@ impl Parser {
     }
 
     fn if_statement(&mut self) -> Result<Stmt, Error> {
-        let condition = self.expression()?;
+        let condition = self.restricted_expression()?;
         let then_block = self.block()?;
 
         let else_block = if self.peek() == Some(&Token::Else) {
@@ -455,7 +542,7 @@ impl Parser {
                 self.pos += 1;
                 return Ok(items);
             }
-            items.push(self.expression()?);
+            items.push(self.free_expression()?);
             self.skip_newlines();
             match self.advance() {
                 Some(Token::Comma) => {}
@@ -469,6 +556,21 @@ impl Parser {
     }
 
     fn function(&mut self, name: String) -> Result<Expr, Error> {
+        let mut type_params = Vec::new();
+        if self.peek() == Some(&Token::Less) {
+            self.pos += 1;
+            loop {
+                type_params.push(self.identifier()?);
+                match self.advance() {
+                    Some(Token::Comma) => {}
+                    Some(Token::Greater) => break,
+                    Some(token) => {
+                        return Err(self.error(format!("expected ',' or '>', found {token:?}")));
+                    }
+                    None => return Err(self.error("type parameters are never closed".to_string())),
+                }
+            }
+        }
         self.expect(Token::LeftParen)?;
         let mut params = Vec::new();
         let mut param_types = Vec::new();
@@ -503,11 +605,190 @@ impl Parser {
 
         Ok(Expr::Function {
             name,
+            type_params,
             params,
             param_types,
             returns,
             body: Rc::new(body?),
         })
+    }
+
+    fn struct_decl(&mut self) -> Result<Stmt, Error> {
+        let name = self.identifier()?;
+        self.expect(Token::LeftBrace)?;
+        let mut fields: Vec<(String, Type)> = Vec::new();
+        let mut methods: Vec<(String, Expr)> = Vec::new();
+        loop {
+            self.skip_newlines();
+            match self.peek() {
+                Some(Token::RightBrace) => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(Token::Fn) => {
+                    self.pos += 1;
+                    let method = self.identifier()?;
+                    if methods.iter().any(|(existing, _)| *existing == method) {
+                        return Err(self.error(format!("method '{method}' is defined twice")));
+                    }
+                    let function = self.function(method.clone())?;
+                    methods.push((method, function));
+                }
+                Some(Token::Ident(_)) => {
+                    let field = self.identifier()?;
+                    if fields.iter().any(|(existing, _)| *existing == field) {
+                        return Err(self.error(format!("field '{field}' is listed twice")));
+                    }
+                    self.expect(Token::Colon)?;
+                    fields.push((field, self.parse_type()?));
+                }
+                Some(token) => {
+                    let token = token.clone();
+                    return Err(
+                        self.error(format!("expected a field or a method, found {token:?}"))
+                    );
+                }
+                None => return Err(self.error(format!("struct {name} is never closed"))),
+            }
+            self.skip_newlines();
+            if self.peek() == Some(&Token::Comma) {
+                self.pos += 1;
+            }
+        }
+        Ok(Stmt::Struct(Rc::new(StructDecl {
+            name,
+            fields,
+            methods,
+        })))
+    }
+
+    fn enum_decl(&mut self) -> Result<Stmt, Error> {
+        let name = self.identifier()?;
+        self.expect(Token::LeftBrace)?;
+        let mut variants: Vec<(String, Vec<Type>)> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&Token::RightBrace) {
+                self.pos += 1;
+                break;
+            }
+            let variant = self.identifier()?;
+            if variants.iter().any(|(existing, _)| *existing == variant) {
+                return Err(self.error(format!("variant '{variant}' is listed twice")));
+            }
+            let mut payload = Vec::new();
+            if self.peek() == Some(&Token::LeftParen) {
+                self.pos += 1;
+                loop {
+                    payload.push(self.parse_type()?);
+                    match self.advance() {
+                        Some(Token::Comma) => {}
+                        Some(Token::RightParen) => break,
+                        Some(token) => {
+                            return Err(self.error(format!("expected ',' or ')', found {token:?}")));
+                        }
+                        None => return Err(self.error(format!("enum {name} is never closed"))),
+                    }
+                }
+            }
+            variants.push((variant, payload));
+            self.skip_newlines();
+            if self.peek() == Some(&Token::Comma) {
+                self.pos += 1;
+            }
+        }
+        Ok(Stmt::Enum(Rc::new(EnumDecl { name, variants })))
+    }
+
+    fn match_expr(&mut self) -> Result<Expr, Error> {
+        let scrutinee = self.restricted_expression()?;
+        self.expect(Token::LeftBrace)?;
+        let mut arms = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&Token::RightBrace) {
+                self.pos += 1;
+                break;
+            }
+            let line = match self.tokens.get(self.pos) {
+                Some((_, line)) => *line,
+                None => return Err(self.error("match is never closed".to_string())),
+            };
+            let pattern = self.pattern()?;
+            self.expect(Token::FatArrow)?;
+            let body = if self.peek() == Some(&Token::LeftBrace) {
+                ArmBody::Block(self.block()?)
+            } else {
+                ArmBody::Expr(self.free_expression()?)
+            };
+            arms.push(Arm {
+                pattern,
+                body,
+                line,
+            });
+            self.skip_newlines();
+            if self.peek() == Some(&Token::Comma) {
+                self.pos += 1;
+            }
+        }
+        Ok(Expr::Match(Box::new(scrutinee), arms))
+    }
+
+    fn pattern(&mut self) -> Result<Pattern, Error> {
+        match self.advance() {
+            Some(Token::Ident(name)) if name == "_" => Ok(Pattern::Wildcard),
+            Some(Token::Number(n)) => Ok(Pattern::Literal(Expr::Number(n))),
+            Some(Token::Minus) => match self.advance() {
+                Some(Token::Number(n)) => Ok(Pattern::Literal(Expr::Number(-n))),
+                _ => Err(self.error("expected a number after '-' in a pattern".to_string())),
+            },
+            Some(Token::Str(text)) => Ok(Pattern::Literal(Expr::Str(text))),
+            Some(Token::True) => Ok(Pattern::Literal(Expr::Bool(true))),
+            Some(Token::False) => Ok(Pattern::Literal(Expr::Bool(false))),
+            Some(Token::NoneKeyword) => Ok(Pattern::Literal(Expr::None)),
+            Some(Token::Ident(name)) => {
+                if self.peek() == Some(&Token::Dot) {
+                    self.pos += 1;
+                    let variant = self.identifier()?;
+                    let bindings = self.pattern_bindings()?;
+                    Ok(Pattern::Variant {
+                        enum_name: Some(name),
+                        variant,
+                        bindings,
+                    })
+                } else if name.starts_with(char::is_uppercase) {
+                    let bindings = self.pattern_bindings()?;
+                    Ok(Pattern::Variant {
+                        enum_name: None,
+                        variant: name,
+                        bindings,
+                    })
+                } else {
+                    Ok(Pattern::Bind(name))
+                }
+            }
+            Some(token) => Err(self.error(format!("expected a pattern, found {token:?}"))),
+            None => Err(self.error("expected a pattern, found end of input".to_string())),
+        }
+    }
+
+    fn pattern_bindings(&mut self) -> Result<Vec<String>, Error> {
+        let mut bindings = Vec::new();
+        if self.peek() != Some(&Token::LeftParen) {
+            return Ok(bindings);
+        }
+        self.pos += 1;
+        loop {
+            bindings.push(self.identifier()?);
+            match self.advance() {
+                Some(Token::Comma) => {}
+                Some(Token::RightParen) => return Ok(bindings),
+                Some(token) => {
+                    return Err(self.error(format!("expected ',' or ')', found {token:?}")));
+                }
+                None => return Err(self.error("pattern is never closed".to_string())),
+            }
+        }
     }
 
     fn parse_type(&mut self) -> Result<Type, Error> {
@@ -517,9 +798,18 @@ impl Parser {
                 "bool" => Type::Bool,
                 "string" => Type::Str,
                 "any" => Type::Any,
-                "list" => Type::List,
+                "list" => {
+                    if self.peek() == Some(&Token::Less) {
+                        self.pos += 1;
+                        let inner = self.parse_type()?;
+                        self.expect(Token::Greater)?;
+                        Type::List(Box::new(inner))
+                    } else {
+                        Type::List(Box::new(Type::Any))
+                    }
+                }
                 "record" => Type::Record,
-                other => return Err(self.error(format!("unknown type '{other}'"))),
+                _ => Type::Named(name),
             },
             Some(Token::NoneKeyword) => Type::None,
             Some(Token::Fn) => {
@@ -564,12 +854,21 @@ impl Parser {
             Some(Token::NoneKeyword) => Ok(Expr::None),
             Some(Token::Str(text)) => Ok(Expr::Str(text)),
             Some(Token::Template(parts)) => self.template(parts),
+            Some(Token::Ident(name))
+                if !self.no_struct
+                    && name.starts_with(char::is_uppercase)
+                    && self.peek() == Some(&Token::LeftBrace) =>
+            {
+                self.pos += 1;
+                self.struct_literal(name)
+            }
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
+            Some(Token::Match) => self.match_expr(),
             Some(Token::Fn) => self.function(String::new()),
             Some(Token::LeftBracket) => Ok(Expr::List(self.items(Token::RightBracket)?)),
             Some(Token::LeftBrace) => self.record(),
             Some(Token::LeftParen) => {
-                let expr = self.expression()?;
+                let expr = self.free_expression()?;
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
@@ -652,7 +951,7 @@ impl Parser {
                 return Err(self.error(format!("field '{key}' is listed twice")));
             }
             self.expect(Token::Colon)?;
-            let value = named(self.expression()?, &key);
+            let value = named(self.free_expression()?, &key);
             fields.push((key, value));
             self.skip_newlines();
             match self.advance() {
@@ -662,6 +961,33 @@ impl Parser {
                     return Err(self.error(format!("expected ',' or '}}', found {token:?}")));
                 }
                 None => return Err(self.error("record is never closed".to_string())),
+            }
+        }
+    }
+
+    fn struct_literal(&mut self, name: String) -> Result<Expr, Error> {
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&Token::RightBrace) {
+                self.pos += 1;
+                return Ok(Expr::StructLit(name, fields));
+            }
+            let field = self.identifier()?;
+            if fields.iter().any(|(existing, _)| *existing == field) {
+                return Err(self.error(format!("field '{field}' is listed twice")));
+            }
+            self.expect(Token::Colon)?;
+            let value = named(self.free_expression()?, &field);
+            fields.push((field, value));
+            self.skip_newlines();
+            match self.advance() {
+                Some(Token::Comma) => {}
+                Some(Token::RightBrace) => return Ok(Expr::StructLit(name, fields)),
+                Some(token) => {
+                    return Err(self.error(format!("expected ',' or '}}', found {token:?}")));
+                }
+                None => return Err(self.error(format!("{name} {{ ... }} is never closed"))),
             }
         }
     }
@@ -692,12 +1018,14 @@ fn named(expr: Expr, new_name: &str) -> Expr {
     match expr {
         Expr::Function {
             name,
+            type_params,
             params,
             param_types,
             returns,
             body,
         } if name.is_empty() => Expr::Function {
             name: new_name.to_string(),
+            type_params,
             params,
             param_types,
             returns,

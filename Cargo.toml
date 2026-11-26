@@ -9,3 +9,8 @@ keywords = ["programming-language", "interpreter", "compiler", "concurrency"]
 categories = ["compilers", "development-tools"]
 
 [dependencies]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

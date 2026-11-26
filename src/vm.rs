@@ -5,12 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::compiler::{Capture, Code, Proto};
+use crate::compiler::{Capture, Code, PatternTest, Proto};
 use crate::error::Error;
 use crate::interpreter::Interpreter;
 use crate::lexer::lex;
 use crate::parser::{Op, Parser};
-use crate::value::{Closure, Fields, GlobalStore, Value, binary, write_number};
+use crate::value::{
+    Closure, EnumValue, Fields, GlobalStore, Instance, StructDef, Value, binary, equal,
+    write_number,
+};
 
 const MAX_FRAMES: usize = 10_000;
 
@@ -140,6 +143,30 @@ impl Vm {
                     base = $base;
                     return_to = $return_to;
                     continue 'frames;
+                }};
+            }
+
+            macro_rules! call_at {
+                ($callee_at:expr, $argc:expr) => {{
+                    let callee_at: usize = $callee_at;
+                    let argc: usize = $argc;
+                    match &self.stack[callee_at] {
+                        Value::Function(function) => {
+                            let function = Rc::clone(function);
+                            enter!(function, argc, callee_at + 1, callee_at)
+                        }
+                        Value::Native(native) => {
+                            let function = native.function;
+                            match function(&self.stack[callee_at + 1..]) {
+                                Ok(value) => {
+                                    self.stack.truncate(callee_at);
+                                    self.stack.push(value);
+                                }
+                                Err(message) => fail!(message),
+                            }
+                        }
+                        other => fail!(format!("{} is not a function", other.type_name())),
+                    }
                 }};
             }
 
@@ -465,23 +492,96 @@ impl Vm {
                     }
                     Code::Call(argc) => {
                         let argc = argc as usize;
-                        let callee_at = self.stack.len() - argc - 1;
-                        match &self.stack[callee_at] {
-                            Value::Function(function) => {
-                                let function = Rc::clone(function);
-                                enter!(function, argc, callee_at + 1, callee_at)
-                            }
-                            Value::Native(native) => {
-                                let function = native.function;
-                                match function(&self.stack[callee_at + 1..]) {
-                                    Ok(value) => {
-                                        self.stack.truncate(callee_at);
-                                        self.stack.push(value);
+                        call_at!(self.stack.len() - argc - 1, argc)
+                    }
+                    Code::Invoke(name, argc) => {
+                        let Value::Str(name) = &proto.constants[name as usize] else {
+                            fail!("internal error: method name is not a string");
+                        };
+                        let argc = argc as usize;
+                        let target_at = self.stack.len() - argc - 1;
+                        let target = self.stack[target_at].clone();
+                        match &target {
+                            Value::Instance(instance) => {
+                                let method = instance
+                                    .def
+                                    .methods
+                                    .iter()
+                                    .find(|(method, _)| **method == ***name)
+                                    .map(|(_, value)| value.clone());
+                                if let Some(Value::Function(function)) = method {
+                                    let expected = function.proto.arity as usize;
+                                    if expected != argc + 1 {
+                                        fail!(format!(
+                                            "{}.{name} expects {} argument{}, got {argc}",
+                                            instance.def.name,
+                                            expected.saturating_sub(1),
+                                            if expected == 2 { "" } else { "s" }
+                                        ));
                                     }
-                                    Err(message) => fail!(message),
+                                    enter!(function, argc + 1, target_at, target_at)
+                                }
+                                let field = instance
+                                    .def
+                                    .fields
+                                    .iter()
+                                    .position(|field| **field == ***name)
+                                    .map(|at| instance.fields.borrow()[at].clone());
+                                match field {
+                                    Some(value) => {
+                                        self.stack[target_at] = value;
+                                        call_at!(target_at, argc)
+                                    }
+                                    None => fail!(format!(
+                                        "{} has no method '{name}'",
+                                        instance.def.name
+                                    )),
                                 }
                             }
-                            other => fail!(format!("{} is not a function", other.type_name())),
+                            Value::StructDef(def) => {
+                                match def.methods.iter().find(|(method, _)| **method == ***name) {
+                                    Some((_, method)) => {
+                                        self.stack[target_at] = method.clone();
+                                        call_at!(target_at, argc)
+                                    }
+                                    None => fail!(format!("{} has no method '{name}'", def.name)),
+                                }
+                            }
+                            Value::EnumDef(def) => {
+                                let Some(variant) =
+                                    def.variants.iter().position(|(v, _)| **v == ***name)
+                                else {
+                                    fail!(format!("{} has no variant '{name}'", def.name));
+                                };
+                                let arity = def.variants[variant].1;
+                                if arity != argc {
+                                    fail!(format!(
+                                        "{}.{name} holds {arity} value{}, got {argc}",
+                                        def.name,
+                                        if arity == 1 { "" } else { "s" }
+                                    ));
+                                }
+                                let values = self.stack.split_off(target_at + 1);
+                                self.stack[target_at] = Value::Enum(Rc::new(EnumValue {
+                                    def: Rc::clone(def),
+                                    variant,
+                                    values,
+                                }));
+                            }
+                            Value::Record(fields) => match get_field(fields, name) {
+                                Ok(value) => {
+                                    self.stack[target_at] = value;
+                                    call_at!(target_at, argc)
+                                }
+                                Err(message) => fail!(message),
+                            },
+                            Value::None => fail!(format!(
+                                "cannot read field '{name}' of none, use '?.{name}' if it might be none"
+                            )),
+                            other => fail!(format!(
+                                "cannot read field '{name}' of {}",
+                                other.type_name()
+                            )),
                         }
                     }
                     Code::Return => {
@@ -597,6 +697,58 @@ impl Vm {
                                 Ok(value) => value,
                                 Err(message) => fail!(message),
                             },
+                            Value::Instance(instance) => {
+                                match instance
+                                    .def
+                                    .fields
+                                    .iter()
+                                    .position(|field| **field == ***name)
+                                {
+                                    Some(at) => instance.fields.borrow()[at].clone(),
+                                    None if instance
+                                        .def
+                                        .methods
+                                        .iter()
+                                        .any(|(m, _)| **m == ***name) =>
+                                    {
+                                        fail!(format!(
+                                            "'{name}' is a method of {}, call it like value.{name}(...)",
+                                            instance.def.name
+                                        ))
+                                    }
+                                    None => fail!(format!(
+                                        "{} has no field '{name}'",
+                                        instance.def.name
+                                    )),
+                                }
+                            }
+                            Value::StructDef(def) => {
+                                match def.methods.iter().find(|(m, _)| **m == ***name) {
+                                    Some((_, method)) => method.clone(),
+                                    None => fail!(format!("{} has no method '{name}'", def.name)),
+                                }
+                            }
+                            Value::EnumDef(def) => {
+                                match def.variants.iter().position(|(v, _)| **v == ***name) {
+                                    Some(variant) if def.variants[variant].1 == 0 => {
+                                        Value::Enum(Rc::new(EnumValue {
+                                            def: Rc::clone(def),
+                                            variant,
+                                            values: Vec::new(),
+                                        }))
+                                    }
+                                    Some(variant) => {
+                                        let arity = def.variants[variant].1;
+                                        fail!(format!(
+                                            "{}.{name} holds {arity} value{}, write {}.{name}(...)",
+                                            def.name,
+                                            if arity == 1 { "" } else { "s" },
+                                            def.name
+                                        ))
+                                    }
+                                    None => fail!(format!("{} has no variant '{name}'", def.name)),
+                                }
+                            }
                             Value::None => fail!(format!(
                                 "cannot read field '{name}' of none, use '?.{name}' if it might be none"
                             )),
@@ -619,11 +771,114 @@ impl Vm {
                                     fail!(message);
                                 }
                             }
+                            Value::Instance(instance) => {
+                                match instance
+                                    .def
+                                    .fields
+                                    .iter()
+                                    .position(|field| **field == ***name)
+                                {
+                                    Some(at) => instance.fields.borrow_mut()[at] = value,
+                                    None => fail!(format!(
+                                        "{} has no field '{name}'",
+                                        instance.def.name
+                                    )),
+                                }
+                            }
                             other => fail!(format!(
                                 "cannot set field '{name}' on {}",
                                 other.type_name()
                             )),
                         }
+                    }
+                    Code::MakeStructDef(index) => {
+                        let info = &proto.structs[index as usize];
+                        let methods = self.stack.split_off(self.stack.len() - info.methods.len());
+                        let def = StructDef {
+                            name: Rc::clone(&info.name),
+                            fields: Rc::clone(&info.fields),
+                            methods: info.methods.iter().cloned().zip(methods).collect(),
+                        };
+                        self.stack.push(Value::StructDef(Rc::new(def)));
+                    }
+                    Code::MakeEnumDef(index) => {
+                        self.stack
+                            .push(Value::EnumDef(Rc::clone(&proto.enums[index as usize])));
+                    }
+                    Code::MakeStruct(shape) => {
+                        let names = &proto.shapes[shape as usize];
+                        let mut given = self.stack.split_off(self.stack.len() - names.len());
+                        let Value::StructDef(def) = self.stack.pop().expect("struct definition")
+                        else {
+                            fail!("only a struct can be built with { ... }");
+                        };
+                        if let Some(extra) = names.iter().find(|name| !def.fields.contains(name)) {
+                            fail!(format!("{} has no field '{extra}'", def.name));
+                        }
+                        let mut fields = Vec::with_capacity(def.fields.len());
+                        for field in def.fields.iter() {
+                            match names.iter().position(|name| name == field) {
+                                Some(at) => {
+                                    fields.push(std::mem::replace(&mut given[at], Value::None))
+                                }
+                                None => fail!(format!("{} is missing field '{field}'", def.name)),
+                            }
+                        }
+                        self.stack.push(Value::Instance(Rc::new(Instance {
+                            def,
+                            fields: RefCell::new(fields),
+                        })));
+                    }
+                    Code::Test(pattern, fail_at) => match &proto.patterns[pattern as usize] {
+                        PatternTest::Value { slot, constant } => {
+                            let subject = &self.stack[base + *slot as usize];
+                            if !equal(subject, &proto.constants[*constant as usize])
+                                .unwrap_or(false)
+                            {
+                                ip = fail_at as usize;
+                            }
+                        }
+                        PatternTest::Variant {
+                            slot,
+                            enum_name,
+                            variant,
+                            arity,
+                        } => {
+                            let matched = match &self.stack[base + *slot as usize] {
+                                Value::Enum(value)
+                                    if enum_name.as_ref().is_none_or(|n| *n == value.def.name)
+                                        && value.def.variants[value.variant].0 == *variant =>
+                                {
+                                    Some(Rc::clone(value))
+                                }
+                                _ => None,
+                            };
+                            match matched {
+                                Some(value) => {
+                                    if value.values.len() != *arity as usize {
+                                        fail!(format!(
+                                            "{}.{variant} holds {} values, but the pattern names {arity}",
+                                            value.def.name,
+                                            value.values.len()
+                                        ));
+                                    }
+                                    self.stack.extend(value.values.iter().cloned());
+                                }
+                                None => ip = fail_at as usize,
+                            }
+                        }
+                    },
+                    Code::Squash(count) => {
+                        let value = self.stack.pop().expect("match value");
+                        let len = self.stack.len();
+                        self.stack.truncate(len - count as usize);
+                        self.stack.push(value);
+                    }
+                    Code::MatchFail(slot) => {
+                        fail!(format!(
+                            "no match arm for {}",
+                            self.stack[base + slot as usize]
+                        ));
                     }
                     Code::Concat(count) => {
                         let parts = self.stack.split_off(self.stack.len() - count as usize);

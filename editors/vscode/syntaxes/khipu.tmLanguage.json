@@ -53,11 +53,11 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while|for|in|break|continue|return|import|from)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return|import|from|match)\\b"
         },
         {
           "name": "storage.type.khipu",
-          "match": "\\b(let|fn)\\b"
+          "match": "\\b(let|fn|struct|enum)\\b"
         }
       ]
     },
@@ -70,6 +70,10 @@
         {
           "name": "constant.language.null.khipu",
           "match": "\\bnone\\b"
+        },
+        {
+          "name": "variable.language.self.khipu",
+          "match": "\\bself\\b"
         }
       ]
     },
@@ -224,6 +228,14 @@
         {
           "name": "keyword.operator.arrow.khipu",
           "match": "->"
+        },
+        {
+          "name": "keyword.operator.arrow.khipu",
+          "match": "=>"
+        },
+        {
+          "name": "entity.name.type.khipu",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
         }
       ]
     }

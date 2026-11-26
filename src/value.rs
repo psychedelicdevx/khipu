@@ -20,11 +20,37 @@ pub enum Value {
     Function(Rc<Closure>),
     Native(&'static Native),
     Cell(Cell),
+    StructDef(Rc<StructDef>),
+    Instance(Rc<Instance>),
+    EnumDef(Rc<EnumDef>),
+    Enum(Rc<EnumValue>),
 }
 
 pub struct Native {
     pub name: &'static str,
     pub function: NativeFn,
+}
+
+pub struct StructDef {
+    pub name: Rc<str>,
+    pub fields: Rc<[Rc<str>]>,
+    pub methods: Vec<(Rc<str>, Value)>,
+}
+
+pub struct Instance {
+    pub def: Rc<StructDef>,
+    pub fields: RefCell<Vec<Value>>,
+}
+
+pub struct EnumDef {
+    pub name: Rc<str>,
+    pub variants: Vec<(Rc<str>, usize)>,
+}
+
+pub struct EnumValue {
+    pub def: Rc<EnumDef>,
+    pub variant: usize,
+    pub values: Vec<Value>,
 }
 
 pub struct Closure {
@@ -52,6 +78,10 @@ impl Value {
             Value::Record(_) => "record",
             Value::Function(_) | Value::Native(..) => "function",
             Value::Cell(_) => "cell",
+            Value::StructDef(_) => "struct type",
+            Value::Instance(_) => "struct",
+            Value::EnumDef(_) => "enum type",
+            Value::Enum(_) => "enum",
         }
     }
 
@@ -90,6 +120,29 @@ impl fmt::Display for Value {
             Value::Function(closure) => write!(f, "<fn {}>", closure.proto.label()),
             Value::Native(native) => write!(f, "<fn {}>", native.name),
             Value::Cell(cell) => write!(f, "{}", cell.borrow()),
+            Value::StructDef(def) => write!(f, "<struct {}>", def.name),
+            Value::EnumDef(def) => write!(f, "<enum {}>", def.name),
+            Value::Instance(instance) => {
+                let values = instance.fields.borrow();
+                let fields: Vec<String> = instance
+                    .def
+                    .fields
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(name, value)| format!("{name}: {value:?}"))
+                    .collect();
+                write!(f, "{} {{ {} }}", instance.def.name, fields.join(", "))
+            }
+            Value::Enum(value) => {
+                let (variant, _) = &value.def.variants[value.variant];
+                write!(f, "{}.{variant}", value.def.name)?;
+                if !value.values.is_empty() {
+                    let values: Vec<String> =
+                        value.values.iter().map(|v| format!("{v:?}")).collect();
+                    write!(f, "({})", values.join(", "))?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -156,6 +209,27 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
                     }),
             )
         }
+        (Value::Instance(x), Value::Instance(y)) => {
+            if Rc::ptr_eq(x, y) {
+                return Some(true);
+            }
+            let (xs, ys) = (x.fields.borrow(), y.fields.borrow());
+            Some(
+                Rc::ptr_eq(&x.def, &y.def)
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .all(|(a, b)| equal(a, b).unwrap_or(false)),
+            )
+        }
+        (Value::Enum(x), Value::Enum(y)) => Some(
+            Rc::ptr_eq(&x.def, &y.def)
+                && x.variant == y.variant
+                && x.values
+                    .iter()
+                    .zip(y.values.iter())
+                    .all(|(a, b)| equal(a, b).unwrap_or(false)),
+        ),
         (Value::None, other) | (other, Value::None) => Some(matches!(other, Value::None)),
         _ => None,
     }

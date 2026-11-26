@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(error("len()").message, "len expects 1 argument, got 0");
         assert_eq!(
             error("[1] == 1").message,
-            "cannot use '==' on list and number"
+            "cannot use '==' on list<number> and number"
         );
     }
 
@@ -782,5 +782,150 @@ mod tests {
             "'x' should be number, got string"
         );
         assert!(matches!(run("x").unwrap(), Some(Value::Number(n)) if n == 1.0));
+    }
+
+    const POINT: &str = "struct Point {\n  x: number,\n  y: number,\n\n  fn length_squared(self) -> number {\n    return self.x * self.x + self.y * self.y\n  }\n\n  fn moved(self, dx: number) -> Point {\n    return Point { x: self.x + dx, y: self.y }\n  }\n\n  fn origin() -> Point {\n    return Point { x: 0, y: 0 }\n  }\n}\n";
+
+    #[test]
+    fn builds_structs_and_calls_methods() {
+        assert_eq!(
+            number(&format!(
+                "{POINT}let p = Point {{ x: 3, y: 4 }}\np.length_squared()"
+            )),
+            25.0
+        );
+        assert_eq!(
+            number(&format!("{POINT}Point {{ y: 2, x: 1 }}.moved(10).x")),
+            11.0
+        );
+        assert_eq!(
+            number(&format!("{POINT}Point.origin().length_squared()")),
+            0.0
+        );
+        assert_eq!(
+            string(&format!("{POINT}\"${{Point {{ x: 1, y: 2 }}}}\"")),
+            "Point { x: 1, y: 2 }"
+        );
+        assert!(boolean(&format!(
+            "{POINT}Point {{ x: 1, y: 2 }} == Point {{ x: 1, y: 2 }}"
+        )));
+        assert_eq!(
+            number(&format!(
+                "{POINT}let p = Point {{ x: 1, y: 2 }}\np.x = 9\np.x"
+            )),
+            9.0
+        );
+    }
+
+    #[test]
+    fn checks_struct_usage() {
+        assert_eq!(
+            error(&format!("{POINT}Point {{ x: 1 }}")).message,
+            "Point is missing field 'y'"
+        );
+        assert_eq!(
+            error(&format!("{POINT}Point {{ x: 1, y: 2, z: 3 }}")).message,
+            "Point has no field 'z'"
+        );
+        assert_eq!(
+            error(&format!("{POINT}Point {{ x: \"1\", y: 2 }}")).message,
+            "'Point.x' should be number, got string"
+        );
+        assert_eq!(
+            error(&format!("{POINT}Point.origin().z")).message,
+            "Point has no field 'z'"
+        );
+        assert_eq!(
+            error(&format!("{POINT}Point.origin().moved(\"far\")")).message,
+            "argument 1 of 'moved' should be number, got string"
+        );
+        assert_eq!(
+            error(&format!("{POINT}let p: Point = Point.origin()\np = 5")).message,
+            "'p' should be Point, got number"
+        );
+        assert_eq!(
+            error("struct Box {\n  size: number,\n  fn get(self) -> string {\n    return self.size\n  }\n}").message,
+            "'Box.get' should return string, got number"
+        );
+    }
+
+    const SHAPE: &str = "enum Shape {\n  Circle(number),\n  Rect(number, number),\n  Empty,\n}\n";
+
+    #[test]
+    fn matches_enums() {
+        let area = "fn area(s: Shape) -> number {\n  return match s {\n    Shape.Circle(r) => 3 * r * r,\n    Shape.Rect(w, h) => w * h,\n    Shape.Empty => 0,\n  }\n}\n";
+        assert_eq!(
+            number(&format!(
+                "{SHAPE}{area}area(Shape.Rect(2, 5)) + area(Shape.Circle(1)) + area(Shape.Empty)"
+            )),
+            13.0
+        );
+        assert_eq!(
+            string(&format!(
+                "{SHAPE}\"${{Shape.Rect(2, 5)}} ${{Shape.Empty}}\""
+            )),
+            "Shape.Rect(2, 5) Shape.Empty"
+        );
+        assert!(boolean(&format!(
+            "{SHAPE}Shape.Circle(2) == Shape.Circle(2)"
+        )));
+        assert!(!boolean(&format!("{SHAPE}Shape.Circle(2) == Shape.Empty")));
+    }
+
+    #[test]
+    fn match_needs_every_case() {
+        let partial = "let s = Shape.Empty\nmatch s {\n  Shape.Circle(r) => print(r),\n  Shape.Empty => print(0),\n}";
+        assert_eq!(
+            error(&format!("{SHAPE}{partial}")).message,
+            "match on Shape is missing Shape.Rect"
+        );
+        let wildcard = "let s = Shape.Rect(1, 2)\nlet label = match s {\n  Shape.Circle(r) => \"round\",\n  _ => \"other\",\n}\nlabel";
+        assert_eq!(string(&format!("{SHAPE}{wildcard}")), "other");
+        assert_eq!(
+            error("let n = 5\nmatch n {\n  1 => print(1),\n}").message,
+            "match on number needs a '_' arm for the other values"
+        );
+        assert_eq!(
+            error(&format!("{SHAPE}let s = Shape.Empty\nmatch s {{\n  Shape.Rect(w) => print(w),\n  _ => print(0),\n}}")).message,
+            "Shape.Rect holds 2 values, but the pattern names 1"
+        );
+    }
+
+    #[test]
+    fn matches_plain_values() {
+        let source = "fn describe(n: number) -> string {\n  return match n {\n    0 => \"zero\",\n    1 => \"one\",\n    other => \"many: ${other}\",\n  }\n}\ndescribe(0) + \" \" + describe(1) + \" \" + describe(7)";
+        assert_eq!(string(source), "zero one many: 7");
+        let blocks = "let total = 0\nfor n in [1, 2, 3] {\n  match n % 2 == 0 {\n    true => {\n      total = total + 10\n    }\n    false => {\n      total = total + 1\n    }\n  }\n}\ntotal";
+        assert_eq!(number(blocks), 12.0);
+    }
+
+    #[test]
+    fn checks_generic_lists_and_functions() {
+        let first = "fn first<T>(items: list<T>) -> T {\n  return items[0]\n}\n";
+        assert_eq!(number(&format!("{first}first([4, 5]) + 1")), 5.0);
+        assert_eq!(
+            error(&format!("{first}first([\"a\"]) + 1")).message,
+            "cannot use '+' on string and number, use \"${...}\" to put values inside a string"
+        );
+        assert_eq!(
+            error("let names: list<string> = [\"a\"]\npush(names, 5)").message,
+            "cannot push number into list<string>"
+        );
+        assert_eq!(
+            error("let xs: list<number> = [\"a\", \"b\"]").message,
+            "'xs' should be list<number>, got list<string>"
+        );
+        let typed = "let total = 0\nlet xs: list<number> = [1, 2, 3]\nfor x in xs {\n  total = total + x\n}\ntotal";
+        assert_eq!(number(typed), 6.0);
+        assert_eq!(
+            error("for x in [\"a\"] {\n  let n: number = x\n}").message,
+            "'n' should be number, got string"
+        );
+    }
+
+    #[test]
+    fn struct_literals_do_not_confuse_conditions() {
+        let source = "let Ready = true\nlet count = 0\nif Ready {\n  count = 1\n}\nwhile Ready {\n  Ready = false\n}\ncount";
+        assert_eq!(number(source), 1.0);
     }
 }

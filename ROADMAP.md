@@ -7,13 +7,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
-| 3. Types | `██████░░░░` 4 / 7 |
-| 4. Tooling | `██░░░░░░░░` 2 / 9 |
-| 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
-| 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 7. Native speed | `░░░░░░░░░░` 0 / 3 |
+| 3. Types | `██████████` 7 / 7 |
+| 4. Benchmarks | `░░░░░░░░░░` 0 / 8 |
+| 5. Tooling | `██░░░░░░░░` 2 / 9 |
+| 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
+| 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 8. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Structs / classes with methods
+**Next up:** Median of 20+ runs with spread, instead of best of 5
 
 ---
 
@@ -55,17 +56,28 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Virtual machine that runs the bytecode
 - [x] Faster than Python on every benchmark
 
-## Phase 3: Types (the C# feel)
+## Phase 3: Types (the C# feel) ✅
 
 - [x] Type annotations: `let age: number = 36`
 - [x] A type checker that runs before the program does
 - [x] Type inference for `let`
 - [x] Typed function signatures
-- [ ] Structs / classes with methods
-- [ ] Enums with values, and `match`
-- [ ] Generics: `List<T>`
+- [x] Structs / classes with methods
+- [x] Enums with values, and `match`
+- [x] Generics: `List<T>`
 
-## Phase 4: Tooling
+## Phase 4: Benchmarks
+
+- [ ] Median of 20+ runs with spread, instead of best of 5
+- [ ] Separate cold-start and sustained (long-running) results
+- [ ] Peak memory for every benchmark
+- [ ] CPU set: iterative Fibonacci, nested loops, prime sieve, matrix multiply, Mandelbrot
+- [ ] Microbenchmarks: calls, local and global variables, record and struct access
+- [ ] C and Rust reference versions of every benchmark
+- [ ] Interleaved runs with raw results saved in `benchmarks/results`
+- [ ] BENCHMARKS.md: methodology, and every result, including where Khipu loses
+
+## Phase 5: Tooling
 
 - [x] VS Code syntax highlighting
 - [x] `.kp` file icon (KP, Go style)
@@ -77,7 +89,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Tree-sitter grammar (Zed, Neovim, GitHub)
 - [ ] Documentation site
 
-## Phase 5: Concurrency (Khipu's signature)
+## Phase 6: Concurrency (Khipu's signature)
 
 - [ ] `spawn` lightweight tasks
 - [ ] Channels: `send` and `receive`
@@ -85,7 +97,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] `select` across several channels
 - [ ] No shared mutable state, so no data races
 
-## Phase 6: Ecosystem
+## Phase 7: Ecosystem
 
 - [ ] Standard library: math, strings, lists
 - [ ] Files and the terminal
@@ -94,7 +106,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [ ] Package manager
 - [ ] Compile Khipu to WASM for the web
 
-## Phase 7: Native speed
+## Phase 8: Native speed
 
 - [ ] Garbage collector
 - [ ] Native compilation (Cranelift)

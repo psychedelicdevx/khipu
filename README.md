@@ -90,13 +90,14 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | 0. Foundations | `██████████` 12 / 12 |
 | 1. Core language | `██████████` 10 / 10 |
 | 2. Speed | `██████████` 7 / 7 |
-| 3. Types | `██████░░░░` 4 / 7 |
-| 4. Tooling | `██░░░░░░░░` 2 / 9 |
-| 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
-| 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 7. Native speed | `░░░░░░░░░░` 0 / 3 |
+| 3. Types | `██████████` 7 / 7 |
+| 4. Benchmarks | `░░░░░░░░░░` 0 / 8 |
+| 5. Tooling | `██░░░░░░░░` 2 / 9 |
+| 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
+| 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
+| 8. Native speed | `░░░░░░░░░░` 0 / 3 |
 
-**Next up:** Structs / classes with methods
+**Next up:** Median of 20+ runs with spread, instead of best of 5
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -104,12 +105,12 @@ The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselve
 
 | Benchmark | Khipu | Python | Node | vs Python | vs Node |
 |---|---|---|---|---|---|
-| closures | 19 ms | 37 ms | 25 ms | **2.0× faster** | **1.4× faster** |
-| fib | 18 ms | 25 ms | 24 ms | **1.4× faster** | **1.3× faster** |
-| lists | 14 ms | 41 ms | 29 ms | **3.0× faster** | **2.1× faster** |
-| loop | 34 ms | 211 ms | 35 ms | **6.2× faster** | **1.0× faster** |
-| records | 23 ms | 44 ms | 25 ms | **1.9× faster** | **1.1× faster** |
-| strings | 25 ms | 41 ms | 25 ms | **1.6× faster** | **1.0× faster** |
+| closures | 15 ms | 34 ms | 24 ms | **2.2× faster** | **1.6× faster** |
+| fib | 16 ms | 24 ms | 23 ms | **1.5× faster** | **1.4× faster** |
+| lists | 12 ms | 37 ms | 26 ms | **3.0× faster** | **2.1× faster** |
+| loop | 33 ms | 192 ms | 33 ms | **5.8× faster** | 1.0× slower |
+| records | 22 ms | 42 ms | 23 ms | **1.9× faster** | **1.1× faster** |
+| strings | 23 ms | 39 ms | 25 ms | **1.7× faster** | **1.1× faster** |
 
 Best of 5 runs, including start-up, on Apple M5. Run `python3 scripts/bench.py` to measure again.
 
@@ -125,6 +126,7 @@ Every benchmark in `benchmarks/` exists in Khipu, Python and JavaScript, and the
 |---|---|
 | `src/lexer.rs` | Turns source text into tokens |
 | `src/parser.rs` | Turns tokens into a syntax tree |
+| `src/checker.rs` | The static type checker, run before anything executes |
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |

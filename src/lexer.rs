@@ -24,6 +24,10 @@ pub enum Token {
     Continue,
     Import,
     From,
+    Struct,
+    Enum,
+    Match,
+    FatArrow,
     True,
     False,
     NoneKeyword,
@@ -77,6 +81,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
 
         let double = match (c, next) {
             ('=', Some('=')) => Some(Token::EqualEqual),
+            ('=', Some('>')) => Some(Token::FatArrow),
             ('!', Some('=')) => Some(Token::BangEqual),
             ('<', Some('=')) => Some(Token::LessEqual),
             ('>', Some('=')) => Some(Token::GreaterEqual),
@@ -167,6 +172,9 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                     "continue" => Token::Continue,
                     "import" => Token::Import,
                     "from" => Token::From,
+                    "struct" => Token::Struct,
+                    "enum" => Token::Enum,
+                    "match" => Token::Match,
                     "true" => Token::True,
                     "false" => Token::False,
                     "none" => Token::NoneKeyword,

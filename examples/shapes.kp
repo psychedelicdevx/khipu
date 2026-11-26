@@ -1,0 +1,46 @@
+struct Point {
+    x: number,
+    y: number,
+
+    fn plus(self, other: Point) -> Point {
+        return Point { x: self.x + other.x, y: self.y + other.y }
+    }
+
+    fn origin() -> Point {
+        return Point { x: 0, y: 0 }
+    }
+}
+
+enum Shape {
+    Circle(number),
+    Rect(number, number),
+    Empty,
+}
+
+fn area(shape: Shape) -> number {
+    return match shape {
+        Shape.Circle(r) => 3.14159 * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Empty => 0,
+    }
+}
+
+fn largest<T>(items: list<T>, score: fn(T) -> number) -> T {
+    let best = items[0]
+    for item in items {
+        if score(item) > score(best) {
+            best = item
+        }
+    }
+    return best
+}
+
+let moved = Point.origin().plus(Point { x: 2, y: 3 })
+print("moved to", moved)
+
+let shapes = [Shape.Circle(1), Shape.Rect(3, 4), Shape.Empty]
+for shape in shapes {
+    print(shape, "has area", area(shape))
+}
+
+print("largest:", largest(shapes, area))

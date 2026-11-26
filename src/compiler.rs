@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::parser::{Block, Expr, Import, Op, Stmt};
-use crate::value::Value;
+use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt};
+use crate::value::{EnumDef, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Check {
@@ -91,10 +91,36 @@ pub enum Code {
     GetField(u32),
     SetField(u32),
     Concat(u32),
+    MakeStructDef(u32),
+    MakeStruct(u32),
+    MakeEnumDef(u32),
+    Invoke(u32, u32),
+    Test(u32, u32),
+    Squash(u32),
+    MatchFail(u32),
     IterInit,
     ForNext(u32, u32),
     Import(u32),
     ImportName(u32, u32),
+}
+
+pub struct StructInfo {
+    pub name: Rc<str>,
+    pub fields: Rc<[Rc<str>]>,
+    pub methods: Vec<Rc<str>>,
+}
+
+pub enum PatternTest {
+    Value {
+        slot: u32,
+        constant: u32,
+    },
+    Variant {
+        slot: u32,
+        enum_name: Option<Rc<str>>,
+        variant: Rc<str>,
+        arity: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +138,9 @@ pub struct Proto {
     pub protos: Vec<Rc<Proto>>,
     pub shapes: Vec<Rc<[Rc<str>]>>,
     pub captures: Vec<Capture>,
+    pub structs: Vec<StructInfo>,
+    pub enums: Vec<Rc<EnumDef>>,
+    pub patterns: Vec<PatternTest>,
 }
 
 impl Proto {
@@ -125,6 +154,9 @@ impl Proto {
             protos: Vec::new(),
             shapes: Vec::new(),
             captures: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            patterns: Vec::new(),
         }
     }
 
@@ -231,7 +263,7 @@ pub fn compile_script(
         compiler.line = *line as u32;
         match stmt {
             Stmt::Expr(expr) if index + 1 == program.len() => {
-                compiler.expression(expr)?;
+                compiler.value(expr)?;
                 compiler.emit(Code::Return);
             }
             _ => compiler.statement(stmt)?,
@@ -292,6 +324,7 @@ impl Compiler<'_> {
             Code::JumpIfNotNoneKeep(_) => Code::JumpIfNotNoneKeep(target),
             Code::JumpIfNoneKeep(_) => Code::JumpIfNoneKeep(target),
             Code::ForNext(slot, _) => Code::ForNext(slot, target),
+            Code::Test(pattern, _) => Code::Test(pattern, target),
             other => other,
         };
     }
@@ -514,7 +547,7 @@ impl Compiler<'_> {
                 });
             }
             Stmt::Let(name, _, expr) => {
-                self.expression(expr)?;
+                self.value(expr)?;
                 self.define(name);
             }
             Stmt::Assign(name, expr @ Expr::Binary(left, op @ (Op::Add | Op::Sub), right)) if matches!(&**left, Expr::Variable(target) if target == name) =>
@@ -545,7 +578,7 @@ impl Compiler<'_> {
                 }
             }
             Stmt::Assign(name, expr) => {
-                self.expression(expr)?;
+                self.value(expr)?;
                 self.set_variable(name)?;
             }
             Stmt::SetIndex(target, index, value) => {
@@ -634,7 +667,7 @@ impl Compiler<'_> {
             }
             Stmt::Return(expr) => {
                 match expr {
-                    Some(expr) => self.expression(expr)?,
+                    Some(expr) => self.value(expr)?,
                     None => {
                         self.emit(Code::None);
                     }
@@ -658,11 +691,203 @@ impl Compiler<'_> {
                     }
                 }
             }
+            Stmt::Struct(decl) => {
+                let local = self.declare_first(&decl.name);
+                for (_, method) in &decl.methods {
+                    self.expression(method)?;
+                }
+                let structs = &mut self.current().proto.structs;
+                structs.push(StructInfo {
+                    name: Rc::from(decl.name.as_str()),
+                    fields: decl
+                        .fields
+                        .iter()
+                        .map(|(field, _)| Rc::from(field.as_str()))
+                        .collect(),
+                    methods: decl
+                        .methods
+                        .iter()
+                        .map(|(method, _)| Rc::from(method.as_str()))
+                        .collect(),
+                });
+                let index = (structs.len() - 1) as u32;
+                self.emit(Code::MakeStructDef(index));
+                self.finish_declaration(&decl.name, local);
+            }
+            Stmt::Enum(decl) => {
+                let enums = &mut self.current().proto.enums;
+                enums.push(Rc::new(EnumDef {
+                    name: Rc::from(decl.name.as_str()),
+                    variants: decl
+                        .variants
+                        .iter()
+                        .map(|(variant, payload)| (Rc::from(variant.as_str()), payload.len()))
+                        .collect(),
+                }));
+                let index = (enums.len() - 1) as u32;
+                self.emit(Code::MakeEnumDef(index));
+                self.define(&decl.name);
+            }
+            Stmt::Expr(Expr::Match(scrutinee, arms)) => self.match_expr(scrutinee, arms, false)?,
             Stmt::Expr(expr) => {
                 self.expression(expr)?;
                 self.emit(Code::Pop);
             }
         }
+        Ok(())
+    }
+
+    fn declare_first(&mut self, name: &str) -> Option<(u32, bool)> {
+        if self.defines_global(name) {
+            return None;
+        }
+        self.emit(Code::None);
+        let boxed = self.current().captured.contains(name);
+        let slot = self.declare_local(name, boxed);
+        if boxed {
+            self.emit(Code::MakeCell(slot));
+        }
+        Some((slot, boxed))
+    }
+
+    fn finish_declaration(&mut self, name: &str, local: Option<(u32, bool)>) {
+        match local {
+            Some((slot, true)) => {
+                self.emit(Code::SetCell(slot));
+            }
+            Some((slot, false)) => {
+                self.emit(Code::SetLocal(slot));
+            }
+            None => {
+                let slot = self.globals.slot(name);
+                self.emit(Code::DefineGlobal(slot));
+            }
+        }
+    }
+
+    fn value(&mut self, expr: &Expr) -> Result<(), Error> {
+        match expr {
+            Expr::Match(scrutinee, arms) => self.match_expr(scrutinee, arms, true),
+            other => self.expression(other),
+        }
+    }
+
+    fn bind(&mut self, name: &str) {
+        if name == "_" {
+            self.declare_local("", false);
+            return;
+        }
+        let boxed = self.current().captured.contains(name);
+        let slot = self.declare_local(name, boxed);
+        if boxed {
+            self.emit(Code::MakeCell(slot));
+        }
+    }
+
+    fn leave_locals(&mut self, keep: usize) -> usize {
+        let state = self.current();
+        let removed = state.locals.len() - keep;
+        state.locals.truncate(keep);
+        state.depth -= 1;
+        removed
+    }
+
+    fn match_expr(&mut self, scrutinee: &Expr, arms: &[Arm], keep: bool) -> Result<(), Error> {
+        let line = self.line;
+        self.expression(scrutinee)?;
+        self.begin_scope();
+        let before_subject = self.current().locals.len();
+        let subject = self.declare_local("", false);
+        let mut ends = Vec::new();
+
+        for arm in arms {
+            self.line = arm.line as u32;
+            let before_arm = self.current().locals.len();
+            self.begin_scope();
+            let fail = match &arm.pattern {
+                Pattern::Wildcard => None,
+                Pattern::Bind(name) => {
+                    self.emit(Code::GetLocal(subject));
+                    self.bind(name);
+                    None
+                }
+                Pattern::Literal(literal) => {
+                    let value = match literal {
+                        Expr::Number(n) => Value::Number(*n),
+                        Expr::Str(text) => Value::str(text),
+                        Expr::Bool(b) => Value::Bool(*b),
+                        _ => Value::None,
+                    };
+                    let constant = self.constant(value);
+                    let patterns = &mut self.current().proto.patterns;
+                    patterns.push(PatternTest::Value {
+                        slot: subject,
+                        constant,
+                    });
+                    let index = (patterns.len() - 1) as u32;
+                    Some(self.emit(Code::Test(index, 0)))
+                }
+                Pattern::Variant {
+                    enum_name,
+                    variant,
+                    bindings,
+                } => {
+                    let patterns = &mut self.current().proto.patterns;
+                    patterns.push(PatternTest::Variant {
+                        slot: subject,
+                        enum_name: enum_name.as_deref().map(Rc::from),
+                        variant: Rc::from(variant.as_str()),
+                        arity: bindings.len() as u32,
+                    });
+                    let index = (patterns.len() - 1) as u32;
+                    let fail = self.emit(Code::Test(index, 0));
+                    for binding in bindings {
+                        self.bind(binding);
+                    }
+                    Some(fail)
+                }
+            };
+
+            match &arm.body {
+                ArmBody::Expr(expr) => {
+                    if keep {
+                        self.value(expr)?;
+                    } else if let Expr::Match(inner, inner_arms) = expr {
+                        self.match_expr(inner, inner_arms, false)?;
+                    } else {
+                        self.expression(expr)?;
+                        self.emit(Code::Pop);
+                    }
+                }
+                ArmBody::Block(block) => {
+                    self.statements(block)?;
+                    if keep {
+                        self.emit(Code::None);
+                    }
+                }
+            }
+            self.line = arm.line as u32;
+            let removed = self.leave_locals(before_arm);
+            if removed > 0 {
+                self.emit(if keep {
+                    Code::Squash(removed as u32)
+                } else {
+                    Code::PopN(removed as u32)
+                });
+            }
+            ends.push(self.emit(Code::Jump(0)));
+            if let Some(fail) = fail {
+                self.patch(fail);
+            }
+        }
+
+        self.line = line;
+        self.emit(Code::MatchFail(subject));
+        for end in ends {
+            self.patch(end);
+        }
+        self.leave_locals(before_subject);
+        self.emit(if keep { Code::Squash(1) } else { Code::PopN(1) });
         Ok(())
     }
 
@@ -808,6 +1033,39 @@ impl Compiler<'_> {
             Expr::Function {
                 name, params, body, ..
             } => self.function(name, params, body)?,
+            Expr::Match(..) => {
+                return Err(Error {
+                    line: self.line as usize,
+                    message:
+                        "match can only be used as a statement, or right after let, = or return"
+                            .to_string(),
+                });
+            }
+            Expr::StructLit(name, fields) => {
+                self.get_variable(name)?;
+                for (_, value) in fields {
+                    self.expression(value)?;
+                }
+                let shape: Rc<[Rc<str>]> = fields
+                    .iter()
+                    .map(|(field, _)| Rc::from(field.as_str()))
+                    .collect();
+                let shapes = &mut self.current().proto.shapes;
+                shapes.push(shape);
+                let index = (shapes.len() - 1) as u32;
+                self.emit(Code::MakeStruct(index));
+            }
+            Expr::Call(callee, args) if matches!(**callee, Expr::Field(..)) => {
+                let Expr::Field(target, method) = &**callee else {
+                    unreachable!("checked by the guard")
+                };
+                self.expression(target)?;
+                for arg in args {
+                    self.expression(arg)?;
+                }
+                let name = self.name_constant(method);
+                self.emit(Code::Invoke(name, args.len() as u32));
+            }
             Expr::Call(callee, args) => {
                 if let Expr::Variable(name) = &**callee
                     && let Var::Global(slot) = self.resolve(name)?
@@ -900,7 +1158,12 @@ fn walk_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
                 walk_expr(expr, inside, names);
             }
         }
-        Stmt::Break | Stmt::Continue | Stmt::Import(..) => {}
+        Stmt::Struct(decl) => {
+            for (_, method) in &decl.methods {
+                walk_expr(method, inside, names);
+            }
+        }
+        Stmt::Break | Stmt::Continue | Stmt::Import(..) | Stmt::Enum(_) => {}
     }
 }
 
@@ -935,6 +1198,23 @@ fn walk_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
             walk_expr(callee, inside, names);
             for arg in args {
                 walk_expr(arg, inside, names);
+            }
+        }
+        Expr::StructLit(name, fields) => {
+            if inside {
+                names.insert(name.clone());
+            }
+            for (_, value) in fields {
+                walk_expr(value, inside, names);
+            }
+        }
+        Expr::Match(scrutinee, arms) => {
+            walk_expr(scrutinee, inside, names);
+            for arm in arms {
+                match &arm.body {
+                    ArmBody::Expr(expr) => walk_expr(expr, inside, names),
+                    ArmBody::Block(block) => walk_block(block, inside, names),
+                }
             }
         }
     }
