@@ -46,6 +46,8 @@ pub enum Token {
     LeftBracket,
     RightBracket,
     Comma,
+    Colon,
+    Dot,
     Newline,
 }
 
@@ -94,6 +96,8 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             '[' => Some(Token::LeftBracket),
             ']' => Some(Token::RightBracket),
             ',' => Some(Token::Comma),
+            ':' => Some(Token::Colon),
+            '.' => Some(Token::Dot),
             '=' => Some(Token::Equals),
             '<' => Some(Token::Less),
             '>' => Some(Token::Greater),

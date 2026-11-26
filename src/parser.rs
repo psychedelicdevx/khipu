@@ -10,6 +10,7 @@ pub enum Stmt {
     Let(String, Expr),
     Assign(String, Expr),
     SetIndex(Expr, Expr, Expr),
+    SetField(Expr, String, Expr),
     If(Expr, Block, Option<Block>),
     While(Expr, Block),
     For(String, Expr, Block),
@@ -27,6 +28,8 @@ pub enum Expr {
     Template(Vec<Expr>),
     List(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
+    Record(Vec<(String, Expr)>),
+    Field(Box<Expr>, String),
     Variable(String),
     Negate(Box<Expr>),
     Not(Box<Expr>),
@@ -188,9 +191,10 @@ impl Parser {
                 match target {
                     Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
                     Expr::Index(list, index) => Ok(Stmt::SetIndex(*list, *index, value)),
-                    _ => {
-                        Err(self.error("only a name or a list item can be assigned to".to_string()))
-                    }
+                    Expr::Field(record, name) => Ok(Stmt::SetField(*record, name, value)),
+                    _ => Err(self.error(
+                        "only a name, a list item or a field can be assigned to".to_string(),
+                    )),
                 }
             }
         }
@@ -344,6 +348,11 @@ impl Parser {
                     self.expect(Token::RightBracket)?;
                     expr = Expr::Index(Box::new(expr), Box::new(index));
                 }
+                Some(Token::Dot) => {
+                    self.pos += 1;
+                    let name = self.identifier()?;
+                    expr = Expr::Field(Box::new(expr), name);
+                }
                 _ => return Ok(expr),
             }
         }
@@ -407,6 +416,7 @@ impl Parser {
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),
             Some(Token::Fn) => self.function(String::new()),
             Some(Token::LeftBracket) => Ok(Expr::List(self.items(Token::RightBracket)?)),
+            Some(Token::LeftBrace) => self.record(),
             Some(Token::LeftParen) => {
                 let expr = self.expression()?;
                 self.expect(Token::RightParen)?;
@@ -469,6 +479,46 @@ impl Parser {
         Error {
             line: self.line,
             message,
+        }
+    }
+
+    fn record(&mut self) -> Result<Expr, Error> {
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&Token::RightBrace) {
+                self.pos += 1;
+                return Ok(Expr::Record(fields));
+            }
+            let key = match self.advance() {
+                Some(Token::Ident(name)) | Some(Token::Str(name)) => name,
+                Some(token) => {
+                    return Err(self.error(format!("expected a field name, found {token:?}")));
+                }
+                None => return Err(self.error("record is never closed".to_string())),
+            };
+            if fields.iter().any(|(existing, _)| *existing == key) {
+                return Err(self.error(format!("field '{key}' is listed twice")));
+            }
+            self.expect(Token::Colon)?;
+            let value = match self.expression()? {
+                Expr::Function { name, params, body } if name.is_empty() => Expr::Function {
+                    name: key.clone(),
+                    params,
+                    body,
+                },
+                other => other,
+            };
+            fields.push((key, value));
+            self.skip_newlines();
+            match self.advance() {
+                Some(Token::Comma) => {}
+                Some(Token::RightBrace) => return Ok(Expr::Record(fields)),
+                Some(token) => {
+                    return Err(self.error(format!("expected ',' or '}}', found {token:?}")));
+                }
+                None => return Err(self.error("record is never closed".to_string())),
+            }
         }
     }
 

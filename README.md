@@ -86,14 +86,14 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `███████░░░` 7 / 10 |
+| 1. Core language | `████████░░` 8 / 10 |
 | 2. Types | `░░░░░░░░░░` 0 / 7 |
 | 3. Tooling | `██░░░░░░░░` 2 / 9 |
 | 4. Speed | `░░░░░░░░░░` 0 / 5 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 
-**Next up:** Records (objects): `{ name: "Ada", age: 36 }`
+**Next up:** `none` instead of `null` and `undefined`
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 

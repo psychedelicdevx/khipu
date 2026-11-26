@@ -13,6 +13,9 @@
       "include": "#builtins"
     },
     {
+      "include": "#properties"
+    },
+    {
       "include": "#functions"
     },
     {
@@ -75,7 +78,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.khipu",
-          "match": "\\b(print|len|push|range)\\b(?=\\s*\\()"
+          "match": "\\b(print|len|push|range|keys)\\b(?=\\s*\\()"
         }
       ]
     },
@@ -175,6 +178,29 @@
         {
           "name": "entity.name.function.call.khipu",
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "properties": {
+      "patterns": [
+        {
+          "match": "\\.\\s*([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.khipu"
+            }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.khipu"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.khipu"
+            }
+          }
         }
       ]
     }

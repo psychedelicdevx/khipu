@@ -9,6 +9,7 @@ use crate::parser::{Block, Expr, Op, Stmt};
 const MAX_CALL_DEPTH: usize = 1000;
 
 type NativeFn = fn(&[Value]) -> Result<Value, String>;
+type Fields = Vec<(String, Value)>;
 
 #[derive(Clone)]
 pub enum Value {
@@ -16,6 +17,7 @@ pub enum Value {
     Bool(bool),
     Str(String),
     List(Rc<RefCell<Vec<Value>>>),
+    Record(Rc<RefCell<Fields>>),
     Function(Rc<Function>),
     Native(&'static str, NativeFn),
     None,
@@ -58,6 +60,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::Str(_) => "string",
             Value::List(_) => "list",
+            Value::Record(_) => "record",
             Value::Function(_) | Value::Native(..) => "function",
             Value::None => "none",
         }
@@ -77,6 +80,14 @@ impl fmt::Display for Value {
                     .map(|item| format!("{item:?}"))
                     .collect();
                 write!(f, "[{}]", items.join(", "))
+            }
+            Value::Record(fields) => {
+                let fields: Vec<String> = fields
+                    .borrow()
+                    .iter()
+                    .map(|(name, value)| format!("{name}: {value:?}"))
+                    .collect();
+                write!(f, "{{{}}}", fields.join(", "))
             }
             Value::Function(function) => write!(f, "<fn {}>", function_label(function)),
             Value::Native(name, _) => write!(f, "<fn {name}>"),
@@ -116,6 +127,7 @@ impl Interpreter {
             ("len", len),
             ("push", push),
             ("range", range),
+            ("keys", keys),
         ] {
             globals
                 .borrow_mut()
@@ -193,8 +205,26 @@ impl Interpreter {
                         items.borrow_mut()[position] = value;
                         Ok(None)
                     }
+                    Value::Record(fields) => match index {
+                        Value::Str(name) => self.set_field(&fields, &name, value),
+                        other => Err(self.fail(format!(
+                            "record fields are named with strings, got {}",
+                            other.type_name()
+                        ))),
+                    },
                     Value::Str(_) => Err(self.fail("strings can't be changed in place")),
                     other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
+                }
+            }
+            Stmt::SetField(target, name, value) => {
+                let target = self.eval(target)?;
+                let value = self.eval(value)?;
+                match target {
+                    Value::Record(fields) => self.set_field(&fields, name, value),
+                    other => Err(self.fail(format!(
+                        "cannot set field '{name}' on {}",
+                        other.type_name()
+                    ))),
                 }
             }
             Stmt::While(condition, body) => {
@@ -211,6 +241,11 @@ impl Interpreter {
                 let items = match self.eval(iterable)? {
                     Value::List(items) => items.borrow().clone(),
                     Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    Value::Record(_) => {
+                        return Err(self.fail(
+                            "for needs a list or a string, got record, try 'for key in keys(record)'",
+                        ));
+                    }
                     other => {
                         return Err(self.fail(format!(
                             "for needs a list or a string, got {}",
@@ -300,9 +335,30 @@ impl Interpreter {
                         let position = self.position(&index, chars.len())?;
                         Ok(Value::Str(chars[position].to_string()))
                     }
+                    Value::Record(fields) => match index {
+                        Value::Str(name) => self.get_field(&fields, &name),
+                        other => Err(self.fail(format!(
+                            "record fields are named with strings, got {}",
+                            other.type_name()
+                        ))),
+                    },
                     other => Err(self.fail(format!("cannot index into {}", other.type_name()))),
                 }
             }
+            Expr::Record(fields) => {
+                let mut values = Vec::with_capacity(fields.len());
+                for (name, expr) in fields {
+                    values.push((name.clone(), self.eval(expr)?));
+                }
+                Ok(Value::Record(Rc::new(RefCell::new(values))))
+            }
+            Expr::Field(target, name) => match self.eval(target)? {
+                Value::Record(fields) => self.get_field(&fields, name),
+                other => Err(self.fail(format!(
+                    "cannot read field '{name}' of {}",
+                    other.type_name()
+                ))),
+            },
             Expr::Variable(name) => match self.lookup(name) {
                 Some(value) => Ok(value),
                 None => Err(self.fail(format!("'{name}' is not defined"))),
@@ -382,6 +438,34 @@ impl Interpreter {
         }
     }
 
+    fn get_field(&self, fields: &RefCell<Fields>, name: &str) -> Result<Value, Exit> {
+        match fields.borrow().iter().find(|(field, _)| field == name) {
+            Some((_, value)) => Ok(value.clone()),
+            None => Err(self.fail(format!("record has no field '{name}'"))),
+        }
+    }
+
+    fn set_field(
+        &self,
+        fields: &RefCell<Fields>,
+        name: &str,
+        value: Value,
+    ) -> Result<Option<Value>, Exit> {
+        match fields
+            .borrow_mut()
+            .iter_mut()
+            .find(|(field, _)| field == name)
+        {
+            Some((_, slot)) => {
+                *slot = value;
+                Ok(None)
+            }
+            None => Err(self.fail(format!(
+                "record has no field '{name}', fields can only be added when the record is created"
+            ))),
+        }
+    }
+
     fn position(&self, index: &Value, len: usize) -> Result<usize, Exit> {
         match index {
             Value::Number(n) if n.fract() != 0.0 => {
@@ -437,8 +521,9 @@ fn len(args: &[Value]) -> Result<Value, String> {
     match arguments::<1>("len", args)? {
         [Value::List(items)] => Ok(Value::Number(items.borrow().len() as f64)),
         [Value::Str(s)] => Ok(Value::Number(s.chars().count() as f64)),
+        [Value::Record(fields)] => Ok(Value::Number(fields.borrow().len() as f64)),
         [other] => Err(format!(
-            "len needs a list or a string, got {}",
+            "len needs a list, a string or a record, got {}",
             other.type_name()
         )),
     }
@@ -473,6 +558,20 @@ fn range(args: &[Value]) -> Result<Value, String> {
     Ok(Value::List(Rc::new(RefCell::new(items))))
 }
 
+fn keys(args: &[Value]) -> Result<Value, String> {
+    match arguments::<1>("keys", args)? {
+        [Value::Record(fields)] => {
+            let names = fields
+                .borrow()
+                .iter()
+                .map(|(name, _)| Value::Str(name.clone()))
+                .collect();
+            Ok(Value::List(Rc::new(RefCell::new(names))))
+        }
+        [other] => Err(format!("keys needs a record, got {}", other.type_name())),
+    }
+}
+
 fn equal(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Some(x == y),
@@ -485,6 +584,17 @@ fn equal(a: &Value, b: &Value) -> Option<bool> {
                     && x.iter()
                         .zip(y.iter())
                         .all(|(a, b)| equal(a, b).unwrap_or(false)),
+            )
+        }
+        (Value::Record(x), Value::Record(y)) => {
+            let (x, y) = (x.borrow(), y.borrow());
+            Some(
+                x.len() == y.len()
+                    && x.iter().all(|(name, a)| {
+                        y.iter()
+                            .find(|(other, _)| other == name)
+                            .is_some_and(|(_, b)| equal(a, b).unwrap_or(false))
+                    }),
             )
         }
         (Value::None, Value::None) => Some(true),
@@ -838,6 +948,74 @@ mod tests {
         assert_eq!(
             error("[1] == 1").message,
             "cannot use '==' on list and number"
+        );
+    }
+
+    #[test]
+    fn builds_and_reads_records() {
+        let person = "let ada = { name: \"Ada\", born: 1815, langs: [\"math\"] }\n";
+        assert_eq!(string(&format!("{person}ada.name")), "Ada");
+        assert_eq!(
+            number(&format!("{person}ada.born + len(ada.langs)")),
+            1816.0
+        );
+        assert_eq!(number(&format!("{person}ada[\"born\"]")), 1815.0);
+        assert_eq!(
+            string(&format!("{person}\"${{ada}}\"")),
+            "{name: \"Ada\", born: 1815, langs: [\"math\"]}"
+        );
+        assert_eq!(number("let p = {\n  x: 1,\n  y: { z: 2 },\n}\np.y.z"), 2.0);
+        assert_eq!(number("len({ a: 1, b: 2 }) + len({})"), 2.0);
+    }
+
+    #[test]
+    fn changes_existing_fields() {
+        assert_eq!(
+            number("let p = { age: 36 }\np.age = p.age + 1\np.age"),
+            37.0
+        );
+        assert_eq!(number("let p = { age: 36 }\np[\"age\"] = 40\np.age"), 40.0);
+        assert_eq!(number("let a = { n: 1 }\nlet b = a\nb.n = 2\na.n"), 2.0);
+    }
+
+    #[test]
+    fn lists_keys_and_compares_records() {
+        assert!(boolean("keys({ b: 1, a: 2 }) == [\"b\", \"a\"]"));
+        assert!(boolean("{ a: 1, b: [2] } == { b: [2], a: 1 }"));
+        assert!(boolean("{ a: 1 } != { a: 2 }"));
+        assert!(boolean("{ a: 1 } != { a: 1, b: 2 }"));
+    }
+
+    #[test]
+    fn records_can_hold_functions() {
+        let source = "let math = { square: fn(n) { return n * n } }\nmath.square(7)";
+        assert_eq!(number(source), 49.0);
+    }
+
+    #[test]
+    fn reports_record_mistakes() {
+        assert_eq!(
+            error("let p = { age: 1 }\np.agee").message,
+            "record has no field 'agee'"
+        );
+        assert!(
+            error("let p = { age: 1 }\np.email = \"x\"")
+                .message
+                .starts_with("record has no field 'email', fields can only be added")
+        );
+        assert_eq!(error("{ a: 1, a: 2 }").message, "field 'a' is listed twice");
+        assert_eq!(
+            error("let n = 5\nn.size").message,
+            "cannot read field 'size' of number"
+        );
+        assert!(
+            error("for k in { a: 1 } {\n}")
+                .message
+                .contains("keys(record)")
+        );
+        assert_eq!(
+            error("{ a: 1 }[0]").message,
+            "record fields are named with strings, got number"
         );
     }
 }

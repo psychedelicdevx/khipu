@@ -1,0 +1,35 @@
+let ada = {
+    name: "Ada Lovelace",
+    born: 1815,
+    known_for: ["the first program", "the Analytical Engine"],
+}
+
+print("${ada.name} was born in ${ada.born}.")
+print("Known for:", ada.known_for)
+
+ada.born = 1815
+for field in keys(ada) {
+    print("${field} -> ${ada[field]}")
+}
+
+fn point(x, y) {
+    return { x: x, y: y }
+}
+
+fn distance_squared(a, b) {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return dx * dx + dy * dy
+}
+
+print("distance squared:", distance_squared(point(0, 0), point(3, 4)))
+print("same point?", point(1, 2) == point(1, 2))
+
+let counter = {
+    count: 0,
+    bump: fn(by) {
+        return by + 1
+    },
+}
+counter.count = counter.bump(counter.count)
+print("counter:", counter)
