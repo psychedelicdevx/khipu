@@ -21,6 +21,25 @@ fn main() {
             Some("fmt") => format_files(&args[2..]),
             Some("test") => test_files(&args[2..]),
             Some("lsp") => lsp::serve(),
+            Some(word @ ("init" | "add" | "remove" | "install")) => {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let mut words = vec![word.to_string()];
+                words.extend_from_slice(&args[2..]);
+                if let Err(message) = khipu::package::command(&words, &cwd) {
+                    eprintln!("error: {message}");
+                    process::exit(1);
+                }
+            }
+            Some("run") => {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                match khipu::package::main_file(&cwd) {
+                    Ok(main) => run_file(&main.display().to_string()),
+                    Err(message) => {
+                        eprintln!("error: {message}");
+                        process::exit(1);
+                    }
+                }
+            }
             Some(path) => run_file(path),
             None => repl(),
         })

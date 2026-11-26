@@ -1140,11 +1140,14 @@ impl Vm {
     }
 
     fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, Error> {
-        let file = self
-            .dir
-            .join(path)
-            .canonicalize()
-            .map_err(|_| Error::new(0, format!("cannot find {path}")))?;
+        let file = if path.ends_with(".kp") {
+            self.dir
+                .join(path)
+                .canonicalize()
+                .map_err(|_| Error::new(0, format!("cannot find {path}")))?
+        } else {
+            crate::package::locate(&self.dir, path).map_err(|message| Error::new(0, message))?
+        };
 
         if let Some(module) = self.modules.borrow().get(&file) {
             return Ok(Rc::clone(module));

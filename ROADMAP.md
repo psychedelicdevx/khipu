@@ -11,11 +11,11 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `███████░░░` 4 / 6 |
+| 7. Ecosystem | `████████░░` 5 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Package manager
+**Next up:** Compile Khipu to WASM for the web
 
 ---
 
@@ -103,7 +103,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Files and the terminal
 - [x] HTTP: fetch and a small server
 - [x] Contracts: `requires`, `ensures`, `example` (LLM-proof code)
-- [ ] Package manager
+- [x] Package manager
 - [ ] Compile Khipu to WASM for the web
 
 ## Phase 8: Performance and final audit

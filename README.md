@@ -230,6 +230,24 @@ test "adds numbers" {
 khipu test examples/testing.kp
 ```
 
+## Packages
+
+Packages come straight from git, with no central registry. A project is a folder with a `khipu.json`:
+
+```bash
+khipu init                                                  # creates khipu.json and main.kp
+khipu add colors https://github.com/someone/colors.git#v1.0 # a tag, branch or commit after #
+khipu add util path:../util                                 # or a folder next to yours
+khipu run                                                   # runs the main file
+```
+
+```js
+import colors from "colors"
+print(colors.red("hello"))
+```
+
+An import without `.kp` is a package; with `.kp` it is a file next to yours. `khipu add` records the exact commit in `khipu.lock`, so `khipu install` gives everyone the same code; packages' own dependencies are installed too. Installing never runs a package's code.
+
 ## Roadmap
 
 | Phase | Progress |
@@ -241,11 +259,11 @@ khipu test examples/testing.kp
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `███████░░░` 4 / 6 |
+| 7. Ecosystem | `████████░░` 5 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Package manager
+**Next up:** Compile Khipu to WASM for the web
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -323,6 +341,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/task.rs` | Tasks, channels and `select`: a scheduler with one worker per core |
 | `src/stdlib.rs`, `src/prelude.kp` | The standard library: fast built-ins in Rust, the rest in Khipu |
 | `src/http.rs` | HTTP requests (with TLS), the small web server, and JSON |
+| `src/package.rs` | The package manager: `khipu.json`, `khipu.lock` and git sources |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |

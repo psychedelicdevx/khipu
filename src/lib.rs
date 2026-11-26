@@ -6,6 +6,7 @@ pub mod http;
 pub mod interpreter;
 pub mod lexer;
 pub mod lsp;
+pub mod package;
 pub mod parser;
 pub mod stdlib;
 pub mod task;
