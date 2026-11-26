@@ -438,6 +438,30 @@ struct Request {
     }
 }
 
+fn match_path(pattern: string, path: string) -> list<list<string>>? {
+    let want = pattern.split("/")
+    let got = path.split("/")
+    if want.len() != got.len() {
+        return none
+    }
+    let params = []
+    for i in range(want.len()) {
+        let segment = want[i]
+        if segment.starts_with(":") {
+            push(params, [segment.slice(1, segment.len()), got[i]])
+        } else if segment != got[i] {
+            return none
+        }
+    }
+    return params
+}
+
+struct Route {
+    method: string,
+    pattern: string,
+    handler: any,
+}
+
 struct Http {
     fn request(method: string, url: string, body: string, headers: record) -> Response {
         let parts = fetch#(method, url, body, headers)
@@ -462,5 +486,20 @@ struct Http {
 
     fn serve_with(port: number, handler: fn(Request) -> Response, options: record) {
         serve#(port, handler, options)
+    }
+
+    fn router(routes: list<Route>, not_found: any) -> fn(Request) -> Response {
+        return fn(request: Request) -> Response {
+            for route in routes {
+                if route.method != request.method && route.method != "*" {
+                    continue
+                }
+                let params = match_path(route.pattern, request.path)
+                if params != none {
+                    return route.handler(request, params ?? [])
+                }
+            }
+            return not_found(request)
+        }
     }
 }

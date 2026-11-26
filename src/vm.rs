@@ -1248,7 +1248,7 @@ impl Vm {
                         continue 'frames;
                     }
                     Code::Loop(index, exit) => {
-                        if self.preemptive {
+                        if self.preemptive || proto.loops.get(index as usize).is_none() {
                             continue;
                         }
                         let source = &proto.loops[index as usize];

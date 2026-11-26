@@ -683,6 +683,40 @@ mod tests {
     }
 
     #[test]
+    fn routing_matches_method_path_and_parameters() {
+        let port = 20000 + std::process::id() % 20000 + 14;
+        let source = format!(
+            "fn show(request: Request, params: list<list<string>>) -> Response {{\n    let id = \"\"\n    for pair in params {{\n        if pair[0] == \"id\" {{\n            id = pair[1]\n        }}\n    }}\n    return Response.text(\"user \" + id)\n}}\nfn create(request: Request, params: list<list<string>>) -> Response {{\n    return Response.text(\"made\")\n}}\nfn not_found(request: Request) -> Response {{\n    return Response.error(404, \"nope\")\n}}\nlet routes = [\n    Route {{ method: \"GET\", pattern: \"/users/:id\", handler: show }},\n    Route {{ method: \"POST\", pattern: \"/users\", handler: create }},\n]\nHttp.serve({port}, Http.router(routes, not_found))"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+        let _ = raw_get(port, "/");
+        assert!(raw_get(port, "/users/42").ends_with("user 42"));
+        assert!(raw_get(port, "/users/7").ends_with("user 7"));
+        assert!(
+            raw_get(port, "/users").ends_with("nope") || raw_get(port, "/users").contains("404")
+        );
+        let post = {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+            s.write_all(b"POST /users HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            let _ = s.shutdown(std::net::Shutdown::Write);
+            let mut o = Vec::new();
+            let _ = s.read_to_end(&mut o);
+            String::from_utf8_lossy(&o).into_owned()
+        };
+        assert!(post.ends_with("made"), "{post}");
+        assert!(
+            raw_get(port, "/nope").contains("404"),
+            "{}",
+            raw_get(port, "/nope")
+        );
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);
