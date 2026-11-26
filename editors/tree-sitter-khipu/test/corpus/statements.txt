@@ -1,0 +1,111 @@
+================================================================================
+Let with a type
+================================================================================
+
+let total: number = 1 + 2 * 3
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    name: (identifier)
+    type: (type_identifier)
+    value: (binary_expression
+      left: (number)
+      right: (binary_expression
+        left: (number)
+        right: (number)))))
+
+================================================================================
+Generic function with optional return
+================================================================================
+
+fn first<T>(items: list<T>) -> T? {
+    return none
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    type_parameters: (type_parameters
+      (identifier))
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (generic_type
+          name: (type_identifier)
+          argument: (type_identifier))))
+    return_type: (optional_type
+      (type_identifier))
+    body: (block
+      (return_statement
+        (none)))))
+
+================================================================================
+If with a block, not a struct literal
+================================================================================
+
+if ready {}
+let p = Point { x: 1 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (identifier)
+    consequence: (block))
+  (let_statement
+    name: (identifier)
+    value: (struct_literal
+      name: (identifier)
+      (record_field
+        name: (identifier)
+        value: (number)))))
+
+================================================================================
+Test block and assignment
+================================================================================
+
+let test = 0
+test "counts" {
+    test = test + 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    name: (identifier)
+    value: (number))
+  (test_block
+    keyword: (identifier)
+    name: (string
+      (string_content))
+    body: (block
+      (assignment
+        left: (identifier)
+        right: (binary_expression
+          left: (identifier)
+          right: (number))))))
+
+================================================================================
+Imports
+================================================================================
+
+import geometry from "geometry.kp"
+import { shout, whisper } from "text.kp"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    name: (identifier)
+    path: (string
+      (string_content)))
+  (import_statement
+    name: (identifier)
+    name: (identifier)
+    path: (string
+      (string_content))))

@@ -9,13 +9,13 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `████████░░` 6 / 8 |
+| 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Web playground (Khipu running in the browser via WASM)
+**Next up:** `spawn` lightweight tasks
 
 ---
 
@@ -78,7 +78,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Interleaved runs with raw results saved in `benchmarks/results`
 - [x] BENCHMARKS.md: methodology, and every result, including where Khipu loses
 
-## Phase 5: Tooling
+## Phase 5: Tooling ✅
 
 - [x] VS Code syntax highlighting
 - [x] `.kp` file icon (KP, Go style)
@@ -86,8 +86,8 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] `khipu fmt`: one canonical formatting
 - [x] `khipu test`: built-in test blocks
 - [x] Language server: errors as you type, autocomplete, hover
-- [ ] Web playground (Khipu running in the browser via WASM)
-- [ ] Tree-sitter grammar (Zed, Neovim, GitHub)
+- [x] Web playground (Khipu running in the browser via WASM)
+- [x] Tree-sitter grammar (Zed, Neovim, GitHub)
 
 ## Phase 6: Concurrency (Khipu's signature)
 

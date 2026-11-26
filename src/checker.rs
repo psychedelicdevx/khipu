@@ -40,6 +40,12 @@ pub struct Checker {
     pub names: Vec<(usize, String, Type)>,
 }
 
+impl Default for Checker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Checker {
     pub fn new() -> Self {
         let globals = HashMap::from([

@@ -353,9 +353,21 @@ fn assert_eq(args: &[Value]) -> Result<Value, String> {
     ))
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    pub static OUTPUT: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
 fn print(args: &[Value]) -> Result<Value, String> {
     let parts: Vec<String> = args.iter().map(Value::to_string).collect();
+    #[cfg(not(target_arch = "wasm32"))]
     println!("{}", parts.join(" "));
+    #[cfg(target_arch = "wasm32")]
+    OUTPUT.with(|output| {
+        let mut output = output.borrow_mut();
+        output.push_str(&parts.join(" "));
+        output.push('\n');
+    });
     Ok(Value::None)
 }
 

@@ -126,13 +126,13 @@ khipu test examples/testing.kp
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `████████░░` 6 / 8 |
+| 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Web playground (Khipu running in the browser via WASM)
+**Next up:** `spawn` lightweight tasks
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -182,6 +182,19 @@ code --install-extension khipu-*.vsix
 
 If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give `.kp` files the KP icon there too.
 
+`editors/tree-sitter-khipu` is a tree-sitter grammar with highlight queries, for Zed, Neovim, Helix and anything else built on tree-sitter. It parses every example and benchmark in this repository; run its tests with `npx tree-sitter-cli test` in that folder.
+
+## Playground
+
+`playground/` runs Khipu in the browser. The interpreter is compiled to WebAssembly and runs in a web worker, so a long loop never freezes the page and Stop ends it. Errors are underlined as you type, Format tidies the code, and Copy link shares a program.
+
+```bash
+scripts/build-playground.sh
+python3 -m http.server -d playground 8000
+```
+
+Then open http://localhost:8000. You need the WebAssembly target once: `rustup target add wasm32-unknown-unknown`.
+
 ## Project layout
 
 | Path | What's there |
@@ -196,10 +209,14 @@ If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
+| `src/lib.rs` | The library the `khipu` command and the playground share |
+| `src/wasm.rs` | Browser entry points: run, check and format |
 | `src/main.rs` | The `khipu` command: run a file, `fmt`, `test`, `lsp`, or open the prompt |
 | `benchmarks/` | The same programs in Khipu, Python, JavaScript, C and Rust |
 | `examples/` | Example Khipu programs |
 | `editors/vscode/` | VS Code extension |
+| `editors/tree-sitter-khipu/` | Tree-sitter grammar and highlight queries |
+| `playground/` | The browser playground |
 | `scripts/` | Repository tooling, like the roadmap sync |
 
 ## Development

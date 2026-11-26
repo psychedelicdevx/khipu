@@ -43,7 +43,7 @@ impl Document {
             (Some(_), good) => good.or_else(|| {
                 self.error
                     .is_none()
-                    .then(|| std::mem::replace(&mut self.latest, Checker::new()))
+                    .then(|| std::mem::take(&mut self.latest))
             }),
         };
         *self = Document { good, ..next };

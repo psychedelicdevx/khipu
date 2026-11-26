@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Khipu playground</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23FB923C' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg transform='translate(2.8 0) skewX(-12)' stroke-width='2.4'%3E%3Cpath d='M8.6 8.1V15.9'/%3E%3Cpath d='M13.4 8.1L9.6 12L13.6 15.9'/%3E%3Cpath d='M16.1 15.9V8.1H18.9A2.35 2.35 0 0 1 18.9 12.8H16.1'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,750&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --indigo: #1B2033;
+    --indigo-deep: #141826;
+    --indigo-lift: #232a42;
+    --cotton: #EDE6D8;
+    --cotton-dim: #b9b2a6;
+    --llama: #8A6F55;
+    --knot: #FB923C;
+    --cochineal: #C2405A;
+    --ui: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    --code: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --line: 1.6rem;
+    --cord-x: 1.4rem;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    background: var(--indigo);
+    color: var(--cotton);
+    font: 400 1rem/1.5 var(--ui);
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+  }
+
+  header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.1rem 1.5rem 1.4rem;
+  }
+
+  header::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 4px;
+    background: repeating-linear-gradient(115deg, var(--llama) 0 5px, #6f5843 5px 9px);
+    border-radius: 2px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 1.6rem;
+    font-weight: 750;
+    font-variation-settings: "opsz" 96;
+    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  h1 svg { width: 2rem; height: 2rem; }
+
+  h1 span { color: var(--cotton-dim); font-weight: 400; }
+
+  .tools { margin-left: auto; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+
+  select, button {
+    font: 600 0.95rem/1 var(--ui);
+    color: var(--cotton);
+    background: var(--indigo-lift);
+    border: 1px solid #343c58;
+    border-radius: 999px;
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+  }
+
+  select { appearance: none; padding-right: 2rem; background-image: linear-gradient(45deg, transparent 50%, var(--cotton-dim) 50%), linear-gradient(135deg, var(--cotton-dim) 50%, transparent 50%); background-position: right 1rem center, right 0.7rem center; background-size: 0.3rem 0.3rem; background-repeat: no-repeat; }
+
+  button:hover, select:hover { border-color: var(--llama); }
+
+  button.run { background: var(--knot); color: var(--indigo-deep); border-color: var(--knot); }
+
+  button.run:hover { background: #fda15a; }
+
+  button.stop { background: transparent; border-color: var(--cochineal); color: #f0a3b2; }
+
+  kbd { font: 500 0.75rem var(--code); opacity: 0.7; margin-left: 0.35rem; }
+
+  :focus-visible { outline: 2px solid var(--knot); outline-offset: 2px; }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .pane { position: relative; min-height: 0; display: flex; flex-direction: column; }
+
+  .pane + .pane { border-left: 4px solid transparent; border-image: repeating-linear-gradient(25deg, var(--llama) 0 5px, #6f5843 5px 9px) 4; }
+
+  .pane h2 {
+    margin: 0;
+    padding: 0.9rem 1.5rem 0.3rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--cotton-dim);
+  }
+
+  .editor {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 3.2rem 1fr;
+    overflow: hidden;
+  }
+
+  .gutter, textarea, .marks { font: 400 0.95rem/var(--line) var(--code); padding: 0.6rem 0 2rem; }
+
+  .gutter {
+    margin: 0;
+    text-align: right;
+    padding-right: 0.9rem;
+    color: #59617e;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .gutter .bad { color: var(--cochineal); font-weight: 500; }
+
+  .surface { position: relative; min-width: 0; }
+
+  textarea {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    resize: none;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--cotton);
+    caret-color: var(--knot);
+    padding-right: 1.5rem;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+  }
+
+  .marks { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+
+  .mark {
+    position: absolute;
+    height: 2px;
+    background: var(--cochineal);
+    border-radius: 1px;
+  }
+
+  .problem {
+    margin: 0;
+    padding: 0.75rem 1.5rem;
+    min-height: 3rem;
+    font-size: 0.95rem;
+    color: var(--cotton-dim);
+    background: var(--indigo-deep);
+  }
+
+  .problem.bad { color: #f3b3c0; }
+
+  .output {
+    position: relative;
+    flex: 1;
+    overflow: auto;
+    padding: 0.6rem 1.5rem 2rem 0;
+    font: 400 0.95rem/var(--line) var(--code);
+  }
+
+  .output::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--cord-x) - 1px);
+    width: 2px;
+    background: repeating-linear-gradient(180deg, var(--llama) 0 4px, #6f5843 4px 7px);
+    min-height: 100%;
+  }
+
+  .row { position: relative; padding-left: calc(var(--cord-x) + 1.3rem); white-space: pre-wrap; word-break: break-word; }
+
+  .row::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--cord-x) - 5px);
+    top: calc(var(--line) / 2 - 5px);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--knot);
+    box-shadow: 0 0 0 3px var(--indigo);
+  }
+
+  .row.number::before { height: calc(var(--line) - 6px); top: 3px; border-radius: 5px; }
+
+  .row.error { color: #f3b3c0; }
+
+  .row.error::before { background: var(--cochineal); border-radius: 2px; transform: rotate(45deg); }
+
+  .row.quiet { color: var(--cotton-dim); }
+
+  .row.quiet::before { background: transparent; border: 2px solid var(--llama); }
+
+  .row.tie { animation: tie 260ms cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--n) * 28ms); }
+
+  @keyframes tie { from { opacity: 0; transform: translateY(-0.6rem); } }
+
+  .empty { padding: 1.5rem 1.5rem 0 calc(var(--cord-x) + 1.3rem); color: var(--cotton-dim); max-width: 34ch; }
+
+  footer {
+    display: flex;
+    gap: 1.5rem;
+    padding: 0.7rem 1.5rem;
+    font-size: 0.85rem;
+    color: var(--cotton-dim);
+    background: var(--indigo-deep);
+  }
+
+  footer a { color: var(--cotton); }
+
+  footer .timing { margin-left: auto; font-family: var(--code); }
+
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; }
+    .tools { margin-left: 0; }
+    html, body { height: auto; }
+    body { min-height: 100%; }
+    main { grid-template-columns: 1fr; grid-template-rows: 62vh auto; }
+    .output { min-height: 30vh; overflow: visible; }
+    .pane + .pane { border-left: 0; border-top: 4px solid var(--llama); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row.tie { animation: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#FB923C" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 10.3H6.2M1 11.6H5.6M3.2 12.9H5.4" stroke-width="0.6"/><g transform="translate(2.8 0) skewX(-12)" stroke-width="2.4"><path d="M8.6 8.1V15.9"/><path d="M13.4 8.1L9.6 12L13.6 15.9"/><path d="M16.1 15.9V8.1H18.9A2.35 2.35 0 0 1 18.9 12.8H16.1"/></g></g></svg>
+    Khipu <span>playground</span>
+  </h1>
+  <div class="tools">
+    <select id="example" aria-label="Load an example"></select>
+    <button id="share" type="button">Copy link</button>
+    <button id="tidy" type="button">Format</button>
+    <button id="run" class="run" type="button">Run<kbd>⌘↵</kbd></button>
+  </div>
+</header>
+
+<main>
+  <section class="pane" aria-label="Code">
+    <h2>main.kp</h2>
+    <div class="editor">
+      <pre class="gutter" id="gutter" aria-hidden="true"></pre>
+      <div class="surface">
+        <div class="marks" id="marks" aria-hidden="true"></div>
+        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Khipu source code" aria-describedby="problem"></textarea>
+      </div>
+    </div>
+    <p class="problem" id="problem" role="status">Loading Khipu…</p>
+  </section>
+  <section class="pane" aria-label="Output">
+    <h2>Output</h2>
+    <div class="output" id="output" aria-live="polite">
+      <p class="empty">Press Run to see what your program prints. Each line is tied onto the cord as a knot.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>Khipu runs entirely in your browser, compiled to WebAssembly.</span>
+  <span class="timing" id="timing"></span>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const source = $("source");
+const gutter = $("gutter");
+const marks = $("marks");
+const problem = $("problem");
+const output = $("output");
+const runButton = $("run");
+const exampleSelect = $("example");
+
+const lineHeight = () => parseFloat(getComputedStyle(source).lineHeight);
+const charWidth = (() => {
+  let width;
+  return () => {
+    if (!width) {
+      const probe = document.createElement("span");
+      probe.style.cssText = "position:absolute;visibility:hidden;font:400 0.95rem var(--code);white-space:pre";
+      probe.textContent = "0".repeat(100);
+      document.body.append(probe);
+      width = probe.getBoundingClientRect().width / 100;
+      probe.remove();
+    }
+    return width;
+  };
+})();
+
+let runner, checker;
+let pending = 0;
+let running = false;
+let problemLine = 0;
+let problemSpan = null;
+
+function startRunner() {
+  runner = new Worker("worker.js");
+  runner.onmessage = ({ data }) => finishRun(data);
+}
+
+checker = new Worker("worker.js");
+checker.onmessage = ({ data }) => {
+  if (data.op === "tidy") {
+    source.value = data.result;
+    refresh();
+    return;
+  }
+  if (data.id !== pending) return;
+  showProblem(data.result);
+};
+startRunner();
+
+function showProblem(result) {
+  if (!result) {
+    problemLine = 0;
+    problemSpan = null;
+    problem.textContent = "No problems found.";
+    problem.classList.remove("bad");
+  } else {
+    const [line, start, width, ...message] = result.split("\t");
+    problemLine = Number(line);
+    problemSpan = { start: Number(start), width: Number(width) };
+    problem.textContent = `Line ${line}: ${message.join("\t")}`;
+    problem.classList.add("bad");
+  }
+  drawGutter();
+}
+
+function drawGutter() {
+  const count = source.value.split("\n").length;
+  let html = "";
+  for (let n = 1; n <= count; n++) {
+    html += n === problemLine ? `<span class="bad">${n}</span>\n` : `${n}\n`;
+  }
+  gutter.innerHTML = html;
+  gutter.scrollTop = source.scrollTop;
+  marks.innerHTML = "";
+  if (problemLine && problemSpan) {
+    const mark = document.createElement("div");
+    mark.className = "mark";
+    const style = getComputedStyle(source);
+    const top = parseFloat(style.paddingTop) + problemLine * lineHeight() - source.scrollTop - 4;
+    mark.style.top = `${top}px`;
+    mark.style.left = `${parseFloat(style.paddingLeft) + problemSpan.start * charWidth() - source.scrollLeft}px`;
+    mark.style.width = `${Math.max(problemSpan.width, 1) * charWidth()}px`;
+    marks.append(mark);
+  }
+}
+
+let checkTimer;
+function refresh() {
+  drawGutter();
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(() => {
+    pending += 1;
+    checker.postMessage({ op: "check", id: pending, source: source.value });
+  }, 150);
+}
+
+function run() {
+  if (running) {
+    runner.terminate();
+    startRunner();
+    finishRun({ result: "\u0000Stopped. The program was still running.", ms: null, stopped: true });
+    return;
+  }
+  running = true;
+  runButton.innerHTML = "Stop";
+  runButton.className = "stop";
+  output.innerHTML = '<p class="empty">Running…</p>';
+  runner.postMessage({ op: "run", source: source.value });
+}
+
+function finishRun({ result, ms, stopped }) {
+  running = false;
+  runButton.innerHTML = "Run<kbd>⌘↵</kbd>";
+  runButton.className = "run";
+  const [printed, error] = result.split("\u0000");
+  const lines = printed ? printed.replace(/\n$/, "").split("\n") : [];
+  output.innerHTML = "";
+  const tie = (text, kind, n) => {
+    const row = document.createElement("div");
+    row.className = `row tie ${kind}`;
+    row.style.setProperty("--n", Math.min(n, 24));
+    row.textContent = text;
+    output.append(row);
+  };
+  lines.forEach((text, n) => tie(text, /^-?\d+(\.\d+)?$/.test(text.trim()) ? "number" : "", n));
+  if (error !== undefined) {
+    tie(error, stopped ? "quiet" : "error", lines.length);
+  } else if (!lines.length) {
+    tie("The program finished without printing anything.", "quiet", 0);
+  }
+  $("timing").textContent = ms == null ? "" : `ran in ${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
+}
+
+function load(text) {
+  source.value = text;
+  source.scrollTop = 0;
+  refresh();
+}
+
+source.addEventListener("input", refresh);
+source.addEventListener("scroll", drawGutter);
+source.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    run();
+  } else if (event.key === "Tab" && !event.shiftKey) {
+    event.preventDefault();
+    document.execCommand("insertText", false, "    ");
+  }
+});
+runButton.addEventListener("click", run);
+$("tidy").addEventListener("click", () => checker.postMessage({ op: "tidy", source: source.value }));
+$("share").addEventListener("click", async () => {
+  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(source.value)));
+  history.replaceState(null, "", `#code=${encoded}`);
+  try {
+    await navigator.clipboard.writeText(location.href);
+    $("share").textContent = "Link copied";
+  } catch {
+    $("share").textContent = "Link is in the address bar";
+  }
+  setTimeout(() => ($("share").textContent = "Copy link"), 1800);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && event.target !== source) run();
+});
+
+fetch("examples.json")
+  .then((response) => response.json())
+  .then((examples) => {
+    for (const { name } of examples) {
+      exampleSelect.add(new Option(`Example: ${name}`, name));
+    }
+    exampleSelect.addEventListener("change", () => {
+      load(examples.find((example) => example.name === exampleSelect.value).source);
+    });
+    const shared = location.hash.match(/^#code=(.+)$/);
+    if (shared) {
+      exampleSelect.add(new Option("Shared code", ""), 0);
+      exampleSelect.value = "";
+      load(new TextDecoder().decode(Uint8Array.from(atob(shared[1]), (c) => c.charCodeAt(0))));
+    } else {
+      load(examples[0].source);
+    }
+  })
+  .catch(() => {
+    problem.textContent = "Could not load the examples. Build the playground with scripts/build-playground.sh.";
+    problem.classList.add("bad");
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,116 @@
+================================================================================
+Template string
+================================================================================
+
+print("total: ${a ?? 0}\n")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (expression_statement
+    (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (string
+          (string_content)
+          (interpolation
+            (binary_expression
+              left: (identifier)
+              right: (number)))
+          (escape_sequence))))))
+
+================================================================================
+Match with patterns
+================================================================================
+
+let area = match shape {
+    Shape.Circle(r) => r * r,
+    Empty => 0,
+    -1 => 1,
+    _ => { 2 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    name: (identifier)
+    value: (match_expression
+      value: (identifier)
+      (match_arm
+        pattern: (variant_pattern
+          enum: (identifier)
+          variant: (identifier)
+          (bindings
+            (identifier)))
+        body: (binary_expression
+          left: (identifier)
+          right: (identifier)))
+      (match_arm
+        pattern: (identifier)
+        body: (number))
+      (match_arm
+        pattern: (negative_number
+          (number))
+        body: (number))
+      (match_arm
+        pattern: (identifier)
+        body: (block
+          (expression_statement
+            (number)))))))
+
+================================================================================
+Calls, fields and optional chaining
+================================================================================
+
+user?.name.trim()[0]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (expression_statement
+    (index_expression
+      value: (call_expression
+        function: (field_expression
+          value: (field_expression
+            value: (identifier)
+            field: (identifier))
+          field: (identifier))
+        arguments: (arguments))
+      index: (number))))
+
+================================================================================
+Function value and records
+================================================================================
+
+let f = fn(n: number) -> number { return -n }
+let r = { name: "k", "two words": [1, 2] }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    name: (identifier)
+    value: (function_expression
+      parameters: (parameters
+        (parameter
+          name: (identifier)
+          type: (type_identifier)))
+      return_type: (type_identifier)
+      body: (block
+        (return_statement
+          (unary_expression
+            operand: (identifier))))))
+  (let_statement
+    name: (identifier)
+    value: (record
+      (record_field
+        name: (identifier)
+        value: (string
+          (string_content)))
+      (record_field
+        name: (string
+          (string_content))
+        value: (list
+          (number)
+          (number))))))

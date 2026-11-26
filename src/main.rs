@@ -1,14 +1,3 @@
-mod checker;
-mod compiler;
-mod error;
-mod format;
-mod interpreter;
-mod lexer;
-mod lsp;
-mod parser;
-mod value;
-mod vm;
-
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -16,9 +5,10 @@ use std::process;
 use std::rc::Rc;
 use std::thread;
 
-use error::Error;
-use interpreter::{Interpreter, Value};
-use parser::{Expr, Parser, Stmt};
+use khipu::error::Error;
+use khipu::interpreter::{Interpreter, Value};
+use khipu::parser::{Expr, Parser, Stmt};
+use khipu::{format, lexer, lsp, parser};
 
 const STACK_SIZE: usize = 256 * 1024 * 1024;
 

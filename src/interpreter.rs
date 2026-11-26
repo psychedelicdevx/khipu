@@ -15,6 +15,12 @@ pub struct Interpreter {
     vm: Vm,
 }
 
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Interpreter {
     pub fn new() -> Self {
         Interpreter::in_dir(Path::new("."))

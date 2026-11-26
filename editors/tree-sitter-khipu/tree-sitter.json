@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "khipu",
+      "camelcase": "Khipu",
+      "scope": "source.khipu",
+      "path": ".",
+      "file-types": ["kp"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Khipu grammar for tree-sitter",
+    "links": {
+      "repository": "https://github.com/psychedelicdevx/khipu"
+    }
+  }
+}
