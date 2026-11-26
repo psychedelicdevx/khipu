@@ -1,0 +1,26 @@
+let users = [
+    { name: "Ada", nickname: "Countess", address: { city: "London" } },
+    { name: "Alan", nickname: none, address: none },
+]
+
+for user in users {
+    let shown = user.nickname ?? user.name
+    let city = user.address?.city ?? "somewhere"
+    print("${shown} lives in ${city}")
+}
+
+fn find(items, wanted) {
+    for item in items {
+        if item.name == wanted {
+            return item
+        }
+    }
+    return none
+}
+
+let grace = find(users, "Grace")
+if grace == none {
+    print("Grace is not in the list")
+}
+
+print("score:", 0 ?? 10)

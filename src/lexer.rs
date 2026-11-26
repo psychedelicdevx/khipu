@@ -24,6 +24,7 @@ pub enum Token {
     Continue,
     True,
     False,
+    NoneKeyword,
     Equals,
     EqualEqual,
     BangEqual,
@@ -33,6 +34,8 @@ pub enum Token {
     GreaterEqual,
     AndAnd,
     OrOr,
+    QuestionQuestion,
+    QuestionDot,
     Bang,
     Plus,
     Minus,
@@ -75,6 +78,8 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
             ('>', Some('=')) => Some(Token::GreaterEqual),
             ('&', Some('&')) => Some(Token::AndAnd),
             ('|', Some('|')) => Some(Token::OrOr),
+            ('?', Some('?')) => Some(Token::QuestionQuestion),
+            ('?', Some('.')) => Some(Token::QuestionDot),
             _ => None,
         };
         if let Some(token) = double {
@@ -156,6 +161,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                     "continue" => Token::Continue,
                     "true" => Token::True,
                     "false" => Token::False,
+                    "none" => Token::NoneKeyword,
                     _ => Token::Ident(word),
                 };
                 tokens.push((token, line));

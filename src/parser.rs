@@ -30,6 +30,8 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     Record(Vec<(String, Expr)>),
     Field(Box<Expr>, String),
+    OptionalField(Box<Expr>, String),
+    None,
     Variable(String),
     Negate(Box<Expr>),
     Not(Box<Expr>),
@@ -57,6 +59,7 @@ pub enum Op {
     GreaterEqual,
     And,
     Or,
+    Coalesce,
 }
 
 pub struct Parser {
@@ -233,7 +236,13 @@ impl Parser {
     }
 
     fn expression(&mut self) -> Result<Expr, Error> {
-        self.or()
+        let mut left = self.or()?;
+        while self.peek() == Some(&Token::QuestionQuestion) {
+            self.pos += 1;
+            let right = self.or()?;
+            left = Expr::Binary(Box::new(left), Op::Coalesce, Box::new(right));
+        }
+        Ok(left)
     }
 
     fn or(&mut self) -> Result<Expr, Error> {
@@ -353,6 +362,11 @@ impl Parser {
                     let name = self.identifier()?;
                     expr = Expr::Field(Box::new(expr), name);
                 }
+                Some(Token::QuestionDot) => {
+                    self.pos += 1;
+                    let name = self.identifier()?;
+                    expr = Expr::OptionalField(Box::new(expr), name);
+                }
                 _ => return Ok(expr),
             }
         }
@@ -411,6 +425,7 @@ impl Parser {
             Some(Token::Number(n)) => Ok(Expr::Number(n)),
             Some(Token::True) => Ok(Expr::Bool(true)),
             Some(Token::False) => Ok(Expr::Bool(false)),
+            Some(Token::NoneKeyword) => Ok(Expr::None),
             Some(Token::Str(text)) => Ok(Expr::Str(text)),
             Some(Token::Template(parts)) => self.template(parts),
             Some(Token::Ident(name)) => Ok(Expr::Variable(name)),

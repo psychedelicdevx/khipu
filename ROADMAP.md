@@ -5,14 +5,14 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | Phase | Progress |
 |---|---|
 | 0. Foundations | `██████████` 12 / 12 |
-| 1. Core language | `████████░░` 8 / 10 |
+| 1. Core language | `█████████░` 9 / 10 |
 | 2. Types | `░░░░░░░░░░` 0 / 7 |
 | 3. Tooling | `██░░░░░░░░` 2 / 9 |
 | 4. Speed | `░░░░░░░░░░` 0 / 5 |
 | 5. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 6. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 
-**Next up:** `none` instead of `null` and `undefined`
+**Next up:** Modules: `import` other `.kp` files
 
 ---
 
@@ -41,7 +41,7 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Lists: `[1, 2, 3]`, indexing, `len`
 - [x] Records (objects): `{ name: "Ada", age: 36 }`
 - [x] `for item in list` loops, `break` and `continue`
-- [ ] `none` instead of `null` and `undefined`
+- [x] `none` instead of `null` and `undefined`
 - [ ] Modules: `import` other `.kp` files
 
 ## Phase 2: Types (the C# feel)

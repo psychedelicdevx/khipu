@@ -306,6 +306,7 @@ impl Interpreter {
         match expr {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
+            Expr::None => Ok(Value::None),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Template(parts) => {
                 let mut text = String::new();
@@ -354,6 +355,17 @@ impl Interpreter {
             }
             Expr::Field(target, name) => match self.eval(target)? {
                 Value::Record(fields) => self.get_field(&fields, name),
+                Value::None => Err(self.fail(format!(
+                    "cannot read field '{name}' of none, use '?.{name}' if it might be none"
+                ))),
+                other => Err(self.fail(format!(
+                    "cannot read field '{name}' of {}",
+                    other.type_name()
+                ))),
+            },
+            Expr::OptionalField(target, name) => match self.eval(target)? {
+                Value::None => Ok(Value::None),
+                Value::Record(fields) => self.get_field(&fields, name),
                 other => Err(self.fail(format!(
                     "cannot read field '{name}' of {}",
                     other.type_name()
@@ -374,6 +386,10 @@ impl Interpreter {
             Expr::Binary(left, Op::Or, right) => Ok(Value::Bool(
                 self.eval_bool(left, "'||'")? || self.eval_bool(right, "'||'")?,
             )),
+            Expr::Binary(left, Op::Coalesce, right) => match self.eval(left)? {
+                Value::None => self.eval(right),
+                value => Ok(value),
+            },
             Expr::Binary(left, op, right) => {
                 let a = self.eval(left)?;
                 let b = self.eval(right)?;
@@ -597,7 +613,7 @@ fn equal(a: &Value, b: &Value) -> Option<bool> {
                     }),
             )
         }
-        (Value::None, Value::None) => Some(true),
+        (Value::None, other) | (other, Value::None) => Some(matches!(other, Value::None)),
         _ => None,
     }
 }
@@ -657,6 +673,7 @@ fn symbol(op: Op) -> &'static str {
         Op::GreaterEqual => ">=",
         Op::And => "&&",
         Op::Or => "||",
+        Op::Coalesce => "??",
     }
 }
 
@@ -1017,5 +1034,52 @@ mod tests {
             error("{ a: 1 }[0]").message,
             "record fields are named with strings, got number"
         );
+    }
+
+    #[test]
+    fn none_is_the_one_empty_value() {
+        assert!(boolean("none == none"));
+        assert!(!boolean("5 == none"));
+        assert!(boolean("\"a\" != none"));
+        assert!(boolean("fn nothing() {}\nnothing() == none"));
+        assert_eq!(string("\"${none}\""), "none");
+    }
+
+    #[test]
+    fn falls_back_with_double_question_mark() {
+        assert_eq!(number("none ?? 5"), 5.0);
+        assert_eq!(number("3 ?? 5"), 3.0);
+        assert_eq!(number("0 ?? 5"), 0.0);
+        assert_eq!(number("1 ?? nope"), 1.0);
+        assert_eq!(number("none ?? none ?? 7"), 7.0);
+    }
+
+    #[test]
+    fn reads_fields_safely_with_question_dot() {
+        let empty = "let user = { address: none }\n";
+        let full = "let user = { address: { city: \"Paris\" } }\n";
+        assert!(boolean(&format!("{empty}user.address?.city == none")));
+        assert_eq!(string(&format!("{full}user.address?.city")), "Paris");
+        assert_eq!(
+            string(&format!("{empty}user.address?.city ?? \"unknown\"")),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn none_is_not_falsy_or_a_number() {
+        assert_eq!(
+            error("if none {\n}").message,
+            "if needs true or false, got none"
+        );
+        assert_eq!(
+            error("none + 1").message,
+            "cannot use '+' on none and number"
+        );
+        assert_eq!(
+            error("let user = { address: none }\nuser.address.city").message,
+            "cannot read field 'city' of none, use '?.city' if it might be none"
+        );
+        assert_eq!(error("5?.x").message, "cannot read field 'x' of number");
     }
 }
