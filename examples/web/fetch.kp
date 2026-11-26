@@ -1,0 +1,7 @@
+let saved = Http.post("http://localhost:8080/notes", "buy more cotton")
+print(saved.status, saved.body)
+
+let notes = Http.get("http://localhost:8080/notes")
+if notes.ok() {
+    print("notes:", notes.json())
+}

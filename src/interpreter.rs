@@ -37,7 +37,11 @@ impl Interpreter {
     pub fn with_modules(dir: &Path, modules: Modules, loading: Loading) -> Self {
         let mut globals = Globals::default();
         let mut vm = Vm::new(dir, modules, loading);
-        for native in NATIVES.iter().chain(stdlib::NATIVES.iter()) {
+        for native in NATIVES
+            .iter()
+            .chain(stdlib::NATIVES.iter())
+            .chain(crate::http::NATIVES.iter())
+        {
             let slot = globals.slot(native.name) as usize;
             vm.sync_globals(&globals.names);
             vm.globals.borrow_mut().values[slot] = Some(Value::Native(native));
@@ -225,6 +229,49 @@ mod tests {
             error("File.read(\"/no/such/khipu/file\")").message,
             "cannot read /no/such/khipu/file: it does not exist"
         );
+    }
+
+    #[test]
+    fn speaks_json_and_http() {
+        assert_eq!(
+            string("Json.stringify({ a: [1, 2.5, \"x\", true, none], b: { c: 1 } })"),
+            "{\"a\":[1,2.5,\"x\",true,null],\"b\":{\"c\":1}}"
+        );
+        assert_eq!(
+            number("let data = Json.parse(\"{\\\"n\\\": [1, 2, 3]}\")\nlen(data.n)"),
+            3.0
+        );
+        assert!(
+            error("Json.parse(\"{oops\")")
+                .message
+                .starts_with("invalid JSON")
+        );
+        assert_eq!(
+            error("Json.stringify(print)").message,
+            "a function cannot be written as JSON"
+        );
+
+        let port = 20000 + std::process::id() % 20000;
+        let server = format!(
+            "fn handle(request: Request) -> Response {{\n    if request.path == \"/sum\" {{\n        let numbers = request.json()\n        return Response.from_json({{ total: numbers[0] + numbers[1] }})\n    }}\n    return Response.error(404, \"missing \" + request.path)\n}}\nHttp.serve({port}, handle)"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&server);
+        });
+        let client = format!(
+            "let url = \"http://localhost:{port}\"\nlet sum = Http.post_json(url + \"/sum\", [2, 3])\nlet missing = Http.get(url + \"/nope\")\n\"${{sum.status}} ${{sum.json().total}} ${{missing.status}} ${{missing.body}}\""
+        );
+        let mut answer = String::new();
+        for _ in 0..50 {
+            match run(&client) {
+                Ok(Some(Value::Str(text))) => {
+                    answer = text.to_string();
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+        assert_eq!(answer, "200 5 404 missing /nope");
     }
 
     #[test]

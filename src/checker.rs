@@ -84,7 +84,10 @@ impl Checker {
             ),
         ]);
         let mut globals = globals;
-        for native in crate::stdlib::NATIVES.iter() {
+        for native in crate::stdlib::NATIVES
+            .iter()
+            .chain(crate::http::NATIVES.iter())
+        {
             globals.insert(native.name.to_string(), Type::Any);
         }
         Checker {

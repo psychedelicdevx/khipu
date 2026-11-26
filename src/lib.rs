@@ -2,6 +2,7 @@ pub mod checker;
 pub mod compiler;
 pub mod error;
 pub mod format;
+pub mod http;
 pub mod interpreter;
 pub mod lexer;
 pub mod lsp;

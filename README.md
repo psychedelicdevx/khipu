@@ -109,6 +109,26 @@ let name = input("Your name? ") ?? "stranger"
 print("hello", name, "you passed", Process.args())
 ```
 
+The web, with JSON built in:
+
+```js
+fn handle(request: Request) -> Response {
+    if request.path == "/hello" {
+        return Response.from_json({ message: "hello", path: request.path })
+    }
+    return Response.error(404, "nothing here")
+}
+
+Http.serve(8080, handle)
+```
+
+```js
+let reply = Http.get("http://localhost:8080/hello")
+print(reply.status, reply.json().message)
+```
+
+`Http` also has `post`, `post_json` and `request` for any method and headers, over `http://` or `https://`. `Http.serve` answers one request at a time on `localhost`; see [`examples/web`](examples/web). `Json.parse` and `Json.stringify` turn text into records, lists, numbers and back.
+
 `File` also has `read`, `exists`, `list` and `delete`; `Process` has `args`, `env` and `exit`. A file that cannot be read stops the program with an error that says why, on the line that tried.
 
 Lookups that can miss give back `none` instead of a magic `-1`: `"abc".index_of("z")`, `[].first()` and `"x".to_number()` all return `none`, so the type checker makes you handle it with `??`. Methods that take a callback are written in Khipu itself, in [`src/prelude.kp`](src/prelude.kp).
@@ -221,11 +241,11 @@ khipu test examples/testing.kp
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
-| 7. Ecosystem | `█████░░░░░` 3 / 6 |
+| 7. Ecosystem | `███████░░░` 4 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** HTTP: fetch and a small server
+**Next up:** Package manager
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -302,6 +322,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
 | `src/task.rs` | Tasks, channels and `select`: a scheduler with one worker per core |
 | `src/stdlib.rs`, `src/prelude.kp` | The standard library: fast built-ins in Rust, the rest in Khipu |
+| `src/http.rs` | HTTP requests (with TLS), the small web server, and JSON |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |

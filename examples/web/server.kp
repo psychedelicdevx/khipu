@@ -1,0 +1,21 @@
+let notes: list<string> = []
+
+fn handle(request: Request) -> Response {
+    if request.path == "/" {
+        return Response.html("<h1>Khipu notes</h1><p>${notes.len()} notes so far</p>")
+    }
+    if request.path == "/notes" && request.method == "GET" {
+        return Response.from_json(notes)
+    }
+    if request.path == "/notes" && request.method == "POST" {
+        let text = request.body.trim()
+        if text.is_empty() {
+            return Response.error(400, "send the note as the request body")
+        }
+        notes.push(text)
+        return Response.from_json({ saved: text, count: notes.len() })
+    }
+    return Response.error(404, "nothing at ${request.path}")
+}
+
+Http.serve(8080, handle)

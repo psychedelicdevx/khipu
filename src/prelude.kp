@@ -380,3 +380,91 @@ struct Process {
 fn input(prompt: string) -> string? {
     return input#(prompt)
 }
+
+struct Json {
+    fn parse(text: string) -> any {
+        return json_parse#(text)
+    }
+
+    fn stringify(value: any) -> string {
+        return json_stringify#(value)
+    }
+}
+
+struct Response {
+    status: number,
+    body: string,
+    headers: record,
+
+    fn ok(self) -> bool {
+        return self.status >= 200 && self.status < 300
+    }
+
+    fn json(self) -> any {
+        return json_parse#(self.body)
+    }
+
+    fn text(body: string) -> Response {
+        return Response { status: 200, body: body, headers: { "content-type": "text/plain; charset=utf-8" } }
+    }
+
+    fn html(body: string) -> Response {
+        return Response { status: 200, body: body, headers: { "content-type": "text/html; charset=utf-8" } }
+    }
+
+    fn from_json(value: any) -> Response {
+        return Response { status: 200, body: json_stringify#(value), headers: { "content-type": "application/json" } }
+    }
+
+    fn error(status: number, message: string) -> Response {
+        return Response { status: status, body: message, headers: { "content-type": "text/plain; charset=utf-8" } }
+    }
+}
+
+struct Request {
+    method: string,
+    path: string,
+    query: string,
+    headers: record,
+    body: string,
+
+    fn json(self) -> any {
+        return json_parse#(self.body)
+    }
+}
+
+struct Http {
+    fn request(method: string, url: string, body: string, headers: record) -> Response {
+        let parts = fetch#(method, url, body, headers)
+        return Response { status: parts[0], body: parts[1], headers: parts[2] }
+    }
+
+    fn get(url: string) -> Response {
+        return Http.request("GET", url, "", {})
+    }
+
+    fn post(url: string, body: string) -> Response {
+        return Http.request("POST", url, body, {})
+    }
+
+    fn post_json(url: string, value: any) -> Response {
+        return Http.request("POST", url, json_stringify#(value), { "content-type": "application/json" })
+    }
+
+    fn serve(port: number, handler: fn(Request) -> Response) {
+        let server = listen#(port)
+        print("listening on http://localhost:${port}")
+        while true {
+            let incoming = accept#(server)
+            let request = Request {
+                method: incoming[1],
+                path: incoming[2],
+                query: incoming[3],
+                headers: incoming[4],
+                body: incoming[5],
+            }
+            let response = handler(request)
+            respond#(incoming[0], response.status, response.body, response.headers)
+        }
+    }
+}
