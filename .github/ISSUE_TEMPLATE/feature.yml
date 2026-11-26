@@ -1,0 +1,19 @@
+name: Feature
+description: Something Khipu should do
+labels: [feature]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What it looks like in a Khipu program
+      render: js
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The program you cannot write today, or the one that is worse than it should be
+    validations:
+      required: true

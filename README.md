@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/psychedelicdevx/khipu/actions/workflows/ci.yml"><img src="https://github.com/psychedelicdevx/khipu/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/written%20in-Rust-B7410E?logo=rust&logoColor=white" alt="Written in Rust">
   <img src="https://img.shields.io/badge/status-early%20development-FB923C" alt="Status: early development">
   <img src="https://img.shields.io/badge/files-.kp-E8A23A" alt="File extension: .kp">
@@ -107,7 +108,7 @@ On sustained runs Khipu beats Python on 17 of 17 benchmarks and Node on 5 of 17,
 
 ## Contributing, security, privacy
 
-[CONTRIBUTING.md](CONTRIBUTING.md) explains how to work on the language and how to run or propose an experiment. [SECURITY.md](SECURITY.md) says how to report a vulnerability privately and what counts as one. [PRIVACY.md](PRIVACY.md) is short: Khipu collects nothing.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to work on the language and how to run or propose an experiment, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) is short: argue with code, be kind to people. [SECURITY.md](SECURITY.md) says how to report a vulnerability privately and what counts as one. [PRIVACY.md](PRIVACY.md) is short: Khipu collects nothing.
 
 ## Licence
 

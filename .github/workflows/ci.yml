@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --quiet --all-targets -- -D warnings
+      - run: cargo test --quiet
+      - run: cargo build --quiet --release
+      - run: find examples benchmarks -name '*.kp' -exec ./target/release/khipu fmt --check {} +
+      - run: ./target/release/khipu test examples/testing.kp
+      - run: python3 scripts/check-docs.py
+      - name: roadmap tables are in sync
+        run: python3 scripts/sync-roadmap.py && git diff --exit-code -- ROADMAP.md README.md

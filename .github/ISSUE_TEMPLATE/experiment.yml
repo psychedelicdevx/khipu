@@ -1,0 +1,35 @@
+name: Experiment
+description: Propose a bet for the Experimental section of the roadmap, or report the result of one
+labels: [experiment]
+body:
+  - type: input
+    id: item
+    attributes:
+      label: Roadmap item
+      description: The existing item this is about, or "new"
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What should be true if this works, and why Khipu is the place to try it
+    validations:
+      required: true
+  - type: textarea
+    id: experiment
+    attributes:
+      label: The experiment
+      description: What to measure, in days rather than months, and the number that kills it
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: The numbers, if you ran it. A dead idea with a clear number is a good result.
+  - type: textarea
+    id: prior
+    attributes:
+      label: Closest prior work
+      description: Papers, languages or tools that tried something like it

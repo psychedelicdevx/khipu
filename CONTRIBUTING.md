@@ -15,7 +15,7 @@ cargo build --release
 cargo test
 ```
 
-Checks run locally on every commit instead of in CI. Turn them on once after cloning:
+The same checks run as a pre-commit hook locally and as GitHub Actions on every push and pull request. Turn the hook on once after cloning, so a commit fails before it reaches CI:
 
 ```bash
 git config core.hooksPath .githooks
@@ -72,6 +72,10 @@ Every user-facing error message has a test that checks its wording and the line 
 | `playground/` | The browser playground |
 | `scripts/` | Repository tooling: the roadmap sync, the benchmark runner, the doc checker |
 | `AUDIT.md` | The Phase 8 audit: every roadmap item, the benchmark rerun and the independent review |
+
+## Pull requests
+
+Small and focused beats large. Open an issue first for anything beyond a fix. The pull request template asks for a test, a check that the examples still run, and the experiment numbers when the change is an experimental item. Pull requests need CI green on Linux and macOS before they merge.
 
 ## Licence
 

@@ -1,0 +1,33 @@
+name: Bug
+description: Something Khipu does that it should not
+labels: [bug]
+body:
+  - type: textarea
+    id: program
+    attributes:
+      label: The program
+      description: The smallest Khipu program that shows it
+      render: js
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens
+      description: Paste the output or the error as printed
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and system
+      description: The commit or release, and the operating system
+    validations:
+      required: true
