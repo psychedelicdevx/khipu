@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `░░░░░░░░░░` 0 / 15 |
+| 9. HTTP without limits | `██░░░░░░░░` 3 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -144,7 +144,7 @@ Final audit
 Today `Http.serve` answers one request at a time on one thread. A backend should be bounded by the machine, not by the language.
 
 Throughput
-- [ ] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
+- [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
 - [ ] Keep-alive and pipelining, so a connection serves many requests without reconnecting
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
 - [ ] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
@@ -152,8 +152,8 @@ Throughput
 
 Robustness
 - [ ] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
-- [ ] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
-- [ ] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
+- [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
+- [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
 - [ ] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
 - [ ] HTTPS serving with a certificate and key from files, using the TLS the client already has
 - [ ] Fuzzed: malformed requests, truncated bodies, invalid UTF-8 in headers and a client that sends one byte a second never crash or hang the server

@@ -521,6 +521,103 @@ mod server {
         Ok((status as u16, body.to_string(), headers))
     }
 
+    const WORKER_STACK: usize = 16 * 1024 * 1024;
+
+    struct Job {
+        request: crate::task::Graph,
+        stream: TcpStream,
+    }
+
+    fn build_request(
+        request_def: Option<&Rc<StructDef>>,
+        method: &str,
+        target: &str,
+        found: Vec<(String, String)>,
+        body: &str,
+    ) -> Value {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let headers_record = Value::record(
+            found
+                .into_iter()
+                .map(|(name, value)| (Rc::from(name.as_str()), Value::str(&value)))
+                .collect(),
+        );
+        let given = [
+            ("method", Value::str(method)),
+            ("path", Value::str(path)),
+            ("query", Value::str(query)),
+            ("headers", headers_record),
+            ("body", Value::str(body)),
+        ];
+        match request_def {
+            Some(def) => {
+                let mut fields = vec![Value::None; def.fields.len()];
+                for (name, value) in given {
+                    if let Some(at) = def.fields.iter().position(|f| &**f == name) {
+                        fields[at] = value;
+                    }
+                }
+                Value::instance(Instance {
+                    def: Rc::clone(def),
+                    fields: RefCell::new(fields),
+                })
+            }
+            None => Value::record(
+                given
+                    .into_iter()
+                    .map(|(name, value)| (Rc::from(name), value))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn answer(vm: &mut Vm, handler: &Value, request: Value, stream: &mut TcpStream) {
+        let (status, response_body, response_headers) =
+            match vm.call(handler.clone(), vec![request]) {
+                Ok(value) => match response_parts(&value) {
+                    Ok(response) => response,
+                    Err(message) => {
+                        eprintln!("in a request handler: {message}");
+                        (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
+                    }
+                },
+                Err(error) => {
+                    eprintln!("{}", crate::task::render(&error));
+                    (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
+                }
+            };
+        if write_response(stream, status, &response_body, &response_headers).is_err() {
+            let _ = write_response(stream, 500, INTERNAL_ERROR, &Value::record(Vec::new()));
+        }
+    }
+
+    fn http_worker(
+        packed: crate::task::Graph,
+        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Job>>>,
+        dir: std::path::PathBuf,
+    ) {
+        let handler = crate::task::unpack(packed).remove(0);
+        let handler_globals = match &handler {
+            Value::Function(closure) => Some(Rc::clone(&closure.globals)),
+            _ => None,
+        };
+        let mut vm = Vm::task(&dir);
+        vm.preemptive = false;
+        if let Some(globals) = &handler_globals {
+            vm.globals = Rc::clone(globals);
+        }
+        loop {
+            let job = receiver
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .recv();
+            let Ok(job) = job else { break };
+            let request = crate::task::unpack(job.request).remove(0);
+            let mut stream = job.stream;
+            answer(&mut vm, &handler, request, &mut stream);
+        }
+    }
+
     pub fn serve(args: &[Value]) -> Result<Value, String> {
         let port = match &args[0] {
             Value::Number(n) if n.fract() == 0.0 && (1.0..=65535.0).contains(n) => *n as u16,
@@ -546,65 +643,44 @@ mod server {
         let request_def = handler_globals
             .as_ref()
             .and_then(|g| struct_def(g, "Request"));
+        let workers = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .max(1);
+        let bound = workers.saturating_mul(2).max(1);
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Job>(bound);
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        for _ in 0..workers {
+            let packed = crate::task::pack(std::slice::from_ref(&handler));
+            let receiver = std::sync::Arc::clone(&receiver);
+            let dir = dir.clone();
+            std::thread::Builder::new()
+                .name("khipu-http".to_string())
+                .stack_size(WORKER_STACK)
+                .spawn(move || http_worker(packed, receiver, dir))
+                .expect("could not start a request worker");
+        }
         loop {
-            let (mut stream, _) = listener
-                .accept()
-                .map_err(|error| format!("the server stopped: {error}"))?;
-            match read_request(&stream) {
-                None => {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                    );
-                }
-                Some((method, target, found, body)) => {
-                    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-                    let headers_record = Value::record(
-                        found
-                            .into_iter()
-                            .map(|(name, value)| (Rc::from(name.as_str()), Value::str(&value)))
-                            .collect(),
-                    );
-                    let given = [
-                        ("method", Value::str(&method)),
-                        ("path", Value::str(path)),
-                        ("query", Value::str(query)),
-                        ("headers", headers_record),
-                        ("body", Value::str(&body)),
-                    ];
-                    let request = match &request_def {
-                        Some(def) => {
-                            let mut fields = vec![Value::None; def.fields.len()];
-                            for (name, value) in given {
-                                if let Some(at) = def.fields.iter().position(|f| &**f == name) {
-                                    fields[at] = value;
-                                }
-                            }
-                            Value::instance(Instance {
-                                def: Rc::clone(def),
-                                fields: RefCell::new(fields),
-                            })
-                        }
-                        None => Value::record(
-                            given
-                                .into_iter()
-                                .map(|(name, value)| (Rc::from(name), value))
-                                .collect(),
-                        ),
-                    };
-                    let mut vm = Vm::task(&dir);
-                    vm.preemptive = false;
-                    if let Some(globals) = &handler_globals {
-                        vm.globals = Rc::clone(globals);
+            match listener.accept() {
+                Ok((stream, _)) => match read_request(&stream) {
+                    None => {
+                        let mut stream = stream;
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        );
                     }
-                    let (status, response_body, response_headers) =
-                        match vm.call(handler.clone(), vec![request]) {
-                            Ok(value) => response_parts(&value)?,
-                            Err(error) => {
-                                eprintln!("{}", crate::task::render(&error));
-                                (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
-                            }
-                        };
-                    write_response(&mut stream, status, &response_body, &response_headers)?;
+                    Some((method, target, found, body)) => {
+                        let request =
+                            build_request(request_def.as_ref(), &method, &target, found, &body);
+                        let packed = crate::task::pack(std::slice::from_ref(&request));
+                        let _ = sender.send(Job {
+                            request: packed,
+                            stream,
+                        });
+                    }
+                },
+                Err(error) => {
+                    eprintln!("could not accept a connection: {error}");
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         }

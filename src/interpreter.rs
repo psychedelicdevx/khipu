@@ -296,31 +296,49 @@ mod tests {
         }
         assert_eq!(answer, "200 5 404 missing /nope");
 
-        for (port_offset, handler, expected) in [
-            (
-                1,
-                "Response.error(42, \"x\")",
-                "a response status must be from 100 to 599, got 42",
-            ),
+        for (port_offset, handler) in [
+            (1, "Response.error(42, \"x\")"),
             (
                 2,
                 "Response { status: 200, body: \"x\", headers: { \"x-bad\": \"a\\nb\" } }",
-                "header 'x-bad' contains a line break",
             ),
         ] {
             let port = port + port_offset;
             let server = format!(
                 "fn handle(request: Request) -> Response {{\n    return {handler}\n}}\nHttp.serve({port}, handle)"
             );
-            let serving = std::thread::spawn(move || run(&server).unwrap_err().message);
-            for _ in 0..50 {
-                if serving.is_finished() {
-                    break;
+            std::thread::spawn(move || {
+                let _ = run(&server);
+            });
+            let send = |port: u32| -> String {
+                use std::io::{Read, Write};
+                for _ in 0..50 {
+                    if let Ok(mut stream) =
+                        std::net::TcpStream::connect(format!("localhost:{port}"))
+                    {
+                        let _ = stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
+                        let mut out = Vec::new();
+                        let _ = stream.read_to_end(&mut out);
+                        if !out.is_empty() {
+                            return String::from_utf8_lossy(&out).into_owned();
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                let _ = run(&format!("Http.get(\"http://localhost:{port}/\")"));
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            assert_eq!(serving.join().unwrap(), expected);
+                String::new()
+            };
+            let first = send(port);
+            assert!(
+                first.starts_with("HTTP/1.1 500 Internal Server Error"),
+                "{first}"
+            );
+            assert!(first.ends_with("internal server error"), "{first}");
+            let next = send(port);
+            assert!(
+                next.starts_with("HTTP/1.1 500 Internal Server Error"),
+                "{next}"
+            );
         }
     }
 
@@ -395,6 +413,133 @@ mod tests {
         let good = send("/");
         assert!(good.starts_with("HTTP/1.1 200 OK"), "{good}");
         assert!(good.ends_with("ok"), "{good}");
+    }
+
+    fn raw_get(port: u32, path: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        stream.write_all(request.as_bytes()).unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut out = Vec::new();
+        stream.read_to_end(&mut out).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn ready(port: u32) {
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(format!("localhost:{port}")).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("server never came up");
+    }
+
+    fn start_server(port: u32, body: &str) {
+        let source = format!("{body}\nHttp.serve({port}, handle)");
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+    }
+
+    #[test]
+    fn many_parallel_connections_are_all_answered() {
+        let port = 20000 + std::process::id() % 20000 + 5;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.text(\"ok\")\n}",
+        );
+        let _ = raw_get(port, "/");
+        let mut tasks = Vec::new();
+        for _ in 0..64 {
+            tasks.push(std::thread::spawn(move || raw_get(port, "/")));
+        }
+        for task in tasks {
+            let response = task.join().unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+            assert!(response.ends_with("ok"), "{response}");
+        }
+    }
+
+    #[test]
+    fn a_slow_handler_does_not_delay_the_others() {
+        let port = 20000 + std::process::id() % 20000 + 6;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    if request.path == \"/slow\" {\n        let i = 0\n        while i < 100000000 {\n            i = i + 1\n        }\n    }\n    return Response.text(\"ok\")\n}",
+        );
+        let slow = std::thread::spawn(move || raw_get(port, "/slow"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let fast = raw_get(port, "/fast");
+        assert!(
+            fast.starts_with("HTTP/1.1 200 OK"),
+            "fast was delayed by a slow handler: {fast}"
+        );
+        let _ = slow.join();
+    }
+
+    #[test]
+    fn one_worker_throwing_while_the_rest_serve() {
+        let port = 20000 + std::process::id() % 20000 + 7;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    if request.path == \"/boom\" {\n        nope()\n    }\n    return Response.text(\"ok\")\n}",
+        );
+        let _ = raw_get(port, "/");
+        let mut tasks = Vec::new();
+        for index in 0..32 {
+            let path = if index % 2 == 0 { "/boom" } else { "/ok" };
+            tasks.push(std::thread::spawn(move || (path, raw_get(port, path))));
+        }
+        for task in tasks {
+            let (path, response) = task.join().unwrap();
+            if path == "/boom" {
+                assert!(
+                    response.starts_with("HTTP/1.1 500 Internal Server Error"),
+                    "{response}"
+                );
+            } else {
+                assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+                assert!(response.ends_with("ok"), "{response}");
+            }
+        }
+    }
+
+    #[test]
+    fn more_connections_than_the_bound_all_eventually_get_answers() {
+        let port = 20000 + std::process::id() % 20000 + 8;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.text(\"ok\")\n}",
+        );
+        let _ = raw_get(port, "/");
+        let workers = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .max(1);
+        let bound = workers.saturating_mul(2).max(1);
+        let total = bound + 50;
+        let mut sockets = Vec::new();
+        for _ in 0..total {
+            let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+            use std::io::Write;
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            sockets.push(stream);
+        }
+        let mut answered = 0;
+        for mut stream in sockets {
+            use std::io::Read;
+            let mut out = Vec::new();
+            stream.read_to_end(&mut out).unwrap();
+            let text = String::from_utf8_lossy(&out);
+            assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+            answered += 1;
+        }
+        assert_eq!(answered, total);
     }
 
     #[test]
