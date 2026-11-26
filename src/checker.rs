@@ -44,6 +44,11 @@ impl Checker {
         let globals = HashMap::from([
             ("print".to_string(), Type::Any),
             ("range".to_string(), Type::Any),
+            ("assert".to_string(), Type::Any),
+            (
+                "assert_eq".to_string(),
+                Type::Function(vec![Type::Any, Type::Any], Box::new(Type::None)),
+            ),
             (
                 "len".to_string(),
                 Type::Function(vec![Type::Any], Box::new(Type::Number)),
@@ -86,10 +91,7 @@ impl Checker {
     }
 
     fn fail<T>(&self, message: impl Into<String>) -> Result<T, Error> {
-        Err(Error {
-            line: self.line,
-            message: message.into(),
-        })
+        Err(Error::new(self.line, message))
     }
 
     fn declare(&mut self, name: &str, ty: Type) {
@@ -382,7 +384,7 @@ impl Checker {
                     }
                 }
             }
-            Stmt::Enum(_) | Stmt::Break | Stmt::Continue => {}
+            Stmt::Enum(_) | Stmt::Break | Stmt::Continue | Stmt::Test(..) => {}
             Stmt::Expr(expr) => {
                 self.expression(expr)?;
             }

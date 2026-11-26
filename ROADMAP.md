@@ -9,12 +9,12 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `██░░░░░░░░` 2 / 9 |
+| 5. Tooling | `██████░░░░` 5 / 9 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 
-**Next up:** Error messages that show the line and point at the problem
+**Next up:** Language server: errors as you type, autocomplete, hover
 
 ---
 
@@ -81,9 +81,9 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 
 - [x] VS Code syntax highlighting
 - [x] `.kp` file icon (KP, Go style)
-- [ ] Error messages that show the line and point at the problem
-- [ ] `khipu fmt`: one canonical formatting
-- [ ] `khipu test`: built-in test blocks
+- [x] Error messages that show the line and point at the problem
+- [x] `khipu fmt`: one canonical formatting
+- [x] `khipu test`: built-in test blocks
 - [ ] Language server: errors as you type, autocomplete, hover
 - [ ] Web playground (Khipu running in the browser via WASM)
 - [ ] Tree-sitter grammar (Zed, Neovim, GitHub)

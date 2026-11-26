@@ -473,10 +473,10 @@ impl Compiler<'_> {
         let enclosing = fn_index - 1;
         if let Some((slot, cell)) = self.fns[enclosing].find_local(name) {
             if !cell {
-                return Err(Error {
-                    line: self.line as usize,
-                    message: format!("internal error: '{name}' is captured but not boxed"),
-                });
+                return Err(Error::new(
+                    self.line as usize,
+                    format!("internal error: '{name}' is captured but not boxed"),
+                ));
             }
             return Ok(Some(self.add_capture(fn_index, Capture::Local(slot), name)));
         }
@@ -728,6 +728,7 @@ impl Compiler<'_> {
                 self.emit(Code::MakeEnumDef(index));
                 self.define(&decl.name);
             }
+            Stmt::Test(..) => {}
             Stmt::Expr(Expr::Match(scrutinee, arms)) => self.match_expr(scrutinee, arms, false)?,
             Stmt::Expr(expr) => {
                 self.expression(expr)?;
@@ -1034,12 +1035,10 @@ impl Compiler<'_> {
                 name, params, body, ..
             } => self.function(name, params, body)?,
             Expr::Match(..) => {
-                return Err(Error {
-                    line: self.line as usize,
-                    message:
-                        "match can only be used as a statement, or right after let, = or return"
-                            .to_string(),
-                });
+                return Err(Error::new(
+                    self.line as usize,
+                    "match can only be used as a statement, or right after let, = or return",
+                ));
             }
             Expr::StructLit(name, fields) => {
                 self.get_variable(name)?;
@@ -1163,7 +1162,7 @@ fn walk_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
                 walk_expr(method, inside, names);
             }
         }
-        Stmt::Break | Stmt::Continue | Stmt::Import(..) | Stmt::Enum(_) => {}
+        Stmt::Break | Stmt::Continue | Stmt::Import(..) | Stmt::Enum(_) | Stmt::Test(..) => {}
     }
 }
 

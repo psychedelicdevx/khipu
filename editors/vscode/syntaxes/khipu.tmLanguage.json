@@ -53,7 +53,7 @@
       "patterns": [
         {
           "name": "keyword.control.khipu",
-          "match": "\\b(if|else|while|for|in|break|continue|return|import|from|match)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|return|import|from|match)\\b|^\\s*test\\b(?=\\s*\")"
         },
         {
           "name": "storage.type.khipu",
@@ -89,7 +89,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.khipu",
-          "match": "\\b(print|len|push|range|keys)\\b(?=\\s*\\()"
+          "match": "\\b(print|len|push|range|keys|assert|assert_eq)\\b(?=\\s*\\()"
         }
       ]
     },

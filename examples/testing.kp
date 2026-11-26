@@ -1,0 +1,16 @@
+fn add(a: number, b: number) -> number {
+    return a + b
+}
+
+fn greet(name: string) -> string {
+    return "hello ${name}"
+}
+
+test "adds numbers" {
+    assert_eq(add(2, 3), 5)
+    assert(add(-1, 1) == 0, "should cancel out")
+}
+
+test "greets by name" {
+    assert_eq(greet("khipu"), "hello khipu")
+}

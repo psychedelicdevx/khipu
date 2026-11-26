@@ -62,13 +62,85 @@ pub enum Token {
     Newline,
 }
 
-pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let symbol = match self {
+            Token::Number(value) => return write!(f, "'{value}'"),
+            Token::Str(_) | Token::Template(_) => return write!(f, "a string"),
+            Token::Ident(name) => return write!(f, "'{name}'"),
+            Token::Newline => return write!(f, "the end of the line"),
+            Token::Let => "let",
+            Token::Fn => "fn",
+            Token::Return => "return",
+            Token::If => "if",
+            Token::Else => "else",
+            Token::While => "while",
+            Token::For => "for",
+            Token::In => "in",
+            Token::Break => "break",
+            Token::Continue => "continue",
+            Token::Import => "import",
+            Token::From => "from",
+            Token::Struct => "struct",
+            Token::Enum => "enum",
+            Token::Match => "match",
+            Token::FatArrow => "=>",
+            Token::True => "true",
+            Token::False => "false",
+            Token::NoneKeyword => "none",
+            Token::Equals => "=",
+            Token::EqualEqual => "==",
+            Token::BangEqual => "!=",
+            Token::Less => "<",
+            Token::LessEqual => "<=",
+            Token::Greater => ">",
+            Token::GreaterEqual => ">=",
+            Token::AndAnd => "&&",
+            Token::OrOr => "||",
+            Token::QuestionQuestion => "??",
+            Token::QuestionDot => "?.",
+            Token::Question => "?",
+            Token::Arrow => "->",
+            Token::Bang => "!",
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Star => "*",
+            Token::Slash => "/",
+            Token::Percent => "%",
+            Token::LeftParen => "(",
+            Token::RightParen => ")",
+            Token::LeftBrace => "{",
+            Token::RightBrace => "}",
+            Token::LeftBracket => "[",
+            Token::RightBracket => "]",
+            Token::Comma => ",",
+            Token::Colon => ":",
+            Token::Dot => ".",
+        };
+        write!(f, "'{symbol}'")
+    }
+}
+
+pub type Span = (usize, usize);
+pub type Tokens = Vec<(Token, usize)>;
+
+pub fn lex(source: &str) -> Result<Tokens, Error> {
+    Ok(scan(source)?.0)
+}
+
+pub fn scan(source: &str) -> Result<(Tokens, Vec<Span>), Error> {
     let chars: Vec<char> = source.chars().collect();
     let mut tokens = Vec::new();
+    let mut spans = Vec::new();
     let mut pos = 0;
     let mut line = 1;
+    let mut start = 0;
 
     while pos < chars.len() {
+        if tokens.len() > spans.len() {
+            spans.push((start, pos));
+        }
+        start = pos;
         let c = chars[pos];
         let next = chars.get(pos + 1).copied();
 
@@ -146,10 +218,7 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                 match text.parse::<f64>() {
                     Ok(value) => tokens.push((Token::Number(value), line)),
                     Err(_) => {
-                        return Err(Error {
-                            line,
-                            message: format!("'{text}' is not a valid number"),
-                        });
+                        return Err(Error::new(line, format!("'{text}' is not a valid number")));
                     }
                 }
             }
@@ -183,22 +252,19 @@ pub fn lex(source: &str) -> Result<Vec<(Token, usize)>, Error> {
                 tokens.push((token, line));
             }
             other => {
-                return Err(Error {
-                    line,
-                    message: format!("unexpected character '{other}'"),
-                });
+                return Err(Error::new(line, format!("unexpected character '{other}'")));
             }
         }
     }
+    if tokens.len() > spans.len() {
+        spans.push((start, pos));
+    }
 
-    Ok(tokens)
+    Ok((tokens, spans))
 }
 
 fn lex_string(chars: &[char], start: usize, line: usize) -> Result<(Token, usize), Error> {
-    let unterminated = |what: &str| Error {
-        line,
-        message: format!("{what} is never closed"),
-    };
+    let unterminated = |what: &str| Error::new(line, format!("{what} is never closed"));
     let mut parts = Vec::new();
     let mut text = String::new();
     let mut pos = start + 1;
@@ -218,10 +284,7 @@ fn lex_string(chars: &[char], start: usize, line: usize) -> Result<(Token, usize
                     Some('\\') => '\\',
                     Some('$') => '$',
                     Some(other) => {
-                        return Err(Error {
-                            line,
-                            message: format!("unknown escape '\\{other}'"),
-                        });
+                        return Err(Error::new(line, format!("unknown escape '\\{other}'")));
                     }
                     None => return Err(unterminated("string")),
                 };

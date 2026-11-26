@@ -296,7 +296,7 @@ pub fn symbol(op: Op) -> &'static str {
     }
 }
 
-pub static NATIVES: [Native; 5] = [
+pub static NATIVES: [Native; 7] = [
     Native {
         name: "print",
         function: print,
@@ -317,7 +317,41 @@ pub static NATIVES: [Native; 5] = [
         name: "keys",
         function: keys,
     },
+    Native {
+        name: "assert",
+        function: assert,
+    },
+    Native {
+        name: "assert_eq",
+        function: assert_eq,
+    },
 ];
+
+fn assert(args: &[Value]) -> Result<Value, String> {
+    match args {
+        [Value::Bool(true)] | [Value::Bool(true), _] => Ok(Value::None),
+        [Value::Bool(false)] => Err("assertion failed".to_string()),
+        [Value::Bool(false), message] => Err(format!("assertion failed: {message}")),
+        [other] | [other, _] => Err(format!("assert needs a bool, got {}", other.type_name())),
+        _ => Err("assert expects a condition and an optional message".to_string()),
+    }
+}
+
+fn assert_eq(args: &[Value]) -> Result<Value, String> {
+    let [actual, expected] = arguments::<2>("assert_eq", args)?;
+    if equal(actual, expected) == Some(true) {
+        return Ok(Value::None);
+    }
+    let shown = |value: &Value| match value {
+        Value::Str(text) => format!("\"{text}\""),
+        other => other.to_string(),
+    };
+    Err(format!(
+        "expected {}, got {}",
+        shown(expected),
+        shown(actual)
+    ))
+}
 
 fn print(args: &[Value]) -> Result<Value, String> {
     let parts: Vec<String> = args.iter().map(Value::to_string).collect();

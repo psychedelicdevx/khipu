@@ -116,6 +116,27 @@ mod tests {
     }
 
     #[test]
+    fn skips_tests_in_a_normal_run_and_asserts() {
+        assert_eq!(
+            number("test \"never runs\" {\n    assert(false)\n}\nlet a = 1\na"),
+            1.0
+        );
+        assert_eq!(error("assert_eq(1 + 1, 3)").message, "expected 3, got 2");
+        assert_eq!(
+            error("assert_eq(\"a\", \"b\")").message,
+            "expected \"b\", got \"a\""
+        );
+        assert_eq!(
+            error("assert(1 > 2, \"maths\")").message,
+            "assertion failed: maths"
+        );
+        assert_eq!(
+            error("fn f() {\n    test \"x\" {}\n}").message,
+            "tests can only be written at the top level"
+        );
+    }
+
+    #[test]
     fn reports_the_line_of_an_error() {
         let error = error("let a = 1\n\nprint(b)");
         assert_eq!(error.line, 3);
@@ -580,10 +601,12 @@ mod tests {
                 ("main.kp", "import broken from \"broken.kp\""),
             ],
         );
+        let error = broken.unwrap_err();
         assert_eq!(
-            broken.unwrap_err().message,
-            "in broken.kp, line 2: 'nope' is not defined"
+            (error.line, error.message.as_str()),
+            (2, "'nope' is not defined")
         );
+        assert!(error.file.unwrap().ends_with("broken.kp"));
 
         let looped = run_files(
             "loop",

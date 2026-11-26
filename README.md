@@ -83,6 +83,40 @@ khipu examples/primes.kp
 
 Or start the interactive prompt by running `khipu` with no file. Blocks can span several lines; it waits until your `{ }` are closed.
 
+Mistakes are shown where they happen:
+
+```
+error: 'total' should be number, got string
+ --> shop.kp:2
+  |
+2 | let total: number = "free"
+  |     ^^^^^
+```
+
+Format files in place, or check them without changing anything:
+
+```bash
+khipu fmt examples/*.kp
+khipu fmt --check examples/*.kp
+```
+
+Write tests next to your code and run them with `khipu test`. A normal run skips them.
+
+```
+fn add(a: number, b: number) -> number {
+    return a + b
+}
+
+test "adds numbers" {
+    assert_eq(add(2, 3), 5)
+    assert(add(-1, 1) == 0, "should cancel out")
+}
+```
+
+```bash
+khipu test examples/testing.kp
+```
+
 ## Roadmap
 
 | Phase | Progress |
@@ -92,12 +126,12 @@ Or start the interactive prompt by running `khipu` with no file. Blocks can span
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `██░░░░░░░░` 2 / 9 |
+| 5. Tooling | `██████░░░░` 5 / 9 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
 
-**Next up:** Error messages that show the line and point at the problem
+**Next up:** Language server: errors as you type, autocomplete, hover
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -137,14 +171,16 @@ On sustained runs Khipu beats Python on 14 of 16 benchmarks and Node on 0 of 16.
 | Path | What's there |
 |---|---|
 | `src/lexer.rs` | Turns source text into tokens |
+| `src/error.rs` | Errors that show the line and point at the problem |
+| `src/format.rs` | `khipu fmt`: one canonical layout, comments kept |
 | `src/parser.rs` | Turns tokens into a syntax tree |
 | `src/checker.rs` | The static type checker, run before anything executes |
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
-| `src/main.rs` | The `khipu` command: run a file or open the prompt |
-| `benchmarks/` | The same programs in Khipu, Python and JavaScript |
+| `src/main.rs` | The `khipu` command: run a file, `fmt`, `test`, or open the prompt |
+| `benchmarks/` | The same programs in Khipu, Python, JavaScript, C and Rust |
 | `examples/` | Example Khipu programs |
 | `editors/vscode/` | VS Code extension |
 | `scripts/` | Repository tooling, like the roadmap sync |
@@ -157,4 +193,4 @@ Checks run locally on every commit instead of in paid CI. Turn them on once afte
 git config core.hooksPath .githooks
 ```
 
-Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo clippy` and `cargo test`. If any of them fail, the commit is stopped.
+Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo clippy`, `cargo test`, `khipu fmt --check` on every `.kp` file and `khipu test`. If any of them fail, the commit is stopped.

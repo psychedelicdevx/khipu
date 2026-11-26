@@ -109,6 +109,7 @@ pub enum Stmt {
     Import(String, Import),
     Struct(Rc<StructDecl>),
     Enum(Rc<EnumDecl>),
+    Test(String, Block),
     Expr(Expr),
 }
 
@@ -214,7 +215,7 @@ impl Parser {
             match (self.peek(), &closing) {
                 (None, None) => break,
                 (None, Some(token)) => {
-                    return Err(self.error(format!("expected {token:?}, found end of input")));
+                    return Err(self.error(format!("expected {token}, found end of input")));
                 }
                 (Some(next), Some(token)) if next == token => {
                     self.pos += 1;
@@ -230,7 +231,7 @@ impl Parser {
             match self.peek() {
                 None | Some(Token::Newline) => {}
                 Some(next) if Some(next) == closing.as_ref() => {}
-                Some(next) => return Err(self.error(format!("unexpected {next:?}"))),
+                Some(next) => return Err(self.error(format!("unexpected {next}"))),
             }
         }
 
@@ -257,6 +258,20 @@ impl Parser {
                 let name = self.identifier()?;
                 let function = self.function(name.clone())?;
                 Ok(Stmt::Let(name, None, function))
+            }
+            Some(Token::Ident(word))
+                if word == "test" && matches!(self.peek_next(), Some(Token::Str(_))) =>
+            {
+                self.pos += 1;
+                let Some(Token::Str(title)) = self.advance() else {
+                    unreachable!()
+                };
+                if self.function_depth > 0 || self.loop_depth > 0 {
+                    return Err(
+                        self.error("tests can only be written at the top level".to_string())
+                    );
+                }
+                Ok(Stmt::Test(title, self.block()?))
             }
             Some(Token::Return) => {
                 self.pos += 1;
@@ -310,7 +325,7 @@ impl Parser {
                             Some(Token::RightBrace) => break,
                             Some(token) => {
                                 return Err(
-                                    self.error(format!("expected ',' or '}}', found {token:?}"))
+                                    self.error(format!("expected ',' or '}}', found {token}"))
                                 );
                             }
                             None => {
@@ -326,7 +341,7 @@ impl Parser {
                 match self.advance() {
                     Some(Token::Str(path)) => Ok(Stmt::Import(path, binding)),
                     Some(token) => Err(self.error(format!(
-                        "expected a file path like \"math.kp\", found {token:?}"
+                        "expected a file path like \"math.kp\", found {token}"
                     ))),
                     None => Err(self.error("expected a file path like \"math.kp\"".to_string())),
                 }
@@ -548,9 +563,9 @@ impl Parser {
                 Some(Token::Comma) => {}
                 Some(token) if token == closing => return Ok(items),
                 Some(token) => {
-                    return Err(self.error(format!("expected ',' or {closing:?}, found {token:?}")));
+                    return Err(self.error(format!("expected ',' or {closing}, found {token}")));
                 }
-                None => return Err(self.error(format!("expected {closing:?}, found end of input"))),
+                None => return Err(self.error(format!("expected {closing}, found end of input"))),
             }
         }
     }
@@ -565,7 +580,7 @@ impl Parser {
                     Some(Token::Comma) => {}
                     Some(Token::Greater) => break,
                     Some(token) => {
-                        return Err(self.error(format!("expected ',' or '>', found {token:?}")));
+                        return Err(self.error(format!("expected ',' or '>', found {token}")));
                     }
                     None => return Err(self.error("type parameters are never closed".to_string())),
                 }
@@ -644,9 +659,7 @@ impl Parser {
                 }
                 Some(token) => {
                     let token = token.clone();
-                    return Err(
-                        self.error(format!("expected a field or a method, found {token:?}"))
-                    );
+                    return Err(self.error(format!("expected a field or a method, found {token}")));
                 }
                 None => return Err(self.error(format!("struct {name} is never closed"))),
             }
@@ -685,7 +698,7 @@ impl Parser {
                         Some(Token::Comma) => {}
                         Some(Token::RightParen) => break,
                         Some(token) => {
-                            return Err(self.error(format!("expected ',' or ')', found {token:?}")));
+                            return Err(self.error(format!("expected ',' or ')', found {token}")));
                         }
                         None => return Err(self.error(format!("enum {name} is never closed"))),
                     }
@@ -767,7 +780,7 @@ impl Parser {
                     Ok(Pattern::Bind(name))
                 }
             }
-            Some(token) => Err(self.error(format!("expected a pattern, found {token:?}"))),
+            Some(token) => Err(self.error(format!("expected a pattern, found {token}"))),
             None => Err(self.error("expected a pattern, found end of input".to_string())),
         }
     }
@@ -784,7 +797,7 @@ impl Parser {
                 Some(Token::Comma) => {}
                 Some(Token::RightParen) => return Ok(bindings),
                 Some(token) => {
-                    return Err(self.error(format!("expected ',' or ')', found {token:?}")));
+                    return Err(self.error(format!("expected ',' or ')', found {token}")));
                 }
                 None => return Err(self.error("pattern is never closed".to_string())),
             }
@@ -833,7 +846,7 @@ impl Parser {
                 };
                 Type::Function(params, Box::new(returns))
             }
-            Some(token) => return Err(self.error(format!("expected a type, found {token:?}"))),
+            Some(token) => return Err(self.error(format!("expected a type, found {token}"))),
             None => return Err(self.error("expected a type, found end of input".to_string())),
         };
         if self.peek() == Some(&Token::Question) {
@@ -872,7 +885,7 @@ impl Parser {
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
-            Some(token) => Err(self.error(format!("unexpected {token:?}"))),
+            Some(token) => Err(self.error(format!("unexpected {token}"))),
             None => Err(self.error("unexpected end of input".to_string())),
         }
     }
@@ -892,10 +905,7 @@ impl Parser {
     fn embedded(&self, code: &str) -> Result<Expr, Error> {
         let line = self.line;
         let tokens = lex(code)
-            .map_err(|error| Error {
-                line,
-                message: error.message,
-            })?
+            .map_err(|error| Error::new(line, error.message))?
             .into_iter()
             .map(|(token, _)| (token, line))
             .collect();
@@ -905,14 +915,14 @@ impl Parser {
         let expr = parser.expression()?;
         match parser.peek() {
             None => Ok(expr),
-            Some(token) => Err(self.error(format!("unexpected {token:?} inside ${{...}}"))),
+            Some(token) => Err(self.error(format!("unexpected {token} inside ${{...}}"))),
         }
     }
 
     fn identifier(&mut self) -> Result<String, Error> {
         match self.advance() {
             Some(Token::Ident(name)) => Ok(name),
-            Some(token) => Err(self.error(format!("expected a name, found {token:?}"))),
+            Some(token) => Err(self.error(format!("expected a name, found {token}"))),
             None => Err(self.error("expected a name, found end of input".to_string())),
         }
     }
@@ -920,16 +930,13 @@ impl Parser {
     fn expect(&mut self, expected: Token) -> Result<(), Error> {
         match self.advance() {
             Some(token) if token == expected => Ok(()),
-            Some(token) => Err(self.error(format!("expected {expected:?}, found {token:?}"))),
-            None => Err(self.error(format!("expected {expected:?}, found end of input"))),
+            Some(token) => Err(self.error(format!("expected {expected}, found {token}"))),
+            None => Err(self.error(format!("expected {expected}, found end of input"))),
         }
     }
 
     fn error(&self, message: String) -> Error {
-        Error {
-            line: self.line,
-            message,
-        }
+        Error::new(self.line, message)
     }
 
     fn record(&mut self) -> Result<Expr, Error> {
@@ -943,7 +950,7 @@ impl Parser {
             let key = match self.advance() {
                 Some(Token::Ident(name)) | Some(Token::Str(name)) => name,
                 Some(token) => {
-                    return Err(self.error(format!("expected a field name, found {token:?}")));
+                    return Err(self.error(format!("expected a field name, found {token}")));
                 }
                 None => return Err(self.error("record is never closed".to_string())),
             };
@@ -958,7 +965,7 @@ impl Parser {
                 Some(Token::Comma) => {}
                 Some(Token::RightBrace) => return Ok(Expr::Record(fields)),
                 Some(token) => {
-                    return Err(self.error(format!("expected ',' or '}}', found {token:?}")));
+                    return Err(self.error(format!("expected ',' or '}}', found {token}")));
                 }
                 None => return Err(self.error("record is never closed".to_string())),
             }
@@ -985,7 +992,7 @@ impl Parser {
                 Some(Token::Comma) => {}
                 Some(Token::RightBrace) => return Ok(Expr::StructLit(name, fields)),
                 Some(token) => {
-                    return Err(self.error(format!("expected ',' or '}}', found {token:?}")));
+                    return Err(self.error(format!("expected ',' or '}}', found {token}")));
                 }
                 None => return Err(self.error(format!("{name} {{ ... }} is never closed"))),
             }

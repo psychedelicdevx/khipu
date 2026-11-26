@@ -91,10 +91,7 @@ impl Vm {
 
             macro_rules! fail {
                 ($message:expr) => {
-                    return Err(Error {
-                        line: proto.lines[ip - 1] as usize,
-                        message: $message.into(),
-                    })
+                    return Err(Error::new(proto.lines[ip - 1] as usize, $message))
                 };
             }
 
@@ -935,7 +932,8 @@ impl Vm {
                         };
                         match self.load_module(path) {
                             Ok(module) => self.stack.push(Value::Record(module)),
-                            Err(message) => fail!(message),
+                            Err(error) if error.file.is_some() => return Err(error),
+                            Err(error) => fail!(error.message),
                         }
                     }
                     Code::ImportName(path, name) => {
@@ -963,28 +961,30 @@ impl Vm {
         }
     }
 
-    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, String> {
+    fn load_module(&mut self, path: &str) -> Result<Rc<RefCell<Fields>>, Error> {
         let file = self
             .dir
             .join(path)
             .canonicalize()
-            .map_err(|_| format!("cannot find {path}"))?;
+            .map_err(|_| Error::new(0, format!("cannot find {path}")))?;
 
         if let Some(module) = self.modules.borrow().get(&file) {
             return Ok(Rc::clone(module));
         }
         if self.loading.borrow().contains(&file) {
-            return Err(format!("{path} is part of an import loop"));
+            return Err(Error::new(0, format!("{path} is part of an import loop")));
         }
 
-        let source =
-            fs::read_to_string(&file).map_err(|error| format!("cannot read {path}: {error}"))?;
+        let source = fs::read_to_string(&file)
+            .map_err(|error| Error::new(0, format!("cannot read {path}: {error}")))?;
         self.loading.borrow_mut().push(file.clone());
         let result = self.run_module(&file, &source);
         self.loading.borrow_mut().pop();
 
-        let fields =
-            result.map_err(|error| format!("in {path}, line {}: {}", error.line, error.message))?;
+        let fields = result.map_err(|mut error| {
+            error.file.get_or_insert(file.clone());
+            error
+        })?;
         let module = Rc::new(RefCell::new(fields));
         self.modules.borrow_mut().insert(file, Rc::clone(&module));
         Ok(module)
