@@ -215,6 +215,9 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         shapes: packed.shapes.iter().map(|shape| names(shape)).collect(),
         captures: packed.captures.clone(),
         builtin: packed.builtin,
+        source: None,
+        top_level: false,
+        tier: Default::default(),
         structs: packed
             .structs
             .iter()

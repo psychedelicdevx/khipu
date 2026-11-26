@@ -1,8 +1,11 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt};
+use crate::kernel::Source;
+use crate::native::Tier;
+use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt, Type};
 use crate::value::{EnumDef, Value};
 
 #[derive(Debug, Clone, Copy)]
@@ -219,6 +222,9 @@ pub struct Proto {
     pub enums: Vec<Rc<EnumDef>>,
     pub patterns: Vec<PatternTest>,
     pub builtin: bool,
+    pub source: Option<Rc<Source>>,
+    pub top_level: bool,
+    pub tier: Cell<Tier>,
 }
 
 impl Proto {
@@ -236,6 +242,9 @@ impl Proto {
             enums: Vec::new(),
             patterns: Vec::new(),
             builtin: false,
+            source: None,
+            top_level: false,
+            tier: Cell::new(Tier::default()),
         }
     }
 
@@ -652,6 +661,15 @@ impl Compiler<'_> {
 
     fn statement(&mut self, stmt: &Stmt) -> Result<(), Error> {
         match stmt {
+            Stmt::Let(name, _, Expr::Function { .. }) if self.defines_global(name) => {
+                self.value(expr_of(stmt))?;
+                if let Some(proto) = self.current().proto.protos.last_mut()
+                    && let Some(proto) = Rc::get_mut(proto)
+                {
+                    proto.top_level = true;
+                }
+                self.define(name);
+            }
             Stmt::Let(name, _, expr @ Expr::Function { .. }) if !self.defines_global(name) => {
                 self.emit(Code::None);
                 let boxed = self.current().captured.contains(name);
@@ -1159,8 +1177,13 @@ impl Compiler<'_> {
                 });
             }
             Expr::Function {
-                name, params, body, ..
-            } => self.function(name, params, body)?,
+                name,
+                params,
+                param_types,
+                returns,
+                body,
+                ..
+            } => self.function(name, params, param_types, returns.as_ref(), body)?,
             Expr::Match(..) => {
                 return Err(Error::new(
                     self.line as usize,
@@ -1212,7 +1235,14 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    fn function(&mut self, name: &str, params: &[String], body: &Block) -> Result<(), Error> {
+    fn function(
+        &mut self,
+        name: &str,
+        params: &[String],
+        param_types: &[Option<Type>],
+        returns: Option<&Type>,
+        body: &Rc<Block>,
+    ) -> Result<(), Error> {
         let line = self.line;
         let captured = captured_names(body);
         self.fns.push(FnState::new(name, params.len(), captured));
@@ -1228,13 +1258,28 @@ impl Compiler<'_> {
         self.emit(Code::None);
         self.emit(Code::Return);
 
-        let finished = self.fns.pop().expect("the function was pushed above");
+        let mut finished = self.fns.pop().expect("the function was pushed above");
+        finished.proto.source = Some(Rc::new(Source {
+            name: name.to_string(),
+            params: params.to_vec(),
+            param_types: param_types.to_vec(),
+            returns: returns.cloned(),
+            looping: crate::kernel::has_loop(body),
+            body: Rc::clone(body),
+        }));
         self.line = line;
         let protos = &mut self.current().proto.protos;
         protos.push(Rc::new(finished.proto));
         let index = (protos.len() - 1) as u32;
         self.emit(Code::Closure(index));
         Ok(())
+    }
+}
+
+fn expr_of(stmt: &Stmt) -> &Expr {
+    match stmt {
+        Stmt::Let(_, _, expr) => expr,
+        _ => unreachable!("only called for let"),
     }
 }
 

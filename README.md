@@ -261,7 +261,7 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `██████░░░░` 10 / 18 |
+| 8. Performance and final audit | `██████░░░░` 11 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
 **Next up:** Beat Python on every sustained benchmark
@@ -317,6 +317,10 @@ If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give
 
 `editors/tree-sitter-khipu` is a tree-sitter grammar with highlight queries, for Zed, Neovim, Helix and anything else built on tree-sitter. It parses every example and benchmark in this repository; run its tests with `npx tree-sitter-cli test` in that folder.
 
+## Native code
+
+Functions that work only with numbers and bools are compiled to machine code while the program runs. A function qualifies when its body uses only number and bool values, arithmetic, comparisons, `&&` `||` `!`, `let`, assignment, `if`, `while`, `break`, `continue`, `return`, and calls to other functions that qualify, itself included. The compiler ([Cranelift](https://cranelift.dev)) runs the 64th time such a function is called, or on the first call if the function contains a loop, and from then on the call runs natively: `fib(32)` goes from 165 ms to 24 ms. Nothing changes for the program: arguments of another type fall back to the bytecode, too much recursion is still an error on the right line, and reassigning a global function throws the native code for it away. Spawned tasks keep running bytecode, so they keep taking turns.
+
 ## Web pages
 
 `khipu web app.kp` turns a program into `app.html`: one file with the program and the Khipu runtime (compiled to WebAssembly) inside. It opens with a double-click, works offline, runs the program in the background so the page stays responsive, and shows output and errors just like the terminal. The program is type-checked first, so mistakes are caught before the page is written. Web pages cannot import other files or use files, HTTP or tasks yet.
@@ -349,6 +353,8 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/package.rs` | The package manager: `khipu.json`, `khipu.lock` and git sources |
 | `src/web.rs`, `build.rs` | `khipu web`: one self-contained HTML page per program |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
+| `src/kernel.rs` | Finds functions that work only with numbers and bools, and lowers them to a small typed IR |
+| `src/jit.rs`, `src/native.rs` | Compiles that IR to machine code with Cranelift, and switches hot functions over to it |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/gc.rs` | The cycle collector: reference counting frees most values, this frees the cycles |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
@@ -378,4 +384,4 @@ Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo
 KHIPU_FUZZ=100000 cargo test --release --test fuzz -- --ignored
 ```
 
-Every user-facing error message has a test that checks its wording and the line it points at. The codebase has no `unsafe` blocks; the only `unsafe` is the `#[unsafe(no_mangle)]` attribute on the six functions in `src/wasm.rs` that the browser calls by name, which the playground build exercises.
+Every user-facing error message has a test that checks its wording and the line it points at. There are three `unsafe` uses, each with a comment saying why it holds: calling a function the JIT just compiled, in `src/jit.rs` and `src/native.rs`, where the signature is the one we declared; and the `#[unsafe(no_mangle)]` attribute on the functions in `src/wasm.rs` that the browser calls by name. The JIT tests compare every compiled function with the interpreter, and the playground build exercises the exports.

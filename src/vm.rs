@@ -251,6 +251,20 @@ impl Vm {
                             $argc
                         ));
                     }
+                    if !self.preemptive
+                        && let Some(native) = crate::native::entry(&function)
+                    {
+                        let args_at: usize = $base;
+                        match crate::native::call(&native, &self.stack[args_at..args_at + $argc]) {
+                            Some(Ok(value)) => {
+                                self.stack.truncate($return_to);
+                                self.stack.push(value);
+                                continue;
+                            }
+                            Some(Err(message)) => fail!(message),
+                            None => {}
+                        }
+                    }
                     if self.frames.len() + 1 >= MAX_FRAMES {
                         fail!(format!(
                             "too much recursion: more than {MAX_FRAMES} calls deep"
@@ -456,17 +470,25 @@ impl Vm {
                     Code::SetGlobal(slot) => {
                         let value = self.stack.pop().expect("value to store");
                         let mut globals = closure.globals.borrow_mut();
-                        if globals.values[slot as usize].is_none() {
-                            let name = &globals.names[slot as usize];
-                            fail!(format!(
-                                "'{name}' is not defined, use 'let {name} = ...' first"
-                            ));
+                        match &globals.values[slot as usize] {
+                            None => {
+                                let name = &globals.names[slot as usize];
+                                fail!(format!(
+                                    "'{name}' is not defined, use 'let {name} = ...' first"
+                                ));
+                            }
+                            Some(Value::Function(_)) => crate::native::invalidate(),
+                            Some(_) => {}
                         }
                         globals.values[slot as usize] = Some(value);
                     }
                     Code::DefineGlobal(slot) => {
                         let value = self.stack.pop().expect("value to store");
-                        closure.globals.borrow_mut().values[slot as usize] = Some(value);
+                        let mut globals = closure.globals.borrow_mut();
+                        if matches!(globals.values[slot as usize], Some(Value::Function(_))) {
+                            crate::native::invalidate();
+                        }
+                        globals.values[slot as usize] = Some(value);
                     }
                     Code::Add => numbers!(Op::Add, |x, y| Value::Number(x + y)),
                     Code::AddConst(index) => {

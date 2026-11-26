@@ -396,6 +396,23 @@ mod tests {
     }
 
     #[test]
+    fn hot_numeric_functions_run_natively_and_fall_back_when_needed() {
+        let program = "fn add(a, b) {\n    return a + b\n}\nfn sum_to(n: number) -> number {\n    let total = 0\n    let i = 0\n    while i <= n {\n        total = add(total, i)\n        i = i + 1\n    }\n    return total\n}\nlet seen = 0\nfor i in range(200) {\n    seen = seen + add(i, 1) + sum_to(10)\n}\n\"${seen} ${add(\"a\", \"b\")} ${sum_to(100000)}\"";
+        assert_eq!(string(program), "31100 ab 5000050000");
+
+        let swapped = "fn step(n: number) -> number {\n    return n + 1\n}\nlet total = 0\nfor i in range(100) {\n    total = total + step(i)\n}\nstep = fn(n: number) -> number { return n + 2 }\nfor i in range(100) {\n    total = total + step(i)\n}\ntotal";
+        assert_eq!(number(swapped), 5050.0 + 5150.0);
+
+        let deep = error(
+            "fn down(n: number) -> number {\n    if n == 0 {\n        return 0\n    }\n    return down(n - 1) + 1\n}\nlet fine = down(5000)\ndown(50000)",
+        );
+        assert_eq!(
+            (deep.line, deep.message.as_str()),
+            (8, "too much recursion: more than 10000 calls deep")
+        );
+    }
+
+    #[test]
     fn a_budget_stops_a_program_that_never_ends() {
         let program = Parser::new(lex("let i = 0\nwhile true {\n    i = i + 1\n}").unwrap())
             .parse_program()

@@ -5,8 +5,12 @@ pub mod format;
 pub mod gc;
 pub mod http;
 pub mod interpreter;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod jit;
+pub mod kernel;
 pub mod lexer;
 pub mod lsp;
+pub mod native;
 pub mod package;
 pub mod parser;
 pub mod stdlib;
