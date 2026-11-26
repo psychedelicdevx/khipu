@@ -84,7 +84,7 @@ fn whole(value: &Value, what: &str) -> Result<i64, String> {
 
 fn items(value: &Value, what: &str) -> Result<Vec<Value>, String> {
     match value {
-        Value::List(items) => Ok(items.borrow().clone()),
+        Value::List(items) => Ok(items.borrow().to_vec()),
         other => Err(format!("{what} needs a list, got {}", other.type_name())),
     }
 }

@@ -131,7 +131,7 @@ print(reply.status, reply.json().message)
 
 `File` also has `read`, `exists`, `list` and `delete`; `Process` has `args`, `env` and `exit`. A file that cannot be read stops the program with an error that says why, on the line that tried.
 
-Lookups that can miss give back `none` instead of a magic `-1`: `"abc".index_of("z")`, `[].first()` and `"x".to_number()` all return `none`, so the type checker makes you handle it with `??`. Methods that take a callback are written in Khipu itself, in [`src/prelude.kp`](src/prelude.kp).
+`range(n)` counts on demand instead of building a list, and a list of nothing but numbers or bools is stored compactly. Lookups that can miss give back `none` instead of a magic `-1`: `"abc".index_of("z")`, `[].first()` and `"x".to_number()` all return `none`, so the type checker makes you handle it with `??`. Methods that take a callback are written in Khipu itself, in [`src/prelude.kp`](src/prelude.kp).
 
 ## Tasks on every core
 
@@ -261,10 +261,10 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 18 |
+| 8. Performance and final audit | `██░░░░░░░░` 3 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Lazy `range()` that never builds a list
+**Next up:** Faster function calls, so `fib` and `fib_iterative` beat Python
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -350,6 +350,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/web.rs`, `build.rs` | `khipu web`: one self-contained HTML page per program |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
+| `src/gc.rs` | The cycle collector: reference counting frees most values, this frees the cycles |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
 | `src/lib.rs` | The library the `khipu` command and the playground share |
 | `src/wasm.rs` | Browser entry points: run, check and format |

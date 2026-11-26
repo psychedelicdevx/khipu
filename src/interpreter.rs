@@ -539,6 +539,34 @@ mod tests {
     }
 
     #[test]
+    fn ranges_count_without_building_a_list() {
+        assert_eq!(number("len(range(100000000000))"), 100000000000.0);
+        assert_eq!(number("range(5, 100000000000)[2]"), 7.0);
+        assert_eq!(number("len(range(5, 2))"), 0.0);
+        assert_eq!(
+            number("let r = range(3)\npush(r, 9)\nr[0] = 7\nr[0] + r[3] + len(r)"),
+            20.0
+        );
+        assert_eq!(string("\"${range(2, 5)}\""), "[2, 3, 4]");
+        assert!(boolean("range(3).contains(2) && !range(3).contains(3)"));
+        assert_eq!(number("range(1, 4).sum() + (range(3).last() ?? 0)"), 8.0);
+        assert_eq!(error("range(1.5)").message, "range needs whole numbers");
+    }
+
+    #[test]
+    fn lists_of_one_kind_can_still_take_anything() {
+        let source = "let xs: list = [true, false]\nxs[1] = 5\npush(xs, \"s\")\nxs.insert(0, none)\n\"${xs} ${xs.pop() ?? \"\"} ${xs.remove(0)}\"";
+        assert_eq!(string(source), "[none, true, 5, \"s\"] s none");
+        assert!(boolean(
+            "let ns = [1, 2]\npush(ns, 3)\nns[0] = 0\nns == [0, 2, 3] && ns.reversed() == [3, 2, 0]"
+        ));
+        assert_eq!(
+            number("let xs: list = []\npush(xs, true)\npush(xs, 2)\nlen(xs)"),
+            2.0
+        );
+    }
+
+    #[test]
     fn loops_over_lists_and_strings() {
         assert_eq!(
             number("let total = 0\nfor n in [1, 2, 3, 4] {\n  total = total + n\n}\ntotal"),

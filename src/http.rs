@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -44,7 +43,7 @@ fn record(pairs: Vec<(String, Value)>) -> Value {
         .into_iter()
         .map(|(name, value)| (Rc::from(name.as_str()), value))
         .collect();
-    Value::Record(Rc::new(RefCell::new(fields)))
+    Value::record(fields)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -72,7 +71,7 @@ fn to_json(value: &Value) -> Result<Json, String> {
             items
                 .borrow()
                 .iter()
-                .map(to_json)
+                .map(|item| to_json(&item))
                 .collect::<Result<_, _>>()?,
         ),
         Value::Record(fields) => Json::Object(

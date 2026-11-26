@@ -12,7 +12,7 @@ use crate::lexer::lex;
 use crate::parser::{Op, Parser};
 use crate::task;
 use crate::value::{
-    Closure, EnumValue, Fields, GlobalStore, Instance, StructDef, Value, binary, equal,
+    Closure, EnumValue, Fields, GlobalStore, Globals, Instance, StructDef, Value, binary, equal,
     write_number,
 };
 
@@ -49,7 +49,7 @@ pub struct Vm {
 impl Vm {
     pub fn new(dir: &Path, modules: Modules, loading: Loading) -> Self {
         Vm {
-            globals: GlobalStore::default(),
+            globals: Globals::default().store(),
             stack: Vec::with_capacity(1024),
             frames: Vec::with_capacity(64),
             dir: dir.to_path_buf(),
@@ -87,7 +87,7 @@ impl Vm {
 
     pub fn task(dir: &Path) -> Self {
         Vm {
-            globals: GlobalStore::default(),
+            globals: Globals::default().store(),
             stack: Vec::with_capacity(16),
             frames: Vec::with_capacity(4),
             dir: dir.to_path_buf(),
@@ -395,7 +395,7 @@ impl Vm {
                     Code::MakeCell(slot) => {
                         let place = &mut self.stack[base + slot as usize];
                         let value = std::mem::replace(place, Value::None);
-                        *place = Value::Cell(Rc::new(RefCell::new(value)));
+                        *place = Value::Cell(Value::cell(value));
                     }
                     Code::GetCell(slot) => {
                         let value = match &self.stack[base + slot as usize] {
@@ -712,11 +712,11 @@ impl Vm {
                                     ));
                                 }
                                 let values = self.stack.split_off(target_at + 1);
-                                self.stack[target_at] = Value::Enum(Rc::new(EnumValue {
+                                self.stack[target_at] = Value::enumeration(EnumValue {
                                     def: Rc::clone(def),
                                     variant,
                                     values,
-                                }));
+                                });
                             }
                             Value::Record(fields) => match get_field(fields, name) {
                                 Ok(value) => {
@@ -786,11 +786,11 @@ impl Vm {
                                 }
                             }
                         }
-                        self.stack.push(Value::Function(Rc::new(Closure {
+                        self.stack.push(Value::closure(Closure {
                             proto: inner,
                             captures,
                             globals: Rc::clone(&closure.globals),
-                        })));
+                        }));
                     }
                     Code::List(count) => {
                         let items = self.stack.split_off(self.stack.len() - count as usize);
@@ -800,8 +800,7 @@ impl Vm {
                         let shape = &proto.shapes[shape as usize];
                         let values = self.stack.split_off(self.stack.len() - shape.len());
                         let fields: Fields = shape.iter().cloned().zip(values).collect();
-                        self.stack
-                            .push(Value::Record(Rc::new(RefCell::new(fields))));
+                        self.stack.push(Value::record(fields));
                     }
                     Code::Index => {
                         let index = self.stack.pop().expect("index");
@@ -810,7 +809,7 @@ impl Vm {
                             Value::List(items) => {
                                 let items = items.borrow();
                                 match position(&index, items.len()) {
-                                    Ok(at) => items[at].clone(),
+                                    Ok(at) => items.get(at).unwrap_or(Value::None),
                                     Err(message) => fail!(message),
                                 }
                             }
@@ -843,7 +842,7 @@ impl Vm {
                             Value::List(items) => {
                                 let len = items.borrow().len();
                                 match position(&index, len) {
-                                    Ok(at) => items.borrow_mut()[at] = value,
+                                    Ok(at) => items.borrow_mut().set(at, value),
                                     Err(message) => fail!(message),
                                 }
                             }
@@ -906,11 +905,11 @@ impl Vm {
                             Value::EnumDef(def) => {
                                 match def.variants.iter().position(|(v, _)| **v == ***name) {
                                     Some(variant) if def.variants[variant].1 == 0 => {
-                                        Value::Enum(Rc::new(EnumValue {
+                                        Value::enumeration(EnumValue {
                                             def: Rc::clone(def),
                                             variant,
                                             values: Vec::new(),
-                                        }))
+                                        })
                                     }
                                     Some(variant) => {
                                         let arity = def.variants[variant].1;
@@ -974,7 +973,7 @@ impl Vm {
                             fields: Rc::clone(&info.fields),
                             methods: info.methods.iter().cloned().zip(methods).collect(),
                         };
-                        self.stack.push(Value::StructDef(Rc::new(def)));
+                        self.stack.push(Value::struct_def(def));
                     }
                     Code::MakeEnumDef(index) => {
                         self.stack
@@ -999,10 +998,10 @@ impl Vm {
                                 None => fail!(format!("{} is missing field '{field}'", def.name)),
                             }
                         }
-                        self.stack.push(Value::Instance(Rc::new(Instance {
+                        self.stack.push(Value::instance(Instance {
                             def,
                             fields: RefCell::new(fields),
-                        })));
+                        }));
                     }
                     Code::Test(pattern, fail_at) => match &proto.patterns[pattern as usize] {
                         PatternTest::Value { slot, constant } => {
@@ -1055,6 +1054,21 @@ impl Vm {
                             self.stack[base + slot as usize]
                         ));
                     }
+                    Code::Stringify => {
+                        let top = self.stack.last_mut().expect("value to show");
+                        if !matches!(top, Value::Str(_)) {
+                            let mut text = String::new();
+                            match &*top {
+                                Value::Number(n) => {
+                                    let _ = write_number(&mut text, *n);
+                                }
+                                other => {
+                                    let _ = write!(text, "{other}");
+                                }
+                            }
+                            *top = Value::Str(Rc::new(text));
+                        }
+                    }
                     Code::Concat(count) => {
                         let parts = self.stack.split_off(self.stack.len() - count as usize);
                         let mut text = String::new();
@@ -1073,10 +1087,10 @@ impl Vm {
                     }
                     Code::IterInit => {
                         let items = match self.stack.pop().expect("iterable") {
-                            Value::List(items) => items.borrow().clone(),
-                            Value::Str(text) => {
-                                text.chars().map(|c| Value::str(&c.to_string())).collect()
-                            }
+                            list @ Value::List(_) => list,
+                            Value::Str(text) => Value::list(
+                                text.chars().map(|c| Value::str(&c.to_string())).collect(),
+                            ),
                             Value::Record(_) => fail!(
                                 "for needs a list or a string, got record, try 'for key in keys(record)'"
                             ),
@@ -1085,7 +1099,7 @@ impl Vm {
                                 other.type_name()
                             )),
                         };
-                        self.stack.push(Value::list(items));
+                        self.stack.push(items);
                     }
                     Code::ForNext(slot, exit) => {
                         let at = base + slot as usize;
@@ -1093,7 +1107,7 @@ impl Vm {
                             fail!("internal error: loop counter is not a number");
                         };
                         let next = match &self.stack[at] {
-                            Value::List(items) => items.borrow().get(count as usize).cloned(),
+                            Value::List(items) => items.borrow().get(count as usize),
                             _ => fail!("internal error: loop items are not a list"),
                         };
                         match next {
@@ -1166,7 +1180,9 @@ impl Vm {
             error.file.get_or_insert(file.clone());
             error
         })?;
-        let module = Rc::new(RefCell::new(fields));
+        let Value::Record(module) = Value::record(fields) else {
+            unreachable!("record makes a record")
+        };
         self.modules.borrow_mut().insert(file, Rc::clone(&module));
         Ok(module)
     }

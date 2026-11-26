@@ -10,7 +10,8 @@ use crate::compiler::{Capture, Code, PatternTest, Proto, StructInfo};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::Error;
 use crate::value::{
-    Cell, Closure, EnumDef, EnumValue, GlobalStore, Globals, Instance, Native, StructDef, Value,
+    Cell, Closure, EnumDef, EnumValue, GlobalStore, Globals, Instance, List, Native, StructDef,
+    Value,
 };
 
 pub struct Channel {
@@ -297,7 +298,7 @@ impl Packer {
             Value::Channel(channel) => return Slot::Channel(Arc::clone(channel)),
             Value::Cell(cell) => self.cell(cell),
             Value::List(items) => self.node(address(items), |packer| {
-                Node::List(items.borrow().iter().map(|v| packer.slot(v)).collect())
+                Node::List(items.borrow().iter().map(|v| packer.slot(&v)).collect())
             }),
             Value::Record(fields) => self.node(address(fields), |packer| {
                 Node::Record(
@@ -372,12 +373,15 @@ pub fn unpack(graph: Graph) -> Vec<Value> {
         .iter()
         .map(|node| match node {
             Node::List(_) => Some(Made::Value(Value::list(Vec::new()))),
-            Node::Record(_) => Some(Made::Value(Value::Record(Rc::default()))),
-            Node::Cell(_) => Some(Made::Value(Value::Cell(Rc::new(RefCell::new(Value::None))))),
-            Node::Globals(names, _) => Some(Made::Globals(Rc::new(RefCell::new(Globals {
-                values: Vec::new(),
-                names: names.clone(),
-            })))),
+            Node::Record(_) => Some(Made::Value(Value::record(Vec::new()))),
+            Node::Cell(_) => Some(Made::Value(Value::Cell(Value::cell(Value::None)))),
+            Node::Globals(names, _) => Some(Made::Globals(
+                Globals {
+                    values: Vec::new(),
+                    names: names.clone(),
+                }
+                .store(),
+            )),
             _ => None,
         })
         .collect();
@@ -413,7 +417,7 @@ impl Unpacker {
     fn cell(&self, index: usize) -> Cell {
         match &self.made[index] {
             Some(Made::Value(Value::Cell(cell))) => Rc::clone(cell),
-            _ => Rc::new(RefCell::new(Value::None)),
+            _ => Value::cell(Value::None),
         }
     }
 
@@ -426,13 +430,13 @@ impl Unpacker {
                 let captures = captures.iter().map(|c| self.cell(*c)).collect();
                 let globals = match &self.made[globals] {
                     Some(Made::Globals(store)) => Rc::clone(store),
-                    _ => GlobalStore::default(),
+                    _ => Globals::default().store(),
                 };
-                let value = Value::Function(Rc::new(Closure {
+                let value = Value::closure(Closure {
                     proto: unpack_proto(&proto),
                     captures,
                     globals,
-                }));
+                });
                 self.nodes[index] = Node::Function(proto, Vec::new(), 0);
                 value
             }
@@ -441,21 +445,21 @@ impl Unpacker {
                     .iter()
                     .map(|(name, method)| (Rc::from(name.as_str()), self.value(method)))
                     .collect();
-                Value::StructDef(Rc::new(StructDef {
+                Value::struct_def(StructDef {
                     name: Rc::from(name),
                     fields: names(&fields),
                     methods,
-                }))
+                })
             }
             Node::Instance(def, fields) => {
                 let Value::StructDef(def_value) = self.value(&Slot::Node(def)) else {
                     return;
                 };
                 self.nodes[index] = Node::Instance(def, fields);
-                Value::Instance(Rc::new(Instance {
+                Value::instance(Instance {
                     def: def_value,
                     fields: RefCell::new(Vec::new()),
-                }))
+                })
             }
             Node::EnumDef(def) => Value::EnumDef(Rc::new(unpack_enum(&def))),
             Node::Enum(def, variant, values) => {
@@ -463,11 +467,11 @@ impl Unpacker {
                     return;
                 };
                 let values = values.iter().map(|v| self.value(v)).collect();
-                Value::Enum(Rc::new(EnumValue {
+                Value::enumeration(EnumValue {
                     def,
                     variant,
                     values,
-                }))
+                })
             }
             other => {
                 self.nodes[index] = other;
@@ -482,7 +486,7 @@ impl Unpacker {
         match (&node, self.made[index].clone()) {
             (Node::List(items), Some(Made::Value(Value::List(list)))) => {
                 let items = items.iter().map(|v| self.value(v)).collect();
-                *list.borrow_mut() = items;
+                *list.borrow_mut() = List::from_values(items);
             }
             (Node::Record(fields), Some(Made::Value(Value::Record(record)))) => {
                 let fields = fields
@@ -667,7 +671,7 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
         .borrow()
         .iter()
         .map(|item| match item {
-            Value::Channel(channel) => Ok(Arc::clone(channel)),
+            Value::Channel(channel) => Ok(Arc::clone(&channel)),
             other => Err(format!(
                 "select can only receive from a channel, got {}",
                 other.type_name()

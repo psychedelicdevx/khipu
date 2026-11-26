@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::compiler::Proto;
+use crate::gc::{self, Tracked};
 use crate::parser::Op;
 use crate::task::{self, Channel};
 
@@ -12,12 +13,154 @@ pub type Fields = Vec<(Rc<str>, Value)>;
 pub type Cell = Rc<RefCell<Value>>;
 
 #[derive(Clone)]
+pub enum List {
+    Values(Vec<Value>),
+    Numbers(Vec<f64>),
+    Bools(Vec<bool>),
+    Range(i64, i64),
+}
+
+impl Default for List {
+    fn default() -> Self {
+        List::Numbers(Vec::new())
+    }
+}
+
+impl List {
+    pub fn from_values(values: Vec<Value>) -> List {
+        if values.iter().all(|v| matches!(v, Value::Number(_))) {
+            return List::Numbers(
+                values
+                    .iter()
+                    .map(|v| if let Value::Number(n) = v { *n } else { 0.0 })
+                    .collect(),
+            );
+        }
+        if !values.is_empty() && values.iter().all(|v| matches!(v, Value::Bool(_))) {
+            return List::Bools(
+                values
+                    .iter()
+                    .map(|v| matches!(v, Value::Bool(true)))
+                    .collect(),
+            );
+        }
+        List::Values(values)
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            List::Values(items) => items.len(),
+            List::Numbers(items) => items.len(),
+            List::Bools(items) => items.len(),
+            List::Range(start, end) => (end - start).max(0) as usize,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, at: usize) -> Option<Value> {
+        match self {
+            List::Values(items) => items.get(at).cloned(),
+            List::Numbers(items) => items.get(at).map(|n| Value::Number(*n)),
+            List::Bools(items) => items.get(at).map(|b| Value::Bool(*b)),
+            List::Range(start, _) => {
+                (at < self.len()).then(|| Value::Number((start + at as i64) as f64))
+            }
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Value> + '_ {
+        (0..self.len()).map(move |at| self.get(at).unwrap_or(Value::None))
+    }
+
+    pub fn to_vec(&self) -> Vec<Value> {
+        self.iter().collect()
+    }
+
+    pub fn visit(&self, visit: &mut impl FnMut(&Value)) {
+        if let List::Values(items) = self {
+            items.iter().for_each(visit);
+        }
+    }
+
+    fn widen(&mut self) -> &mut Vec<Value> {
+        if !matches!(self, List::Values(_)) {
+            *self = List::Values(self.to_vec());
+        }
+        match self {
+            List::Values(items) => items,
+            _ => unreachable!("widened above"),
+        }
+    }
+
+    pub fn push(&mut self, value: Value) {
+        match (&mut *self, &value) {
+            (List::Numbers(items), Value::Number(n)) => items.push(*n),
+            (List::Bools(items), Value::Bool(b)) => items.push(*b),
+            (List::Numbers(items), Value::Bool(b)) if items.is_empty() => {
+                *self = List::Bools(vec![*b]);
+            }
+            (List::Values(items), _) => items.push(value),
+            _ => self.widen().push(value),
+        }
+    }
+
+    pub fn set(&mut self, at: usize, value: Value) {
+        match (&mut *self, &value) {
+            (List::Numbers(items), Value::Number(n)) => items[at] = *n,
+            (List::Bools(items), Value::Bool(b)) => items[at] = *b,
+            (List::Values(items), _) => items[at] = value,
+            _ => self.widen()[at] = value,
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<Value> {
+        match self {
+            List::Values(items) => items.pop(),
+            List::Numbers(items) => items.pop().map(Value::Number),
+            List::Bools(items) => items.pop().map(Value::Bool),
+            List::Range(..) => self.widen().pop(),
+        }
+    }
+
+    pub fn insert(&mut self, at: usize, value: Value) {
+        match (&mut *self, &value) {
+            (List::Numbers(items), Value::Number(n)) => items.insert(at, *n),
+            (List::Bools(items), Value::Bool(b)) => items.insert(at, *b),
+            (List::Values(items), _) => items.insert(at, value),
+            _ => self.widen().insert(at, value),
+        }
+    }
+
+    pub fn remove(&mut self, at: usize) -> Value {
+        match self {
+            List::Values(items) => items.remove(at),
+            List::Numbers(items) => Value::Number(items.remove(at)),
+            List::Bools(items) => Value::Bool(items.remove(at)),
+            List::Range(..) => self.widen().remove(at),
+        }
+    }
+
+    pub fn numbers(&self) -> Option<Vec<f64>> {
+        match self {
+            List::Numbers(items) => Some(items.clone()),
+            List::Range(start, end) => {
+                Some((*start..(*end).max(*start)).map(|n| n as f64).collect())
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum Value {
     Number(f64),
     Bool(bool),
     None,
     Str(Rc<String>),
-    List(Rc<RefCell<Vec<Value>>>),
+    List(Rc<RefCell<List>>),
     Record(Rc<RefCell<Fields>>),
     Function(Rc<Closure>),
     Native(&'static Native),
@@ -70,7 +213,61 @@ pub struct Globals {
 
 pub type GlobalStore = Rc<RefCell<Globals>>;
 
+impl Globals {
+    pub fn store(self) -> GlobalStore {
+        let store = Rc::new(RefCell::new(self));
+        gc::track(Tracked::Globals(Rc::downgrade(&store)));
+        store
+    }
+}
+
 impl Value {
+    pub fn record(fields: Fields) -> Value {
+        let record = Rc::new(RefCell::new(fields));
+        gc::track(Tracked::Record(Rc::downgrade(&record)));
+        Value::Record(record)
+    }
+
+    pub fn closure(closure: Closure) -> Value {
+        let closure = Rc::new(closure);
+        gc::track(Tracked::Closure(Rc::downgrade(&closure)));
+        Value::Function(closure)
+    }
+
+    pub fn instance(instance: Instance) -> Value {
+        let instance = Rc::new(instance);
+        gc::track(Tracked::Instance(Rc::downgrade(&instance)));
+        Value::Instance(instance)
+    }
+
+    pub fn enumeration(value: EnumValue) -> Value {
+        let value = Rc::new(value);
+        gc::track(Tracked::Enum(Rc::downgrade(&value)));
+        Value::Enum(value)
+    }
+
+    pub fn struct_def(def: StructDef) -> Value {
+        let def = Rc::new(def);
+        gc::track(Tracked::Struct(Rc::downgrade(&def)));
+        Value::StructDef(def)
+    }
+
+    pub fn cell(value: Value) -> Cell {
+        let cell = Rc::new(RefCell::new(value));
+        gc::track(Tracked::Cell(Rc::downgrade(&cell)));
+        cell
+    }
+
+    pub fn range(start: i64, end: i64) -> Value {
+        Value::from_list(List::Range(start, end))
+    }
+
+    pub fn from_list(list: List) -> Value {
+        let list = Rc::new(RefCell::new(list));
+        gc::track(Tracked::List(Rc::downgrade(&list)));
+        Value::List(list)
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Number(_) => "number",
@@ -90,7 +287,7 @@ impl Value {
     }
 
     pub fn list(items: Vec<Value>) -> Value {
-        Value::List(Rc::new(RefCell::new(items)))
+        Value::from_list(List::from_values(items))
     }
 
     pub fn str(text: &str) -> Value {
@@ -197,7 +394,7 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
                 x.len() == y.len()
                     && x.iter()
                         .zip(y.iter())
-                        .all(|(a, b)| equal(a, b).unwrap_or(false)),
+                        .all(|(a, b)| equal(&a, &b).unwrap_or(false)),
             )
         }
         (Value::Record(x), Value::Record(y)) => {
@@ -442,10 +639,7 @@ fn range(args: &[Value]) -> Result<Value, String> {
     if start.fract() != 0.0 || end.fract() != 0.0 {
         return Err("range needs whole numbers".to_string());
     }
-    let items = (start as i64..end as i64)
-        .map(|n| Value::Number(n as f64))
-        .collect();
-    Ok(Value::list(items))
+    Ok(Value::range(start as i64, end as i64))
 }
 
 fn keys(args: &[Value]) -> Result<Value, String> {

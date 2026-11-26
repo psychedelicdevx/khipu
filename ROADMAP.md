@@ -12,10 +12,10 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 18 |
+| 8. Performance and final audit | `██░░░░░░░░` 3 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Lazy `range()` that never builds a list
+**Next up:** Faster function calls, so `fib` and `fib_iterative` beat Python
 
 ---
 
@@ -111,9 +111,9 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 Everything the benchmarks found, fixed and proven, then a full independent review of the project.
 
 Memory
-- [ ] Lazy `range()` that never builds a list
-- [ ] Garbage collector that frees cycles
-- [ ] Peak memory below Python and Node on every benchmark
+- [x] Lazy `range()` that never builds a list
+- [x] Garbage collector that frees cycles
+- [x] Peak memory below Python and Node on every benchmark
 
 Speed
 - [ ] Faster function calls, so `fib` and `fib_iterative` beat Python

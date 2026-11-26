@@ -91,6 +91,7 @@ pub enum Code {
     GetField(u32),
     SetField(u32),
     Concat(u32),
+    Stringify,
     MakeStructDef(u32),
     MakeStruct(u32),
     MakeEnumDef(u32),
@@ -942,6 +943,9 @@ impl Compiler<'_> {
             Expr::Template(parts) => {
                 for part in parts {
                     self.expression(part)?;
+                    if !matches!(part, Expr::Str(_)) {
+                        self.emit(Code::Stringify);
+                    }
                 }
                 self.emit(Code::Concat(parts.len() as u32));
             }
