@@ -1064,6 +1064,15 @@ mod tests {
     }
 
     #[test]
+    fn one_index_site_reads_and_writes_different_fields() {
+        let read =
+            "let p = { a: 1, b: 2 }\nlet t = 0\nfor k in keys(p) {\n    t = t * 10 + p[k]\n}\nt";
+        assert_eq!(number(read), 12.0);
+        let write = "let p = { a: 1, b: 2 }\nfor k in keys(p) {\n    p[k] = 7\n}\np.a * 10 + p.b";
+        assert_eq!(number(write), 77.0);
+    }
+
+    #[test]
     fn lists_keys_and_compares_records() {
         assert!(boolean("keys({ b: 1, a: 2 }) == [\"b\", \"a\"]"));
         assert!(boolean("{ a: 1, b: [2] } == { b: [2], a: 1 }"));

@@ -19,15 +19,16 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def snippets():
-    text = README.read_text()
+def snippets(path=README):
+    text = path.read_text()
     found = []
-    for match in re.finditer(r"^```(\w*)\n(.*?)^```", text, flags=re.M | re.S):
-        lang, body = match.group(1), match.group(2)
+    for match in re.finditer(r"^```([^\n]*)\n(.*?)^```", text, flags=re.M | re.S):
+        info, body = match.group(1).split(), match.group(2)
+        lang, name = (info + [""])[0], (info + ["", ""])[1]
         line = text[: match.start()].count("\n") + 2
-        runnable = lang == "js" or (lang == "" and re.match(r"^(fn|let|struct|enum) ", body))
+        runnable = lang == "js" or (path == README and lang == "" and re.match(r"^(fn|let|struct|enum) ", body))
         if runnable:
-            found.append((line, body))
+            found.append((line, body, name))
     return found
 
 
@@ -82,7 +83,7 @@ class Checker:
                 return self.ok(f"{what} (serving)")
             _, errors = process.communicate(timeout=5)
             return self.fail(what, errors or "the server did not start")
-        if 'test "' in source:
+        if 'test "' in source or re.search(r"^\s*example ", source, re.M):
             result = run(["test", str(path)], cwd)
         else:
             result = run([str(path)], cwd)
@@ -90,22 +91,31 @@ class Checker:
             return self.fail(what, result.stderr or result.stdout)
         self.ok(what)
 
+    def docs(self, files):
+        for path in files:
+            with tempfile.TemporaryDirectory() as temp:
+                project = Path(temp) / "project"
+                colors = Path(temp) / "colors"
+                project.mkdir()
+                colors.mkdir()
+                (colors / "main.kp").write_text(
+                    'fn red(text: string) -> string {\n    return "<red>${text}</red>"\n}\n'
+                )
+                (project / "khipu.json").write_text('{ "name": "project", "dependencies": { "colors": "path:../colors" } }\n')
+                install = run(["install"], project)
+                if install.returncode != 0:
+                    self.fail(f"{path.name}: installing the colors package for the import snippet", install.stderr)
+                for line, body, name in snippets(path):
+                    if name:
+                        (project / name).write_text(body)
+                    self.program(f"{path.relative_to(ROOT)} snippet at line {line}", body, project)
+                self.stop_servers()
+
     def readme(self):
-        with tempfile.TemporaryDirectory() as temp:
-            project = Path(temp) / "project"
-            colors = Path(temp) / "colors"
-            project.mkdir()
-            colors.mkdir()
-            (colors / "main.kp").write_text(
-                'fn red(text: string) -> string {\n    return "<red>${text}</red>"\n}\n'
-            )
-            (project / "khipu.json").write_text('{ "name": "project", "dependencies": { "colors": "path:../colors" } }\n')
-            install = run(["install"], project)
-            if install.returncode != 0:
-                self.fail("README: installing the colors package for the import snippet", install.stderr)
-            for line, body in snippets():
-                self.program(f"README.md snippet at line {line}", body, project)
-            self.stop_servers()
+        self.docs([README])
+
+    def book(self):
+        self.docs(sorted(ROOT.glob("book/*.md")))
 
     def examples(self):
         for path in sorted(ROOT.glob("examples/**/*.kp")):
@@ -136,6 +146,7 @@ def main():
         return 2
     checker = Checker()
     checker.readme()
+    checker.book()
     checker.examples()
     print(f"\n{checker.checked} snippets and examples ran")
     if checker.failures:

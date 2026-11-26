@@ -206,6 +206,8 @@ Run a file:
 khipu examples/primes.kp
 ```
 
+New to the language? [The Khipu Book](book/README.md) teaches it chapter by chapter, with examples that run.
+
 Or start the interactive prompt by running `khipu` with no file. Blocks can span several lines; it waits until your `{ }` are closed.
 
 Mistakes are shown where they happen:
@@ -273,7 +275,7 @@ An import without `.kp` is a package; with `.kp` it is a file next to yours. `kh
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. Documentation | `░░░░░░░░░░` 0 / 5 |
+| 9. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
 
@@ -374,6 +376,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/wasm.rs` | Browser entry points: run, check and format |
 | `src/main.rs` | The `khipu` command: run a file, `fmt`, `test`, `lsp`, or open the prompt |
 | `benchmarks/` | The same programs in Khipu, Python, JavaScript, C and Rust |
+| `book/` | The Khipu Book, a chapter-by-chapter tutorial whose examples `scripts/check-docs.py` runs |
 | `examples/` | Example Khipu programs |
 | `editors/vscode/` | VS Code extension |
 | `editors/tree-sitter-khipu/` | Tree-sitter grammar and highlight queries |

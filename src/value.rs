@@ -55,6 +55,7 @@ impl FieldCache {
     pub fn position(&self, shape: &Shape, name: &str) -> Option<usize> {
         if let Some((cached, at)) = &*self.0.borrow()
             && Rc::ptr_eq(cached, shape)
+            && &*shape[*at as usize] == name
         {
             return Some(*at as usize);
         }
