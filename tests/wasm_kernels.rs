@@ -47,7 +47,7 @@ fn emitted_webassembly_matches_the_interpreter() {
     }
     let block = Parser::new(lex(PROGRAM).unwrap()).parse_program().unwrap();
     let sources = top_level(&block);
-    let kernels = group_all(&sources);
+    let kernels = group_all(&sources, &[], true);
     let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
     assert!(names.contains(&"fib") && names.contains(&"forever"));
     assert!(

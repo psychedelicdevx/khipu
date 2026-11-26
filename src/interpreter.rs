@@ -408,8 +408,16 @@ mod tests {
         );
         assert_eq!(
             (deep.line, deep.message.as_str()),
-            (8, "too much recursion: more than 10000 calls deep")
+            (5, "too much recursion: more than 10000 calls deep")
         );
+    }
+
+    #[test]
+    fn hot_loops_run_natively_with_the_same_results() {
+        let program = "fn double(n: number) -> number {\n    return n * 2\n}\nlet total = 0\nlet found = false\nlet i = 0\nwhile i < 100000 {\n    i = i + 1\n    if i % 3 == 0 {\n        continue\n    }\n    if i > 90000 && !found {\n        found = true\n    }\n    total = total + double(i) % 7\n    if total > 1000000000 {\n        break\n    }\n}\nlet squares = 0\nfor a in range(1, 300) {\n    for b in range(a) {\n        squares = squares + a * b\n    }\n    a = 0\n}\nlet names = [\"x\"]\nlet seen = 0\nfor name in names {\n    seen = seen + name.len()\n}\nlet mixed = 0\nfor k in range(10) {\n    mixed = mixed + k\n    print(\"\")\n}\n\"${total} ${found} ${i} ${squares} ${seen} ${mixed}\"";
+        assert_eq!(string(program), "199999 true 100000 1001283725 1 45");
+        let tricky = "fn range(n: number) -> list<number> {\n    return [n, n]\n}\nlet total = 0\nfor x in range(5) {\n    total = total + x\n}\nlet shadow = 1\nlet i = 0\nwhile i < 3 {\n    let shadow = 10\n    total = total + shadow\n    i = i + 1\n}\n\"${total} ${shadow}\"";
+        assert_eq!(string(tricky), "40 1");
     }
 
     #[test]

@@ -16,7 +16,7 @@ pub struct Context {
     pub error: u32,
 }
 
-pub type Entry = unsafe extern "C" fn(*mut Context, *const f64) -> f64;
+pub type Entry = unsafe extern "C" fn(*mut Context, *mut f64) -> f64;
 
 pub struct Compiled {
     pub entry: Entry,
@@ -34,17 +34,18 @@ fn ty(kind: Kind) -> types::Type {
     }
 }
 
-fn signature(
-    module: &JITModule,
-    kinds: &[Kind],
-    returns: Kind,
-) -> cranelift_codegen::ir::Signature {
+fn signature(module: &JITModule, kernel: &Kernel) -> cranelift_codegen::ir::Signature {
     let mut signature = module.make_signature();
     signature.params.push(AbiParam::new(types::I64));
-    for kind in kinds {
+    if kernel.loop_vars > 0 {
+        signature.params.push(AbiParam::new(types::I64));
+    }
+    for kind in &kernel.signature.params {
         signature.params.push(AbiParam::new(ty(*kind)));
     }
-    signature.returns.push(AbiParam::new(ty(returns)));
+    signature
+        .returns
+        .push(AbiParam::new(ty(kernel.signature.returns)));
     signature
 }
 
@@ -70,7 +71,7 @@ pub fn compile(kernels: &[Kernel]) -> Result<Vec<Compiled>, String> {
 
     let mut ids = Vec::with_capacity(kernels.len());
     for (index, kernel) in kernels.iter().enumerate() {
-        let sig = signature(&module, &kernel.signature.params, kernel.signature.returns);
+        let sig = signature(&module, kernel);
         let id = module
             .declare_function(&format!("k{index}"), Linkage::Local, &sig)
             .map_err(|e| e.to_string())?;
@@ -160,6 +161,9 @@ fn define_entry(
     let state = b.block_params(block)[0];
     let pointer = b.block_params(block)[1];
     let mut args = vec![state];
+    if kernel.loop_vars > 0 {
+        args.push(pointer);
+    }
     for (at, kind) in kernel.signature.params.iter().enumerate() {
         let raw = b
             .ins()
@@ -212,7 +216,7 @@ fn define_kernel(
     remainder_id: FuncId,
 ) -> Result<(), String> {
     let mut context = module.make_context();
-    context.func.signature = signature(module, &kernel.signature.params, kernel.signature.returns);
+    context.func.signature = signature(module, kernel);
     let callees: Vec<FuncRef> = ids
         .iter()
         .map(|callee| module.declare_func_in_func(*callee, &mut context.func))
@@ -232,13 +236,26 @@ fn define_kernel(
     b.seal_block(entry);
     let params: Vec<Value> = b.block_params(entry).to_vec();
     let state = params[0];
+    let pointer = (kernel.loop_vars > 0).then(|| params[1]);
     let mut locals = Vec::with_capacity(kernel.locals.len());
     for (at, kind) in kernel.locals.iter().enumerate() {
         let variable = b.declare_var(ty(*kind));
-        let initial = match (params.get(at + 1), kind) {
-            (Some(value), _) => *value,
-            (None, Kind::Num) => b.ins().f64const(0.0),
-            (None, Kind::Bool) => b.ins().iconst(types::I8, 0),
+        let initial = match (pointer, params.get(at + 1), kind) {
+            (Some(pointer), _, kind) if at < kernel.loop_vars => {
+                let raw = b
+                    .ins()
+                    .load(types::F64, MemFlagsData::trusted(), pointer, 8 * at as i32);
+                match kind {
+                    Kind::Num => raw,
+                    Kind::Bool => {
+                        let zero = b.ins().f64const(0.0);
+                        b.ins().fcmp(FloatCC::NotEqual, raw, zero)
+                    }
+                }
+            }
+            (None, Some(value), _) => *value,
+            (_, _, Kind::Num) => b.ins().f64const(0.0),
+            (_, _, Kind::Bool) => b.ins().iconst(types::I8, 0),
         };
         b.def_var(variable, initial);
         locals.push(variable);
@@ -290,6 +307,22 @@ fn define_kernel(
     lowering.b.switch_to_block(exit);
     lowering.b.seal_block(exit);
     let result = lowering.b.block_params(exit)[0];
+    if let Some(pointer) = pointer {
+        for at in 0..kernel.loop_vars {
+            let value = lowering.b.use_var(lowering.locals[at]);
+            let raw = match kernel.locals[at] {
+                Kind::Num => value,
+                Kind::Bool => {
+                    let wide = lowering.b.ins().uextend(types::I32, value);
+                    lowering.b.ins().fcvt_from_uint(types::F64, wide)
+                }
+            };
+            lowering
+                .b
+                .ins()
+                .store(MemFlagsData::trusted(), raw, pointer, 8 * at as i32);
+        }
+    }
     let depth = lowering
         .b
         .ins()
@@ -389,6 +422,45 @@ impl Lowering<'_, '_> {
                 self.b.seal_block(after);
                 self.terminated = false;
             }
+            Stmt::For {
+                counter,
+                limit,
+                var,
+                body,
+            } => {
+                let header = self.b.create_block();
+                let inner = self.b.create_block();
+                let latch = self.b.create_block();
+                let after = self.b.create_block();
+                self.b.ins().jump(header, &[]);
+                self.b.switch_to_block(header);
+                let current = self.b.use_var(self.locals[*counter as usize]);
+                let end = self.b.use_var(self.locals[*limit as usize]);
+                let more = self.b.ins().fcmp(FloatCC::LessThan, current, end);
+                self.b.ins().brif(more, inner, &[], after, &[]);
+                self.b.switch_to_block(inner);
+                self.b.seal_block(inner);
+                let current = self.b.use_var(self.locals[*counter as usize]);
+                self.b.def_var(self.locals[*var as usize], current);
+                self.loops.push((latch, after));
+                self.terminated = false;
+                self.block(body);
+                if !self.terminated {
+                    self.b.ins().jump(latch, &[]);
+                }
+                self.loops.pop();
+                self.b.switch_to_block(latch);
+                self.b.seal_block(latch);
+                let current = self.b.use_var(self.locals[*counter as usize]);
+                let one = self.b.ins().f64const(1.0);
+                let next = self.b.ins().fadd(current, one);
+                self.b.def_var(self.locals[*counter as usize], next);
+                self.b.ins().jump(header, &[]);
+                self.b.seal_block(header);
+                self.b.switch_to_block(after);
+                self.b.seal_block(after);
+                self.terminated = false;
+            }
             Stmt::Break => {
                 let (_, after) = self.loops.last().expect("break inside a loop");
                 self.b.ins().jump(*after, &[]);
@@ -400,6 +472,45 @@ impl Lowering<'_, '_> {
                 self.terminated = true;
             }
         }
+    }
+
+    fn remainder(&mut self, left: Value, right: Value) -> Value {
+        let whole_left = self.b.ins().trunc(left);
+        let whole_right = self.b.ins().trunc(right);
+        let integral_left = self.b.ins().fcmp(FloatCC::Equal, left, whole_left);
+        let integral_right = self.b.ins().fcmp(FloatCC::Equal, right, whole_right);
+        let limit = self.b.ins().f64const(9007199254740992.0);
+        let abs_left = self.b.ins().fabs(left);
+        let abs_right = self.b.ins().fabs(right);
+        let small_left = self.b.ins().fcmp(FloatCC::LessThan, abs_left, limit);
+        let small_right = self.b.ins().fcmp(FloatCC::LessThan, abs_right, limit);
+        let zero = self.b.ins().f64const(0.0);
+        let nonzero = self.b.ins().fcmp(FloatCC::NotEqual, right, zero);
+        let integral = self.b.ins().band(integral_left, integral_right);
+        let small = self.b.ins().band(small_left, small_right);
+        let fits = self.b.ins().band(integral, small);
+        let fast = self.b.ins().band(fits, nonzero);
+        let quick = self.b.create_block();
+        let slow = self.b.create_block();
+        let merge = self.b.create_block();
+        self.b.append_block_param(merge, types::F64);
+        self.b.ins().brif(fast, quick, &[], slow, &[]);
+        self.b.switch_to_block(quick);
+        self.b.seal_block(quick);
+        let left_int = self.b.ins().fcvt_to_sint_sat(types::I64, left);
+        let right_int = self.b.ins().fcvt_to_sint_sat(types::I64, right);
+        let rem = self.b.ins().srem(left_int, right_int);
+        let rem = self.b.ins().fcvt_from_sint(types::F64, rem);
+        let signed = self.b.ins().fcopysign(rem, left);
+        self.b.ins().jump(merge, &[signed.into()]);
+        self.b.switch_to_block(slow);
+        self.b.seal_block(slow);
+        let call = self.b.ins().call(self.remainder, &[left, right]);
+        let exact = self.b.inst_results(call)[0];
+        self.b.ins().jump(merge, &[exact.into()]);
+        self.b.switch_to_block(merge);
+        self.b.seal_block(merge);
+        self.b.block_params(merge)[0]
     }
 
     fn expression(&mut self, expr: &Expr) -> Value {
@@ -423,10 +534,7 @@ impl Lowering<'_, '_> {
                     Arith::Sub => self.b.ins().fsub(left, right),
                     Arith::Mul => self.b.ins().fmul(left, right),
                     Arith::Div => self.b.ins().fdiv(left, right),
-                    Arith::Rem => {
-                        let call = self.b.ins().call(self.remainder, &[left, right]);
-                        self.b.inst_results(call)[0]
-                    }
+                    Arith::Rem => self.remainder(left, right),
                 }
             }
             Expr::Compare(cmp, Kind::Num, left, right) => {
@@ -538,15 +646,18 @@ mod tests {
 
     fn native(program: &str, root: &str, args: &[f64]) -> (f64, Context) {
         let sources = sources(program);
-        let kernels = group(root, &|name| {
-            sources.iter().find(|s| s.name == name).cloned()
-        })
+        let kernels = group(
+            root,
+            &|name| sources.iter().find(|s| s.name == name).cloned(),
+            true,
+        )
         .unwrap();
         let compiled = compile(&kernels).unwrap();
         let mut context = Context::default();
+        let mut args = args.to_vec();
         // SAFETY: the entry was produced by `compile` for `kernels[0]`, and
         // `args` holds one f64 per parameter of that kernel.
-        let result = unsafe { (compiled[0].entry)(&mut context, args.as_ptr()) };
+        let result = unsafe { (compiled[0].entry)(&mut context, args.as_mut_ptr()) };
         (result, context)
     }
 
@@ -568,6 +679,8 @@ mod tests {
             .zip(&source.param_types)
             .map(|(a, ty)| match ty {
                 Some(crate::parser::Type::Bool) => (*a != 0.0).to_string(),
+                _ if a.is_nan() => "0 / 0".to_string(),
+                _ if a.is_infinite() => "1 / 0".to_string(),
                 _ => a.to_string(),
             })
             .collect();
@@ -597,6 +710,12 @@ mod tests {
             (1e300, 7.0),
             (5.0, 0.0),
             (-4.0, 2.0),
+            (0.0, -3.0),
+            (-0.0, 3.0),
+            (9007199254740993.0, 10.0),
+            (f64::INFINITY, 7.0),
+            (4.0, f64::INFINITY),
+            (f64::NAN, 2.0),
         ] {
             agree(remainder, "rem", &[a, b]);
         }

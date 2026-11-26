@@ -116,15 +116,11 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
         (types.len() - 1) as u32
     };
     let mut function_types = vec![0u32];
+    let mut exit_types = Vec::new();
     for kernel in kernels {
-        let params: Vec<u8> = kernel
-            .signature
-            .params
-            .iter()
-            .map(|k| valtype(*k))
-            .collect();
-        let results = [valtype(kernel.signature.returns)];
+        let (params, results) = kernel_types(kernel);
         function_types.push(type_of(functype(&params, &results)));
+        exit_types.push((kernel.loop_vars > 0).then(|| type_of(functype(&[], &results))));
     }
 
     let mut type_section = Vec::new();
@@ -162,7 +158,12 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
     let mut code_section = Vec::new();
     leb(&mut code_section, kernels.len() as u32 + 1);
     let mut bodies = vec![remainder_body()];
-    bodies.extend(kernels.iter().map(kernel_body));
+    bodies.extend(
+        kernels
+            .iter()
+            .zip(&exit_types)
+            .map(|(kernel, exit)| kernel_body(kernel, *exit)),
+    );
     for body in bodies {
         leb(&mut code_section, body.len() as u32);
         code_section.extend_from_slice(&body);
@@ -179,10 +180,27 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
         .iter()
         .map(|kernel| Export {
             name: kernel.name.clone(),
-            arity: kernel.signature.params.len(),
+            arity: kernel.arity(),
         })
         .collect();
     (out, exports)
+}
+
+fn kernel_types(kernel: &Kernel) -> (Vec<u8>, Vec<u8>) {
+    if kernel.loop_vars > 0 {
+        let vars: Vec<u8> = kernel.locals[..kernel.loop_vars]
+            .iter()
+            .map(|k| valtype(*k))
+            .collect();
+        return (vars.clone(), vars);
+    }
+    let params = kernel
+        .signature
+        .params
+        .iter()
+        .map(|k| valtype(*k))
+        .collect();
+    (params, vec![valtype(kernel.signature.returns)])
 }
 
 fn f64_const(out: &mut Vec<u8>, value: f64) {
@@ -336,9 +354,9 @@ struct Emitter<'a> {
     loops: Vec<(u32, u32)>,
 }
 
-fn kernel_body(kernel: &Kernel) -> Vec<u8> {
+fn kernel_body(kernel: &Kernel, exit_type: Option<u32>) -> Vec<u8> {
     let mut out = Vec::new();
-    let extra = &kernel.locals[kernel.signature.params.len()..];
+    let extra = &kernel.locals[kernel.arity()..];
     let mut runs: Vec<(u32, u8)> = Vec::new();
     for kind in extra {
         match runs.last_mut() {
@@ -373,7 +391,10 @@ fn kernel_body(kernel: &Kernel) -> Vec<u8> {
     emitter.out.push(END);
 
     emitter.out.push(BLOCK);
-    emitter.out.push(valtype(kernel.signature.returns));
+    match exit_type {
+        Some(index) => sleb(&mut emitter.out, i64::from(index)),
+        None => emitter.out.push(valtype(kernel.signature.returns)),
+    }
     emitter.labels = 1;
     emitter.block(&kernel.body);
     emitter.out.push(UNREACHABLE);
@@ -394,9 +415,24 @@ impl Emitter<'_> {
     }
 
     fn failure(&mut self) {
+        if self.kernel.loop_vars > 0 {
+            for at in 0..self.kernel.loop_vars {
+                local_get(&mut self.out, at as u32);
+            }
+            return;
+        }
         match self.kernel.signature.returns {
             Kind::Num => f64_const(&mut self.out, f64::NAN),
             Kind::Bool => i32_const(&mut self.out, 0),
+        }
+    }
+
+    fn results(&mut self) {
+        if self.kernel.loop_vars > 0 {
+            self.out.push(0x1a);
+            for at in 0..self.kernel.loop_vars {
+                local_get(&mut self.out, at as u32);
+            }
         }
     }
 
@@ -427,7 +463,43 @@ impl Emitter<'_> {
             }
             Stmt::Return(value) => {
                 self.expression(value);
+                self.results();
                 self.exit();
+            }
+            Stmt::For {
+                counter,
+                limit,
+                var,
+                body,
+            } => {
+                self.out.extend_from_slice(&[BLOCK, EMPTY, LOOP, EMPTY]);
+                let (after, header) = (self.labels, self.labels + 1);
+                self.labels += 2;
+                local_get(&mut self.out, *counter);
+                local_get(&mut self.out, *limit);
+                self.out.push(F64_LT);
+                self.out.push(I32_EQZ);
+                self.out.extend_from_slice(&[BR_IF, 1]);
+                local_get(&mut self.out, *counter);
+                self.out.push(LOCAL_SET);
+                leb(&mut self.out, *var);
+                self.out.extend_from_slice(&[BLOCK, EMPTY]);
+                let step = self.labels;
+                self.labels += 1;
+                self.loops.push((step, after));
+                self.block(body);
+                self.loops.pop();
+                self.labels -= 1;
+                self.out.push(END);
+                local_get(&mut self.out, *counter);
+                f64_const(&mut self.out, 1.0);
+                self.out.push(F64_ADD);
+                self.out.push(LOCAL_SET);
+                leb(&mut self.out, *counter);
+                self.out.push(BR);
+                leb(&mut self.out, self.labels - 1 - header);
+                self.labels -= 2;
+                self.out.extend_from_slice(&[END, END]);
             }
             Stmt::If(condition, then, otherwise) => {
                 self.expression(condition);
@@ -443,8 +515,8 @@ impl Emitter<'_> {
             }
             Stmt::While(condition, body) => {
                 self.out.extend_from_slice(&[BLOCK, EMPTY, LOOP, EMPTY]);
+                let (after, header) = (self.labels, self.labels + 1);
                 self.labels += 2;
-                let (header, after) = (self.labels - 1, self.labels - 2);
                 self.expression(condition);
                 self.out.push(I32_EQZ);
                 self.out.push(BR_IF);

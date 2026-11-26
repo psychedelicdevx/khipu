@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::kernel::Source;
+use crate::kernel::{LoopSource, Place, Source};
 use crate::native::Tier;
 use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt, Type};
 use crate::value::{EnumDef, Value};
@@ -120,6 +120,7 @@ pub enum Code {
     IndexLocals(u32, u32),
     JumpUnlessLocalConst(u32, u32, Op, u32),
     ReturnBinary(Op),
+    Loop(u32, u32),
 }
 
 fn fuse(code: &[Code], label: usize, next: Code) -> Option<(usize, Code)> {
@@ -225,6 +226,7 @@ pub struct Proto {
     pub source: Option<Rc<Source>>,
     pub top_level: bool,
     pub tier: Cell<Tier>,
+    pub loops: Vec<Rc<LoopSource>>,
 }
 
 impl Proto {
@@ -245,6 +247,7 @@ impl Proto {
             source: None,
             top_level: false,
             tier: Cell::new(Tier::default()),
+            loops: Vec::new(),
         }
     }
 
@@ -418,6 +421,7 @@ impl Compiler<'_> {
             Code::PopJump(count, _) => Code::PopJump(count, target),
             Code::JumpUnlessLocals(a, b, op, _) => Code::JumpUnlessLocals(a, b, op, target),
             Code::JumpUnlessLocalConst(s, c, op, _) => Code::JumpUnlessLocalConst(s, c, op, target),
+            Code::Loop(index, _) => Code::Loop(index, target),
             Code::JumpIfFalse(_, check) => Code::JumpIfFalse(target, check),
             Code::JumpUnlessLess(_) => Code::JumpUnlessLess(target),
             Code::JumpUnlessLessEqual(_) => Code::JumpUnlessLessEqual(target),
@@ -746,6 +750,7 @@ impl Compiler<'_> {
                 }
             }
             Stmt::While(condition, body) => {
+                let native = self.native_loop(stmt);
                 let start = self.here();
                 self.expression(condition)?;
                 let exit = self.jump_unless(Check::While);
@@ -754,8 +759,12 @@ impl Compiler<'_> {
                 self.emit(Code::Jump(start));
                 self.patch(exit);
                 self.end_loop();
+                if let Some(at) = native {
+                    self.patch(at);
+                }
             }
             Stmt::For(name, iterable, body) => {
+                let native = self.native_loop(stmt);
                 self.begin_scope();
                 self.expression(iterable)?;
                 self.emit(Code::IterInit);
@@ -779,6 +788,9 @@ impl Compiler<'_> {
                 self.patch(next);
                 self.end_loop();
                 self.end_scope();
+                if let Some(at) = native {
+                    self.patch(at);
+                }
             }
             Stmt::Break | Stmt::Continue => {
                 let state = self.current();
@@ -874,6 +886,32 @@ impl Compiler<'_> {
             }
         }
         Ok(())
+    }
+
+    fn native_loop(&mut self, stmt: &Stmt) -> Option<usize> {
+        let mut vars = Vec::new();
+        for name in crate::kernel::loop_names(stmt) {
+            let place = match self.resolve(&name).ok()? {
+                Var::Local(slot) => Place::Local(slot),
+                Var::Global(slot) => Place::Global(slot),
+                Var::Cell(_) | Var::Captured(_) => return None,
+            };
+            vars.push((name, place));
+        }
+        if vars.len() > 16 {
+            return None;
+        }
+        let state = self.current();
+        let source = LoopSource {
+            owner: state.proto.name.to_string(),
+            index: state.proto.loops.len() as u32,
+            stmt: stmt.clone(),
+            vars,
+            tier: Cell::new(Tier::default()),
+        };
+        state.proto.loops.push(Rc::new(source));
+        let index = (self.current().proto.loops.len() - 1) as u32;
+        Some(self.emit(Code::Loop(index, 0)))
     }
 
     fn declare_first(&mut self, name: &str) -> Option<(u32, bool)> {

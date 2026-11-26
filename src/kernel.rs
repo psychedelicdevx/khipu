@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+use crate::native::Tier;
 
 use crate::parser::{Block, Expr as Ast, Op, Stmt as AstStmt, Type};
 
@@ -47,6 +50,12 @@ pub enum Stmt {
     Set(u32, Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
+    For {
+        counter: u32,
+        limit: u32,
+        var: u32,
+        body: Vec<Stmt>,
+    },
     Break,
     Continue,
     Return(Expr),
@@ -65,6 +74,162 @@ pub struct Kernel {
     pub signature: Signature,
     pub locals: Vec<Kind>,
     pub body: Vec<Stmt>,
+    pub loop_vars: usize,
+}
+
+impl Kernel {
+    pub fn arity(&self) -> usize {
+        self.signature.params.len() + self.loop_vars
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Local(u32),
+    Global(u32),
+}
+
+pub struct LoopSource {
+    pub owner: String,
+    pub index: u32,
+    pub stmt: AstStmt,
+    pub vars: Vec<(String, Place)>,
+    pub tier: Cell<Tier>,
+}
+
+impl LoopSource {
+    pub fn key(&self) -> String {
+        format!("{}\u{0}{}", self.owner, self.index)
+    }
+}
+
+pub fn loop_names(stmt: &AstStmt) -> Vec<String> {
+    let mut used = Vec::new();
+    let mut called = Vec::new();
+    let mut bound = Vec::new();
+    walk_stmt(stmt, &mut used, &mut called, &mut bound);
+    used.retain(|name| !called.contains(name) && !bound.contains(name));
+    used
+}
+
+fn remember(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|n| n == name) {
+        names.push(name.to_string());
+    }
+}
+
+type Names<'a> = (
+    &'a mut Vec<String>,
+    &'a mut Vec<String>,
+    &'a mut Vec<String>,
+);
+
+fn walk_block(
+    block: &Block,
+    used: &mut Vec<String>,
+    called: &mut Vec<String>,
+    bound: &mut Vec<String>,
+) {
+    for (_, stmt) in block {
+        walk_stmt(stmt, used, called, bound);
+    }
+}
+
+fn walk_stmt(
+    stmt: &AstStmt,
+    used: &mut Vec<String>,
+    called: &mut Vec<String>,
+    bound: &mut Vec<String>,
+) {
+    match stmt {
+        AstStmt::Let(name, _, value) => {
+            remember(bound, name);
+            walk_expr(value, (used, called, bound));
+        }
+        AstStmt::Expr(value) => walk_expr(value, (used, called, bound)),
+        AstStmt::Assign(name, value) => {
+            remember(used, name);
+            walk_expr(value, (used, called, bound));
+        }
+        AstStmt::SetIndex(a, b, c) => {
+            walk_expr(a, (used, called, bound));
+            walk_expr(b, (used, called, bound));
+            walk_expr(c, (used, called, bound));
+        }
+        AstStmt::SetField(a, _, b) => {
+            walk_expr(a, (used, called, bound));
+            walk_expr(b, (used, called, bound));
+        }
+        AstStmt::If(condition, then, otherwise) => {
+            walk_expr(condition, (used, called, bound));
+            walk_block(then, used, called, bound);
+            if let Some(otherwise) = otherwise {
+                walk_block(otherwise, used, called, bound);
+            }
+        }
+        AstStmt::While(condition, body) => {
+            walk_expr(condition, (used, called, bound));
+            walk_block(body, used, called, bound);
+        }
+        AstStmt::For(name, iterable, body) => {
+            remember(bound, name);
+            walk_expr(iterable, (used, called, bound));
+            walk_block(body, used, called, bound);
+        }
+        AstStmt::Return(Some(value)) => walk_expr(value, (used, called, bound)),
+        AstStmt::Return(None)
+        | AstStmt::Break
+        | AstStmt::Continue
+        | AstStmt::Import(..)
+        | AstStmt::Struct(_)
+        | AstStmt::Enum(_)
+        | AstStmt::Test(..) => {}
+    }
+}
+
+fn walk_expr(expr: &Ast, names: Names) {
+    let (used, called, bound) = names;
+    match expr {
+        Ast::Variable(name) => remember(used, name),
+        Ast::Call(callee, args) => {
+            match &**callee {
+                Ast::Variable(name) => remember(called, name),
+                other => walk_expr(other, (used, called, bound)),
+            }
+            for arg in args {
+                walk_expr(arg, (used, called, bound));
+            }
+        }
+        Ast::Number(_) | Ast::Bool(_) | Ast::Str(_) | Ast::None => {}
+        Ast::Template(items) | Ast::List(items) => {
+            for item in items {
+                walk_expr(item, (used, called, bound));
+            }
+        }
+        Ast::Record(fields) | Ast::StructLit(_, fields) => {
+            for (_, value) in fields {
+                walk_expr(value, (used, called, bound));
+            }
+        }
+        Ast::Index(a, b) | Ast::Binary(a, _, b) => {
+            walk_expr(a, (used, called, bound));
+            walk_expr(b, (used, called, bound));
+        }
+        Ast::Field(inner, _)
+        | Ast::OptionalField(inner, _)
+        | Ast::Negate(inner)
+        | Ast::Not(inner) => walk_expr(inner, (used, called, bound)),
+        Ast::Function { body, .. } => walk_block(body, used, called, bound),
+        Ast::Match(subject, arms) => {
+            walk_expr(subject, (used, called, bound));
+            for arm in arms {
+                match &arm.body {
+                    crate::parser::ArmBody::Expr(value) => walk_expr(value, (used, called, bound)),
+                    crate::parser::ArmBody::Block(block) => walk_block(block, used, called, bound),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,8 +285,9 @@ struct Lowering<'a> {
     callees: &'a dyn Fn(&str) -> Option<(u32, Signature)>,
     locals: Vec<Kind>,
     scopes: Vec<HashMap<String, u32>>,
-    returns: Kind,
+    returns: Option<Kind>,
     loops: usize,
+    range_is_builtin: bool,
 }
 
 type Lowered<T> = Result<T, Rejected>;
@@ -134,13 +300,15 @@ pub fn lower(
     source: &Source,
     signature: &Signature,
     callees: &dyn Fn(&str) -> Option<(u32, Signature)>,
+    range_is_builtin: bool,
 ) -> Lowered<Kernel> {
     let mut lowering = Lowering {
         callees,
         locals: signature.params.clone(),
         scopes: vec![HashMap::new()],
-        returns: signature.returns,
+        returns: Some(signature.returns),
         loops: 0,
+        range_is_builtin,
     };
     for (index, name) in source.params.iter().enumerate() {
         lowering.scopes[0].insert(name.clone(), index as u32);
@@ -154,6 +322,38 @@ pub fn lower(
         signature: signature.clone(),
         locals: lowering.locals,
         body,
+        loop_vars: 0,
+    })
+}
+
+pub fn lower_loop(
+    source: &LoopSource,
+    kinds: &[Kind],
+    callees: &dyn Fn(&str) -> Option<(u32, Signature)>,
+    range_is_builtin: bool,
+) -> Lowered<Kernel> {
+    let mut lowering = Lowering {
+        callees,
+        locals: kinds.to_vec(),
+        scopes: vec![HashMap::new()],
+        returns: None,
+        loops: 0,
+        range_is_builtin,
+    };
+    for (index, (name, _)) in source.vars.iter().enumerate() {
+        lowering.scopes[0].insert(name.clone(), index as u32);
+    }
+    let mut body = lowering.statement(&source.stmt)?;
+    body.push(Stmt::Return(Expr::Num(0.0)));
+    Ok(Kernel {
+        name: source.key(),
+        signature: Signature {
+            params: Vec::new(),
+            returns: Kind::Num,
+        },
+        locals: lowering.locals,
+        body,
+        loop_vars: kinds.len(),
     })
 }
 
@@ -198,8 +398,7 @@ impl Lowering<'_> {
         let mut result = Ok(());
         for (_, stmt) in block {
             match self.statement(stmt) {
-                Ok(Some(lowered)) => out.push(lowered),
-                Ok(None) => {}
+                Ok(lowered) => out.extend(lowered),
                 Err(error) => {
                     result = Err(error);
                     break;
@@ -210,8 +409,8 @@ impl Lowering<'_> {
         result.map(|_| out)
     }
 
-    fn statement(&mut self, stmt: &AstStmt) -> Lowered<Option<Stmt>> {
-        Ok(Some(match stmt {
+    fn statement(&mut self, stmt: &AstStmt) -> Lowered<Vec<Stmt>> {
+        Ok(vec![match stmt {
             AstStmt::Let(name, annotation, value) => {
                 let (value, kind) = self.expression(value)?;
                 if let Some(annotation) = annotation
@@ -252,21 +451,60 @@ impl Lowering<'_> {
             AstStmt::Continue => Stmt::Continue,
             AstStmt::Return(Some(value)) => {
                 let (value, kind) = self.expression(value)?;
-                if kind != self.returns {
+                if self.returns != Some(kind) {
                     return unsupported("a return value of another type");
                 }
                 Stmt::Return(value)
             }
             AstStmt::Return(None) => return unsupported("a return without a value"),
             AstStmt::Expr(expr) => Stmt::Discard(self.expression(expr)?.0),
-            AstStmt::Test(..) => return Ok(None),
-            AstStmt::For(..) => return unsupported("a for loop"),
+            AstStmt::Test(..) => return Ok(Vec::new()),
+            AstStmt::For(name, iterable, body) => {
+                let Ast::Call(callee, args) = iterable else {
+                    return unsupported("a for loop over something other than range");
+                };
+                let is_range = matches!(&**callee, Ast::Variable(callee) if callee == "range")
+                    && self.resolve("range").is_none()
+                    && self.range_is_builtin;
+                if !is_range || args.is_empty() || args.len() > 2 {
+                    return unsupported("a for loop over something other than range");
+                }
+                let (start, end) = match &args[..] {
+                    [end] => (
+                        Expr::Num(0.0),
+                        self.operand(end, Kind::Num, "a range bound that is not a number")?,
+                    ),
+                    [start, end] => (
+                        self.operand(start, Kind::Num, "a range bound that is not a number")?,
+                        self.operand(end, Kind::Num, "a range bound that is not a number")?,
+                    ),
+                    _ => unreachable!("checked above"),
+                };
+                let counter = self.declare("", Kind::Num);
+                let limit = self.declare("", Kind::Num);
+                self.scopes.push(HashMap::new());
+                let var = self.declare(name, Kind::Num);
+                self.loops += 1;
+                let lowered = self.block(body);
+                self.loops -= 1;
+                self.scopes.pop();
+                return Ok(vec![
+                    Stmt::Set(counter, start),
+                    Stmt::Set(limit, end),
+                    Stmt::For {
+                        counter,
+                        limit,
+                        var,
+                        body: lowered?,
+                    },
+                ]);
+            }
             AstStmt::SetIndex(..) | AstStmt::SetField(..) => {
                 return unsupported("a list, record or struct");
             }
             AstStmt::Import(..) => return unsupported("an import"),
             AstStmt::Struct(_) | AstStmt::Enum(_) => return unsupported("a struct or enum"),
-        }))
+        }])
     }
 
     fn condition(&mut self, expr: &Ast) -> Lowered<Expr> {
@@ -376,18 +614,34 @@ impl Lowering<'_> {
     }
 }
 
-pub fn group(root: &str, find: &dyn Fn(&str) -> Option<Rc<Source>>) -> Lowered<Vec<Kernel>> {
-    let mut order: Vec<Rc<Source>> = vec![find(root).ok_or(Rejected::Needs(root.to_string()))?];
+type Callees<'a> = dyn Fn(&str) -> Option<(u32, Signature)> + 'a;
+
+fn resolve_group(
+    root: &dyn Fn(&Callees) -> Lowered<Kernel>,
+    root_function: Option<(&str, Signature)>,
+    find: &dyn Fn(&str) -> Option<Rc<Source>>,
+    range_is_builtin: bool,
+) -> Lowered<Vec<Kernel>> {
+    let mut order: Vec<Rc<Source>> = Vec::new();
     let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
-    signatures.insert(root.to_string(), (0, assumed_signature(&order[0])?));
+    if let Some((name, signature)) = &root_function {
+        signatures.insert(name.to_string(), (0, signature.clone()));
+    }
     loop {
-        let mut kernels = Vec::with_capacity(order.len());
+        let callees = |callee: &str| signatures.get(callee).cloned();
+        let mut kernels = Vec::new();
         let mut missing = None;
+        match root(&callees) {
+            Ok(kernel) => kernels.push(kernel),
+            Err(Rejected::Needs(callee)) => missing = Some(callee),
+            Err(error) => return Err(error),
+        }
         for source in &order {
+            if missing.is_some() {
+                break;
+            }
             let signature = signatures[&source.name].1.clone();
-            match lower(source, &signature, &|callee| {
-                signatures.get(callee).cloned()
-            }) {
+            match lower(source, &signature, &callees, range_is_builtin) {
                 Ok(kernel) => kernels.push(kernel),
                 Err(Rejected::Needs(callee)) => {
                     missing = Some(callee);
@@ -405,25 +659,62 @@ pub fn group(root: &str, find: &dyn Fn(&str) -> Option<Rc<Source>>) -> Lowered<V
         if order.len() >= 64 {
             return unsupported("too many functions calling each other");
         }
-        signatures.insert(callee, (order.len() as u32, assumed_signature(&source)?));
+        signatures.insert(
+            callee,
+            (order.len() as u32 + 1, assumed_signature(&source)?),
+        );
         order.push(source);
     }
 }
 
-pub fn group_all(roots: &[Rc<Source>]) -> Vec<Kernel> {
-    let mut candidates: Vec<Rc<Source>> = roots.to_vec();
-    loop {
+pub fn group(
+    root: &str,
+    find: &dyn Fn(&str) -> Option<Rc<Source>>,
+    range_is_builtin: bool,
+) -> Lowered<Vec<Kernel>> {
+    let source = find(root).ok_or(Rejected::Needs(root.to_string()))?;
+    let signature = assumed_signature(&source)?;
+    resolve_group(
+        &|callees| lower(&source, &signature, callees, range_is_builtin),
+        Some((root, signature.clone())),
+        find,
+        range_is_builtin,
+    )
+}
+
+pub fn group_loop(
+    source: &LoopSource,
+    kinds: &[Kind],
+    find: &dyn Fn(&str) -> Option<Rc<Source>>,
+    range_is_builtin: bool,
+) -> Lowered<Vec<Kernel>> {
+    resolve_group(
+        &|callees| lower_loop(source, kinds, callees, range_is_builtin),
+        None,
+        find,
+        range_is_builtin,
+    )
+}
+
+pub fn group_all(
+    functions: &[Rc<Source>],
+    loops: &[Rc<LoopSource>],
+    range_is_builtin: bool,
+) -> Vec<Kernel> {
+    let mut candidates: Vec<Rc<Source>> = functions.to_vec();
+    let mut kernels = loop {
         let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
         for (index, source) in candidates.iter().enumerate() {
             if let Ok(signature) = assumed_signature(source) {
                 signatures.insert(source.name.clone(), (index as u32, signature));
             }
         }
+        let callees = |callee: &str| signatures.get(callee).cloned();
         let mut kernels = Vec::new();
         let mut failed = Vec::new();
         for source in &candidates {
             let lowered = signatures.get(&source.name).and_then(|(_, signature)| {
-                lower(source, signature, &|callee| signatures.get(callee).cloned()).ok()
+                lower(source, signature, &callees, range_is_builtin).ok()
             });
             match lowered {
                 Some(kernel) => kernels.push(kernel),
@@ -431,10 +722,28 @@ pub fn group_all(roots: &[Rc<Source>]) -> Vec<Kernel> {
             }
         }
         if failed.is_empty() {
-            return kernels;
+            break kernels;
         }
         candidates.retain(|source| !failed.contains(&source.name));
+    };
+    let signatures: HashMap<String, (u32, Signature)> = kernels
+        .iter()
+        .enumerate()
+        .map(|(index, kernel)| {
+            (
+                kernel.name.clone(),
+                (index as u32, kernel.signature.clone()),
+            )
+        })
+        .collect();
+    let callees = |callee: &str| signatures.get(callee).cloned();
+    for source in loops {
+        let kinds = vec![Kind::Num; source.vars.len()];
+        if let Ok(kernel) = lower_loop(source, &kinds, &callees, range_is_builtin) {
+            kernels.push(kernel);
+        }
     }
+    kernels
 }
 
 pub fn top_level(program: &Block) -> Vec<Rc<Source>> {
@@ -462,4 +771,10 @@ pub fn top_level(program: &Block) -> Vec<Rc<Source>> {
             _ => None,
         })
         .collect()
+}
+
+pub fn defines_range(program: &Block) -> bool {
+    program
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, AstStmt::Let(name, _, _) if name == "range"))
 }

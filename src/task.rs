@@ -218,6 +218,7 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         source: None,
         top_level: false,
         tier: Default::default(),
+        loops: Vec::new(),
         structs: packed
             .structs
             .iter()

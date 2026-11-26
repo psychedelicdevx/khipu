@@ -255,14 +255,12 @@ impl Vm {
                         && let Some(native) = crate::native::entry(&function)
                     {
                         let args_at: usize = $base;
-                        match crate::native::call(&native, &self.stack[args_at..args_at + $argc]) {
-                            Some(Ok(value)) => {
-                                self.stack.truncate($return_to);
-                                self.stack.push(value);
-                                continue;
-                            }
-                            Some(Err(message)) => fail!(message),
-                            None => {}
+                        if let Some(value) =
+                            crate::native::call(&native, &self.stack[args_at..args_at + $argc])
+                        {
+                            self.stack.truncate($return_to);
+                            self.stack.push(value);
+                            continue;
                         }
                     }
                     if self.frames.len() + 1 >= MAX_FRAMES {
@@ -1241,6 +1239,51 @@ impl Vm {
                         base = caller.base;
                         return_to = caller.return_to;
                         continue 'frames;
+                    }
+                    Code::Loop(index, exit) => {
+                        if self.preemptive {
+                            continue;
+                        }
+                        let source = &proto.loops[index as usize];
+                        let mut values = Vec::with_capacity(source.vars.len());
+                        let globals = closure.globals.borrow();
+                        for (_, place) in &source.vars {
+                            let value = match place {
+                                crate::kernel::Place::Local(slot) => {
+                                    self.stack[base + *slot as usize].clone()
+                                }
+                                crate::kernel::Place::Global(slot) => {
+                                    match &globals.values[*slot as usize] {
+                                        Some(value) => value.clone(),
+                                        None => break,
+                                    }
+                                }
+                            };
+                            values.push(value);
+                        }
+                        drop(globals);
+                        if values.len() != source.vars.len() {
+                            continue;
+                        }
+                        let Some(native) = crate::native::loop_entry(&closure, source, &values)
+                        else {
+                            continue;
+                        };
+                        if crate::native::run_loop(&native, &mut values).is_none() {
+                            continue;
+                        }
+                        let mut globals = closure.globals.borrow_mut();
+                        for ((_, place), value) in source.vars.iter().zip(values) {
+                            match place {
+                                crate::kernel::Place::Local(slot) => {
+                                    self.stack[base + *slot as usize] = value;
+                                }
+                                crate::kernel::Place::Global(slot) => {
+                                    globals.values[*slot as usize] = Some(value);
+                                }
+                            }
+                        }
+                        ip = exit as usize;
                     }
                     Code::IndexLocals(list, index) => {
                         let value = match (
