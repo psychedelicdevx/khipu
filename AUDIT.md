@@ -147,8 +147,36 @@ These cannot be reached from a program, so they have no test:
 
 ## Benchmark results
 
-Filled in from the rerun; see `README.md` for the sustained table and `BENCHMARKS.md` for cold starts, spreads and memory.
+`python3 scripts/bench.py` ran on 2026-11-26 after all the Phase 8 work; `README.md` holds the sustained table and `BENCHMARKS.md` the cold starts, spreads and memory, as it wrote them.
+
+- Python: Khipu is faster on 17 of 17 sustained benchmarks, from 1.5× (`strings`) to 83× (`loop`).
+- Node: Khipu is faster on 5 of 17 (`fib`, `loop`, `nested_loops`, `mandelbrot`, `locals`), within 1.5× on `lists` and `calls`, and 3 to 10× slower on the rest. The slow ones are the benchmarks the native tier does not reach: records, structs, strings, closures, lists and globals, where the interpreter still does the work. "Competitive with Node" is therefore left open in the roadmap, with this result written next to it.
+- Peak memory is below both Python and Node on every benchmark, including start-up.
+- Start-up: 3.8 ms, under the 5 ms target. It was 2.6 ms before Cranelift was linked in; the difference is the larger binary.
+- Measurements drift by a few percent between runs; `fib_iterative` measured 75 ms in a quick check and 119 ms in the full run on a warm machine.
 
 ## Independent review
 
-Filled in below from the review's findings, each one fixed or written down.
+A separate agent read the repository cold, without having written any of it, and reported fifteen findings. Each one is listed here with what happened to it. Fixed items have a regression test in `interpreter::tests::native_code_keeps_every_rule_of_the_interpreter`, `jit::tests` or `tests/wasm_kernels.rs`.
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | A native `for ... in range(x)` ran with a fractional, NaN or infinite bound where the interpreter errors with `range needs whole numbers` | Fixed: the kernel checks both bounds are finite whole numbers and otherwise fails back to the bytecode, which reports the error on the right line |
+| 2 | A callee was looked up in the caller's globals, so a module's private helper could resolve to a same-named function in the importing program | Fixed: a callee is only accepted when it lives in the same globals store as the root function |
+| 3 | A function called through another name (`let sq = square`) made the compiler index a map by the wrong key and panic | Fixed: the group keeps signatures by the name used at the call site |
+| 4 | A loop that called a parameter or local with the same name as a global function called the global | Fixed: a loop with a call to anything but a global stays interpreted |
+| 5 | Printing a value that holds itself more than once took exponential time and output | Fixed: printing tracks which containers it is inside and shows `...` at the first repeat. The nesting limit for equality and JSON went from 32 to 200 levels, and `assert_eq` reports the nesting error instead of a misleading mismatch |
+| 6 | Redefining the built-in `range` after a kernel was compiled was not seen by that kernel | Fixed: replacing a global that holds a built-in invalidates compiled code, like replacing a function |
+| 7 | `sorted` and `sort_by` could panic on a long mixed list because the comparator was not a total order | Fixed: the element types are checked before sorting |
+| 8 | `khipu web` keyed loop kernels by owner and index, so two same-named functions with a numeric loop could swap kernels | Narrowed: the key now includes the loop's line; two same-named functions with a loop on the same line and the same variable count would still collide. Written down here |
+| 9a | The README performance table predated the native tier | Fixed by the rerun below |
+| 9b | The README miscounted the `unsafe` uses | Fixed: the sentence now lists them |
+| 9c | The README said imports only look inside the project, but a `.kp` import can use `../` | Fixed: the sentence now says this about package imports, which is what the check covers |
+| 9d | Native recursion depth was counted from zero instead of from the interpreter's current depth | Fixed: the interpreter passes its frame count into the native context (and into the WebAssembly module's `depth` global) |
+| 10a | `-0 % 3` gave `+0` in WebAssembly | Fixed with `f64.copysign`, tested |
+| 10b | Reassigning a global function in a loop recompiled kernels without bound, each compile leaking its code | Fixed in part: after 2 000 compiled groups the native tier stops compiling. Compiled code is still never freed; the bound keeps it finite |
+| 10c | `let old = f` then `f = ...` then `old(n)`: a compiled `old` calls itself where the interpreter calls the new `f` | Fixed: a self call resolves through the globals again at compile time, and the generation bump recompiles after the reassignment |
+| 10d | `range(-9e18, 9e18)` overflowed `len`, `repeat("x", 1e18)` aborted | Fixed: saturating length; `repeat` refuses results over 1 GB with an error |
+| 10e | `spawn` wakes one idle worker; if that worker was already waking for a parked task, the new job waits until that worker is free, while other idle workers sleep | Written down: a latency loss with no deadlock or wrong result. The README describes the mechanism as a shared queue, not stealing of started tasks, which is accurate |
+
+The review also checked the three `unsafe` sites, the collector's conservativeness, the scheduler's lock order and wake-ups, the fused instructions, both code generators and the contract desugaring, and found nothing wrong there.

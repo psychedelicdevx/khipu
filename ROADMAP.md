@@ -12,10 +12,10 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 5. Tooling | `██████████` 8 / 8 |
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
-| 8. Performance and final audit | `████████░░` 14 / 18 |
+| 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Beat Python on every sustained benchmark
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.5× on 2 more, 4–10× slower on records, structs, strings and closures; see AUDIT.md)
 
 ---
 
@@ -117,10 +117,10 @@ Memory
 
 Speed
 - [x] Faster function calls, so `fib` and `fib_iterative` beat Python
-- [ ] Beat Python on every sustained benchmark
+- [x] Beat Python on every sustained benchmark
 - [x] Native compilation (Cranelift)
 - [x] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
-- [ ] Competitive with Node on the benchmark suite
+- [ ] Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.5× on 2 more, 4–10× slower on records, structs, strings and closures; see AUDIT.md)
 - [x] Start-up stays under 5 ms
 - [x] Work stealing, so a busy core hands tasks to idle ones
 - [x] Tasks also take turns inside deep recursion, not only in loops
@@ -132,9 +132,9 @@ Robustness
 
 Final audit
 - [x] Every roadmap item re-checked against the code and tests
-- [ ] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
+- [x] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
 - [x] Every example and doc snippet runs as written
-- [ ] Independent review of the whole repo, with every finding fixed or written down
+- [x] Independent review of the whole repo, with every finding fixed or written down
 
 ## Phase 9: Documentation
 
