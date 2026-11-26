@@ -751,7 +751,12 @@ pub fn spawn(args: &[Value]) -> Result<Value, String> {
         ));
     }
     let values = pack(args);
-    let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let dir = match PROGRAM.get() {
+        Some((path, _)) => std::path::Path::new(path)
+            .parent()
+            .map_or_else(|| PathBuf::from("."), PathBuf::from),
+        None => PathBuf::from("."),
+    };
     let task = {
         let mut world = world();
         world.live += 1;
