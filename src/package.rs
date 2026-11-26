@@ -48,7 +48,29 @@ mod native {
 
     fn write_json(path: &Path, value: &Map<String, Json>) -> Result<(), String> {
         let text = serde_json::to_string_pretty(value).unwrap_or_default() + "\n";
-        fs::write(path, text).map_err(|error| format!("cannot write {}: {error}", path.display()))
+        let fresh = path.with_extension("json.tmp");
+        fs::write(&fresh, text)
+            .and_then(|_| fs::rename(&fresh, path))
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+    }
+
+    fn store(root: &Path) -> Result<PathBuf, String> {
+        let mut folder = root.to_path_buf();
+        for part in [".khipu", "packages"] {
+            folder.push(part);
+            match fs::symlink_metadata(&folder) {
+                Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                    return Err(format!(
+                        "{} must be a real folder, not a link or a file; remove it and run khipu install",
+                        folder.display()
+                    ));
+                }
+                Ok(_) => {}
+                Err(_) => fs::create_dir(&folder)
+                    .map_err(|error| format!("cannot create {}: {error}", folder.display()))?,
+            }
+        }
+        Ok(folder)
     }
 
     fn dependencies(manifest: &Map<String, Json>) -> Vec<(String, String)> {
@@ -111,18 +133,37 @@ mod native {
                 "'{name}' is not a package name; to import a file, give its path with .kp at the end"
             ));
         }
-        let mut dir = from.canonicalize().unwrap_or_else(|_| from.to_path_buf());
-        loop {
+        let missing = || {
+            format!("package '{name}' is not installed; add it with: khipu add {name} <git url>")
+        };
+        let start = from.canonicalize().unwrap_or_else(|_| from.to_path_buf());
+        let project = start
+            .ancestors()
+            .find(|dir| {
+                let in_store = dir.parent().is_some_and(|parent| parent.ends_with(STORE));
+                dir.join(MANIFEST).is_file() && !in_store
+            })
+            .ok_or_else(missing)?;
+        for dir in start.ancestors() {
             let package = dir.join(STORE).join(name);
             if package.exists() {
                 return entry(&package);
             }
-            if !dir.pop() {
-                return Err(format!(
-                    "package '{name}' is not installed; add it with: khipu add {name} <git url>"
-                ));
+            if dir == project {
+                break;
             }
         }
+        Err(missing())
+    }
+
+    fn remote(source: &str) -> bool {
+        ["https://", "ssh://", "git@"]
+            .iter()
+            .any(|scheme| source.starts_with(scheme))
+    }
+
+    fn commit_id(commit: &str) -> bool {
+        matches!(commit.len(), 40 | 64) && commit.chars().all(|c| c.is_ascii_hexdigit())
     }
 
     pub fn main_file(cwd: &Path) -> Result<PathBuf, String> {
@@ -152,9 +193,7 @@ mod native {
         source: &str,
         pinned: Option<&str>,
     ) -> Result<String, String> {
-        let folder = root.join(STORE).join(name);
-        fs::create_dir_all(root.join(STORE))
-            .map_err(|error| format!("cannot create {STORE}: {error}"))?;
+        let folder = store(root)?.join(name);
         if let Some(path) = source.strip_prefix("path:") {
             let target = root
                 .join(path)
@@ -173,7 +212,13 @@ mod native {
         if url.starts_with('-') || reference.is_some_and(|r| r.starts_with('-')) {
             return Err(format!("{name}: '{source}' is not a valid source"));
         }
-        if folder.join(".git").exists() {
+        if folder
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            remove(&folder)?;
+        }
+        if folder.join(".git").is_dir() {
             git(&["fetch", "--quiet", "--tags", "origin"], Some(&folder))?;
         } else {
             if folder.symlink_metadata().is_ok() {
@@ -234,9 +279,19 @@ mod native {
     fn install(root: &Path) -> Result<Vec<(String, String)>, String> {
         let manifest = read_json(&root.join(MANIFEST))?;
         let lock = read_json(&root.join(LOCK)).unwrap_or_default();
-        let mut wanted = dependencies(&manifest);
+        let mut wanted: Vec<(String, String, Option<String>)> = dependencies(&manifest)
+            .into_iter()
+            .map(|(name, source)| (name, source, None))
+            .collect();
         let mut installed: BTreeMap<String, (String, String)> = BTreeMap::new();
-        while let Some((name, source)) = wanted.pop() {
+        while let Some((name, source, parent)) = wanted.pop() {
+            if let Some(parent) = &parent
+                && !remote(&source)
+            {
+                return Err(format!(
+                    "{parent} wants {name} from '{source}'; a package's own dependencies must come from https://, ssh:// or git@ sources"
+                ));
+            }
             if !valid_name(&name) {
                 return Err(format!(
                     "'{name}' is not a valid package name (use lowercase letters, digits, - and _)"
@@ -253,15 +308,27 @@ mod native {
             let locked = lock.get(&name).and_then(Json::as_object);
             let pinned = locked
                 .filter(|entry| entry.get("source").and_then(Json::as_str) == Some(&source))
-                .and_then(|entry| entry.get("commit").and_then(Json::as_str));
+                .and_then(|entry| entry.get("commit").and_then(Json::as_str))
+                .filter(|commit| *commit != "path");
+            if let Some(commit) = pinned
+                && !commit_id(commit)
+            {
+                return Err(format!(
+                    "{LOCK} has an invalid commit for {name}: '{commit}'"
+                ));
+            }
             let commit = fetch(root, &name, &source, pinned)?;
-            if let Ok(inner) = read_json(&root.join(STORE).join(&name).join(MANIFEST)) {
-                wanted.extend(dependencies(&inner));
+            if let Ok(inner) = read_json(&store(root)?.join(&name).join(MANIFEST)) {
+                wanted.extend(
+                    dependencies(&inner)
+                        .into_iter()
+                        .map(|(dependency, source)| (dependency, source, Some(name.clone()))),
+                );
             }
             installed.insert(name, (source, commit));
         }
 
-        let store = root.join(STORE);
+        let store = store(root)?;
         if let Ok(entries) = fs::read_dir(&store) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -365,6 +432,11 @@ mod native {
                 let root = root(cwd)?;
                 let before = fs::read_to_string(root.join(MANIFEST)).unwrap_or_default();
                 set_dependency(&root, name, Some(source))?;
+                if let Ok(mut lock) = read_json(&root.join(LOCK))
+                    && lock.remove(*name).is_some()
+                {
+                    write_json(&root.join(LOCK), &lock)?;
+                }
                 match install(&root) {
                     Ok(installed) => {
                         println!("added {name}");
@@ -468,12 +540,69 @@ mod tests {
         assert_eq!(run(&app, program), "v2");
 
         assert!(command(&words(&["add", "Bad", "x"]), &app).is_err());
+
+        let precious = base.join("precious");
+        fs::create_dir_all(&precious).unwrap();
+        fs::write(precious.join("keep.txt"), "mine").unwrap();
+        fs::remove_dir_all(app.join(".khipu")).unwrap();
+        fs::create_dir_all(app.join(".khipu")).unwrap();
+        std::os::unix::fs::symlink(&precious, app.join(".khipu/packages")).unwrap();
+        let refused = command(&words(&["install"]), &app).unwrap_err();
+        assert!(refused.contains("must be a real folder"));
+        assert!(precious.join("keep.txt").exists());
+        fs::remove_file(app.join(".khipu/packages")).unwrap();
+        command(&words(&["install"]), &app).unwrap();
+
+        fs::remove_file(app.join("khipu.lock")).unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "untouched").unwrap();
+        std::os::unix::fs::symlink(&outside, app.join("khipu.lock")).unwrap();
+        command(&words(&["install"]), &app).unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
+        assert!(
+            !fs::symlink_metadata(app.join("khipu.lock"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert!(command(&words(&["add", "evil", "--upload-pack=x"]), &app).is_err());
         assert!(
             locate(&app, "../greet")
                 .unwrap_err()
                 .contains("not a package name")
         );
+        let planted = base.join(".khipu/packages/evil");
+        fs::create_dir_all(&planted).unwrap();
+        fs::write(planted.join("main.kp"), "let x = 1\n").unwrap();
+        assert!(locate(&app, "evil").unwrap_err().contains("not installed"));
+
+        let lock = fs::read_to_string(app.join("khipu.lock")).unwrap();
+        let commit = lock
+            .split('"')
+            .find(|part| part.len() == 40)
+            .unwrap()
+            .to_string();
+        fs::write(app.join("khipu.lock"), lock.replace(&commit, "--orphan=x")).unwrap();
+        assert!(
+            command(&words(&["install"]), &app)
+                .unwrap_err()
+                .contains("invalid commit")
+        );
+        fs::write(app.join("khipu.lock"), lock).unwrap();
+
+        fs::write(
+            library.join("khipu.json"),
+            "{ \"name\": \"greet\", \"dependencies\": { \"secrets\": \"path:/etc\" } }\n",
+        )
+        .unwrap();
+        git(&library, &["add", "-A"]);
+        git(&library, &["commit", "-qm", "three"]);
+        let sneaky = command(
+            &words(&["add", "greet", &library.display().to_string()]),
+            &app,
+        );
+        assert!(sneaky.unwrap_err().contains("must come from https://"));
+
         command(&words(&["remove", "greet"]), &app).unwrap();
         assert!(locate(&app, "greet").unwrap_err().contains("not installed"));
         fs::remove_dir_all(&base).unwrap();

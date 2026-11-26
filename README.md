@@ -246,7 +246,7 @@ import colors from "colors"
 print(colors.red("hello"))
 ```
 
-An import without `.kp` is a package; with `.kp` it is a file next to yours. `khipu add` records the exact commit in `khipu.lock`, so `khipu install` gives everyone the same code; packages' own dependencies are installed too. Installing never runs a package's code.
+An import without `.kp` is a package; with `.kp` it is a file next to yours. `khipu add` records the exact commit in `khipu.lock`, so `khipu install` gives everyone the same code; packages' own dependencies are installed too, but only from `https://`, `ssh://` or `git@` sources, so a package can never pull in a folder from your machine. Installing never runs a package's code, and imports only look inside your own project.
 
 ## Roadmap
 
