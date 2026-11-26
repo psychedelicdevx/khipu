@@ -5,6 +5,7 @@ edition = "2024"
 description = "A typed, multi-core programming language, and a laboratory for ideas that should not work"
 repository = "https://github.com/psychedelicdevx/khipu"
 readme = "README.md"
+license = "MIT"
 keywords = ["programming-language", "interpreter", "compiler", "concurrency"]
 categories = ["compilers", "development-tools"]
 

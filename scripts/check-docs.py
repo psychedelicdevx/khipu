@@ -26,7 +26,7 @@ def snippets(path=README):
         info, body = match.group(1).split(), match.group(2)
         lang, name = (info + [""])[0], (info + ["", ""])[1]
         line = text[: match.start()].count("\n") + 2
-        runnable = lang == "js" or (path == README and lang == "" and re.match(r"^(fn|let|struct|enum) ", body))
+        runnable = lang == "js" or (path.parent.name != "book" and lang == "" and re.match(r"^(fn|let|struct|enum) ", body))
         if runnable:
             found.append((line, body, name))
     return found
@@ -112,7 +112,7 @@ class Checker:
                 self.stop_servers()
 
     def readme(self):
-        self.docs([README])
+        self.docs([README, *sorted(ROOT.glob("docs/*.md"))])
 
     def book(self):
         self.docs(sorted(ROOT.glob("book/*.md")))

@@ -19,4 +19,4 @@ Every `js` code block in this book is a complete program. `python3 scripts/check
 13. [The web](13-the-web.md): `khipu web` and the playground
 14. [Performance](14-performance.md): what runs natively, and why
 
-If you want exact rules rather than a tour, the [README](../README.md) is the short reference and `src/prelude.kp` lists every standard-library method.
+If you want exact rules rather than a tour, [A tour of Khipu](../docs/tour.md) is the short reference and `src/prelude.kp` lists every standard-library method.

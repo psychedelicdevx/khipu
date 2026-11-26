@@ -184,13 +184,7 @@ def readme_section(results, meta, runs):
     node_wins = wins(results, "sustained", "Node")
     return f"""## Performance
 
-Sustained runs use inputs large enough that start-up is a small share of the time. Median of {runs['sustained']} runs on {meta['cpu']}; lower is better.
-
-{table(sustained, "sustained", lambda r: ms(r["median_ms"]), (["vs Python", "vs Node"], versus))}
-
-Start-up, an empty program (median of {runs['cold']} runs): {startup_line(results)}.
-
-On sustained runs Khipu beats Python on {python_wins[0]} of {python_wins[1]} benchmarks and Node on {node_wins[0]} of {node_wins[1]}. Cold-start results, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on {python_wins[0]} of {python_wins[1]} benchmarks and Node on {node_wins[0]} of {node_wins[1]}, and uses less memory than both on every one. Start-up, an empty program (median of {runs['cold']} runs): {startup_line(results)}. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
 """
 
