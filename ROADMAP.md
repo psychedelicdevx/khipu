@@ -9,12 +9,13 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `██████░░░░` 5 / 9 |
+| 5. Tooling | `████████░░` 6 / 8 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
+| 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Language server: errors as you type, autocomplete, hover
+**Next up:** Web playground (Khipu running in the browser via WASM)
 
 ---
 
@@ -84,10 +85,9 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Error messages that show the line and point at the problem
 - [x] `khipu fmt`: one canonical formatting
 - [x] `khipu test`: built-in test blocks
-- [ ] Language server: errors as you type, autocomplete, hover
+- [x] Language server: errors as you type, autocomplete, hover
 - [ ] Web playground (Khipu running in the browser via WASM)
 - [ ] Tree-sitter grammar (Zed, Neovim, GitHub)
-- [ ] Documentation site
 
 ## Phase 6: Concurrency (Khipu's signature)
 
@@ -132,3 +132,13 @@ Final audit
 - [ ] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
 - [ ] Every example and doc snippet runs as written
 - [ ] Independent review of the whole repo, with every finding fixed or written down
+
+## Phase 9: Documentation
+
+The last phase, written once the language has settled.
+
+- [ ] The Khipu Book: teaches the language
+- [ ] Khipu Language Reference: exactly how everything behaves
+- [ ] Standard Library Reference: every API, with examples
+- [ ] Khipu Internals: the Rust implementation, compiler, VM, garbage collector and scheduler
+- [ ] Documentation site that hosts all four

@@ -126,12 +126,13 @@ khipu test examples/testing.kp
 | 2. Speed | `██████████` 7 / 7 |
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
-| 5. Tooling | `██████░░░░` 5 / 9 |
+| 5. Tooling | `████████░░` 6 / 8 |
 | 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
 | 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
+| 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** Language server: errors as you type, autocomplete, hover
+**Next up:** Web playground (Khipu running in the browser via WASM)
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -164,7 +165,22 @@ On sustained runs Khipu beats Python on 14 of 16 benchmarks and Node on 0 of 16.
 
 ## Editor support
 
-`editors/vscode` is a VS Code extension with syntax highlighting, the `.kp` file icon, comment toggling and bracket handling. If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give `.kp` files the KP icon there too.
+`khipu lsp` is a language server. Any editor that speaks LSP gets:
+
+- errors as you type, underlined where the problem is
+- hover to see the type of any name, field or method
+- autocomplete for names, keywords, struct fields and methods, and enum variants, which keeps working while the line is half typed
+- formatting, the same as `khipu fmt`
+
+`editors/vscode` is a VS Code extension that uses it, plus syntax highlighting, the `.kp` file icon, comment toggling and bracket handling. It runs `khipu` from your `PATH`; set `khipu.path` if it lives somewhere else. To build it:
+
+```bash
+cargo install --path .
+cd editors/vscode && npm install && npx @vscode/vsce package
+code --install-extension khipu-*.vsix
+```
+
+If you use the Symbols icon theme, run `editors/vscode/patch-symbols.sh` to give `.kp` files the KP icon there too.
 
 ## Project layout
 
@@ -173,13 +189,14 @@ On sustained runs Khipu beats Python on 14 of 16 benchmarks and Node on 0 of 16.
 | `src/lexer.rs` | Turns source text into tokens |
 | `src/error.rs` | Errors that show the line and point at the problem |
 | `src/format.rs` | `khipu fmt`: one canonical layout, comments kept |
+| `src/lsp.rs` | `khipu lsp`: the language server behind editor support |
 | `src/parser.rs` | Turns tokens into a syntax tree |
 | `src/checker.rs` | The static type checker, run before anything executes |
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |
-| `src/main.rs` | The `khipu` command: run a file, `fmt`, `test`, or open the prompt |
+| `src/main.rs` | The `khipu` command: run a file, `fmt`, `test`, `lsp`, or open the prompt |
 | `benchmarks/` | The same programs in Khipu, Python, JavaScript, C and Rust |
 | `examples/` | Example Khipu programs |
 | `editors/vscode/` | VS Code extension |

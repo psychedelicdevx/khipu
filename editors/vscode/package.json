@@ -1,11 +1,11 @@
 {
   "name": "khipu",
   "displayName": "Khipu",
-  "description": "Syntax highlighting and file icon for the Khipu programming language",
-  "version": "0.1.10",
+  "description": "Khipu language support: highlighting, errors as you type, autocomplete, hover and formatting",
+  "version": "0.2.1",
   "publisher": "psychedelicdevx",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -35,6 +35,32 @@
         "scopeName": "source.khipu",
         "path": "./syntaxes/khipu.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Khipu",
+      "properties": {
+        "khipu.path": {
+          "type": "string",
+          "default": "khipu",
+          "description": "Path to the khipu executable used for the language server",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:khipu"
+  ],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "khipu.path"
+      ]
+    }
   }
 }

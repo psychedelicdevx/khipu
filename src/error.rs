@@ -72,7 +72,7 @@ fn quoted(message: &str) -> Option<&str> {
     Some(&after[..after.find('\'')?]).filter(|word| !word.is_empty())
 }
 
-fn underline(text: &str, message: &str) -> (usize, usize) {
+pub fn underline(text: &str, message: &str) -> (usize, usize) {
     let chars: Vec<char> = text.chars().collect();
     let indent = chars.iter().take_while(|c| c.is_whitespace()).count();
     let whole = (indent, chars.len().saturating_sub(indent).max(1));

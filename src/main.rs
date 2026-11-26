@@ -4,6 +4,7 @@ mod error;
 mod format;
 mod interpreter;
 mod lexer;
+mod lsp;
 mod parser;
 mod value;
 mod vm;
@@ -29,6 +30,7 @@ fn main() {
         .spawn(move || match args.get(1).map(String::as_str) {
             Some("fmt") => format_files(&args[2..]),
             Some("test") => test_files(&args[2..]),
+            Some("lsp") => lsp::serve(),
             Some(path) => run_file(path),
             None => repl(),
         })

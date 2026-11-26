@@ -37,6 +37,7 @@ pub struct Checker {
     structs: HashMap<String, StructInfo>,
     enums: HashMap<String, Vec<(String, Vec<Type>)>>,
     line: usize,
+    pub names: Vec<(usize, String, Type)>,
 }
 
 impl Checker {
@@ -69,6 +70,7 @@ impl Checker {
             structs: HashMap::new(),
             enums: HashMap::new(),
             line: 1,
+            names: Vec::new(),
         }
     }
 
@@ -78,6 +80,7 @@ impl Checker {
             structs: self.structs.clone(),
             enums: self.enums.clone(),
         };
+        self.names.clear();
         let result = self.block(program);
         if result.is_err() {
             self.scopes.truncate(1);
@@ -94,7 +97,59 @@ impl Checker {
         Err(Error::new(self.line, message))
     }
 
+    fn enter(&mut self, scope: HashMap<String, Type>) {
+        for (name, ty) in &scope {
+            self.names.push((self.line, name.clone(), ty.clone()));
+        }
+        self.scopes.push(scope);
+    }
+
+    pub fn global(&self, name: &str) -> Option<&Type> {
+        self.scopes[0].get(name)
+    }
+
+    pub fn globals(&self) -> impl Iterator<Item = (&String, &Type)> {
+        self.scopes[0].iter()
+    }
+
+    pub fn members(&self, ty: &Type) -> Vec<(String, Type)> {
+        let method = |method: &Method| {
+            Type::Function(method.params.clone(), Box::new(method.returns.clone()))
+        };
+        let mut found: Vec<(String, Type)> = match ty {
+            Type::Struct(name) => self.structs.get(name).map_or(Vec::new(), |info| {
+                let methods = info.methods.iter().filter(|(_, m)| m.has_self);
+                info.fields
+                    .iter()
+                    .cloned()
+                    .chain(methods.map(|(name, m)| (name.clone(), method(m))))
+                    .collect()
+            }),
+            Type::StructDef(name) => self.structs.get(name).map_or(Vec::new(), |info| {
+                let statics = info.methods.iter().filter(|(_, m)| !m.has_self);
+                statics.map(|(name, m)| (name.clone(), method(m))).collect()
+            }),
+            Type::EnumDef(name) => self.enums.get(name).map_or(Vec::new(), |variants| {
+                variants
+                    .iter()
+                    .map(|(variant, fields)| {
+                        let ty = if fields.is_empty() {
+                            Type::Enum(name.clone())
+                        } else {
+                            Type::Function(fields.clone(), Box::new(Type::Enum(name.clone())))
+                        };
+                        (variant.clone(), ty)
+                    })
+                    .collect()
+            }),
+            _ => Vec::new(),
+        };
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+
     fn declare(&mut self, name: &str, ty: Type) {
+        self.names.push((self.line, name.to_string(), ty.clone()));
         self.scopes
             .last_mut()
             .expect("there is always a scope")
@@ -331,7 +386,7 @@ impl Checker {
                         return self.fail(format!("for needs a list or a string, got {other}"));
                     }
                 };
-                self.scopes.push(HashMap::from([(name.clone(), item)]));
+                self.enter(HashMap::from([(name.clone(), item)]));
                 let result = self.block(body);
                 self.scopes.pop();
                 result?;
@@ -455,7 +510,7 @@ impl Checker {
         }
         let returns = self.resolve_option(returns)?;
 
-        self.scopes.push(scope);
+        self.enter(scope);
         self.functions.push(Function {
             name: label.to_string(),
             returns: returns.clone(),
@@ -882,7 +937,7 @@ impl Checker {
                 }
             }
 
-            self.scopes.push(scope);
+            self.enter(scope);
             let arm_type = match &arm.body {
                 ArmBody::Expr(expr) => self.expression(expr),
                 ArmBody::Block(block) => self.block(block).map(|_| Type::None),
