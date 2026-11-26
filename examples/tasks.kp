@@ -1,0 +1,49 @@
+let jobs = channel()
+let results = channel()
+let quit = channel()
+
+fn is_prime(n: number) -> bool {
+    if n < 2 {
+        return false
+    }
+    let d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d = d + 1
+    }
+    return true
+}
+
+fn worker(id: number) {
+    while true {
+        select {
+            n = receive(jobs) => send(results, [n, is_prime(n)])
+            receive(quit) => return
+        }
+    }
+}
+
+let workers = 4
+for id in range(workers) {
+    spawn(worker, id)
+}
+
+let numbers = range(1000000, 1000040)
+for n in numbers {
+    send(jobs, n)
+}
+
+let primes = []
+for _ in numbers {
+    let answer = receive(results)
+    if answer[1] {
+        push(primes, answer[0])
+    }
+}
+for _ in range(workers) {
+    send(quit, true)
+}
+
+print("primes found by", workers, "tasks:", len(primes))

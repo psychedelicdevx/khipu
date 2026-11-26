@@ -16,7 +16,7 @@
 
 ---
 
-Khipu is a programming language that keeps the feel of JavaScript and drops the parts people complain about: no silent type coercion, no truthiness, no `null` *and* `undefined`. Next come C#-style static types, and its signature feature, safe parallelism across every CPU core with lightweight tasks and channels.
+Khipu is a programming language that keeps the feel of JavaScript and drops the parts people complain about: no silent type coercion, no truthiness, no `null` *and* `undefined`. It has static types that catch mistakes before anything runs, and its signature feature: safe parallelism across every CPU core with lightweight tasks and channels.
 
 The name comes from the **khipu**, the knotted cords the Inca used to record numbers and data: many strings working side by side, which is the idea behind Khipu's concurrency.
 
@@ -52,6 +52,39 @@ $ khipu examples/primes.kp
 ...
 29
 ```
+
+## Tasks on every core
+
+`spawn` starts a task. Tasks are cheap: fifty thousand can wait at once in about 100 MB. They run on every core and talk only through channels: whatever you `send` is copied, so two tasks never share a value and data races can't happen.
+
+```js
+let results = channel()
+
+fn square(n: number) {
+    send(results, n * n)
+}
+
+for n in range(1, 11) {
+    spawn(square, n)
+}
+
+let total = 0
+for _ in range(10) {
+    total = total + receive(results)
+}
+print(total)
+```
+
+`select` waits on several channels and runs the arm for whichever gets a value first:
+
+```js
+select {
+    job = receive(jobs) => handle(job)
+    receive(quit) => return
+}
+```
+
+If every task ends up waiting on a channel that nothing will ever send to, Khipu stops with a deadlock error that points at the line, instead of hanging.
 
 ## Strict where JavaScript is loose
 
@@ -127,12 +160,12 @@ khipu test examples/testing.kp
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
-| 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
+| 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** `spawn` lightweight tasks
+**Next up:** Standard library: math, strings, lists
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
@@ -142,26 +175,27 @@ Sustained runs use inputs large enough that start-up is a small share of the tim
 
 | Benchmark | Khipu | Python | Node | C | Rust | vs Python | vs Node |
 |---|---|---|---|---|---|---|---|
-| fib | 148 ms | 136 ms | 35 ms | 6.1 ms | 6.1 ms | 1.1× slower | 4.3× slower |
-| fib_iterative | 621 ms | 467 ms | 45 ms | 9.7 ms | 10 ms | 1.3× slower | 13.7× slower |
-| loop | 310 ms | 2294 ms | 156 ms | 2.7 ms | 2.9 ms | **7.4× faster** | 2.0× slower |
-| nested_loops | 178 ms | 234 ms | 28 ms | 4.4 ms | 4.7 ms | **1.3× faster** | 6.3× slower |
-| sieve | 322 ms | 527 ms | 51 ms | 4.9 ms | 5.4 ms | **1.6× faster** | 6.4× slower |
-| matrix | 150 ms | 272 ms | 30 ms | 3.3 ms | 4.8 ms | **1.8× faster** | 5.0× slower |
-| mandelbrot | 76 ms | 225 ms | 26 ms | 3.8 ms | 4.4 ms | **3.0× faster** | 2.9× slower |
-| lists | 114 ms | 286 ms | 78 ms | 5.1 ms | 6.1 ms | **2.5× faster** | 1.5× slower |
-| records | 218 ms | 346 ms | 27 ms | 2.1 ms | 2.7 ms | **1.6× faster** | 8.1× slower |
-| strings | 216 ms | 287 ms | 40 ms | 83 ms | 105 ms | **1.3× faster** | 5.4× slower |
-| calls | 75 ms | 191 ms | 34 ms | 2.4 ms | 2.2 ms | **2.6× faster** | 2.2× slower |
-| closures | 125 ms | 234 ms | 27 ms | 4.6 ms | 4.2 ms | **1.9× faster** | 4.6× slower |
-| locals | 134 ms | 275 ms | 65 ms | 2.3 ms | 2.6 ms | **2.1× faster** | 2.1× slower |
-| globals | 102 ms | 342 ms | 27 ms | 4.7 ms | 11 ms | **3.4× faster** | 3.7× slower |
-| record_access | 287 ms | 819 ms | 25 ms | 4.9 ms | 6.5 ms | **2.9× faster** | 11.4× slower |
-| struct_access | 270 ms | 719 ms | 26 ms | 5.1 ms | 6.6 ms | **2.7× faster** | 10.5× slower |
+| fib | 161 ms | 149 ms | 35 ms | 6.2 ms | 6.2 ms | 1.1× slower | 4.6× slower |
+| fib_iterative | 613 ms | 431 ms | 44 ms | 9.8 ms | 10 ms | 1.4× slower | 13.9× slower |
+| loop | 356 ms | 2206 ms | 148 ms | 2.5 ms | 2.7 ms | **6.2× faster** | 2.4× slower |
+| nested_loops | 171 ms | 227 ms | 28 ms | 4.2 ms | 4.3 ms | **1.3× faster** | 6.1× slower |
+| sieve | 334 ms | 549 ms | 51 ms | 5.0 ms | 5.3 ms | **1.6× faster** | 6.5× slower |
+| matrix | 136 ms | 259 ms | 28 ms | 3.3 ms | 4.8 ms | **1.9× faster** | 4.8× slower |
+| mandelbrot | 79 ms | 234 ms | 27 ms | 4.4 ms | 4.3 ms | **2.9× faster** | 2.9× slower |
+| lists | 111 ms | 283 ms | 77 ms | 5.2 ms | 6.0 ms | **2.5× faster** | 1.4× slower |
+| records | 215 ms | 340 ms | 27 ms | 2.4 ms | 2.9 ms | **1.6× faster** | 8.0× slower |
+| strings | 231 ms | 298 ms | 44 ms | 90 ms | 110 ms | **1.3× faster** | 5.3× slower |
+| calls | 71 ms | 198 ms | 35 ms | 2.6 ms | 2.5 ms | **2.8× faster** | 2.0× slower |
+| closures | 130 ms | 237 ms | 29 ms | 5.6 ms | 4.2 ms | **1.8× faster** | 4.5× slower |
+| locals | 147 ms | 279 ms | 65 ms | 2.7 ms | 2.7 ms | **1.9× faster** | 2.3× slower |
+| globals | 94 ms | 332 ms | 27 ms | 5.0 ms | 11 ms | **3.5× faster** | 3.5× slower |
+| record_access | 275 ms | 844 ms | 27 ms | 5.0 ms | 6.4 ms | **3.1× faster** | 10.3× slower |
+| struct_access | 275 ms | 739 ms | 27 ms | 5.3 ms | 6.5 ms | **2.7× faster** | 10.2× slower |
+| parallel | 264 ms | 421 ms | 72 ms | 21 ms | 22 ms | **1.6× faster** | 3.7× slower |
 
-Start-up, an empty program (median of 21 runs): Khipu 2.6 ms · Python 13 ms · Node 22 ms · C 2.1 ms · Rust 2.4 ms.
+Start-up, an empty program (median of 21 runs): Khipu 2.6 ms · Python 13 ms · Node 23 ms · C 2.3 ms · Rust 2.5 ms.
 
-On sustained runs Khipu beats Python on 14 of 16 benchmarks and Node on 0 of 16. Cold-start results, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on 15 of 17 benchmarks and Node on 0 of 17. Cold-start results, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Editor support
 
@@ -206,6 +240,7 @@ Then open http://localhost:8000. You need the WebAssembly target once: `rustup t
 | `src/parser.rs` | Turns tokens into a syntax tree |
 | `src/checker.rs` | The static type checker, run before anything executes |
 | `src/compiler.rs` | Turns the tree into bytecode, resolving every variable to a slot |
+| `src/task.rs` | Tasks, channels and `select`: a scheduler with one worker per core |
 | `src/vm.rs` | Runs the bytecode: one tight loop, calls without native recursion |
 | `src/value.rs` | Runtime values, operators and built-in functions |
 | `src/interpreter.rs` | Ties it together, plus the language test suite |

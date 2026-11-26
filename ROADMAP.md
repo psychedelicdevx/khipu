@@ -10,12 +10,12 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 | 3. Types | `██████████` 7 / 7 |
 | 4. Benchmarks | `██████████` 8 / 8 |
 | 5. Tooling | `██████████` 8 / 8 |
-| 6. Concurrency | `░░░░░░░░░░` 0 / 5 |
+| 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `░░░░░░░░░░` 0 / 6 |
-| 8. Performance and final audit | `░░░░░░░░░░` 0 / 15 |
+| 8. Performance and final audit | `░░░░░░░░░░` 0 / 17 |
 | 9. Documentation | `░░░░░░░░░░` 0 / 5 |
 
-**Next up:** `spawn` lightweight tasks
+**Next up:** Standard library: math, strings, lists
 
 ---
 
@@ -89,13 +89,13 @@ JavaScript, minus the bad parts, plus real types and real multi-core.
 - [x] Web playground (Khipu running in the browser via WASM)
 - [x] Tree-sitter grammar (Zed, Neovim, GitHub)
 
-## Phase 6: Concurrency (Khipu's signature)
+## Phase 6: Concurrency (Khipu's signature) ✅
 
-- [ ] `spawn` lightweight tasks
-- [ ] Channels: `send` and `receive`
-- [ ] Tasks running on all CPU cores
-- [ ] `select` across several channels
-- [ ] No shared mutable state, so no data races
+- [x] `spawn` lightweight tasks
+- [x] Channels: `send` and `receive`
+- [x] Tasks running on all CPU cores
+- [x] `select` across several channels
+- [x] No shared mutable state, so no data races
 
 ## Phase 7: Ecosystem
 
@@ -121,6 +121,8 @@ Speed
 - [ ] Native compilation (Cranelift)
 - [ ] Competitive with Node on the benchmark suite
 - [ ] Start-up stays under 5 ms
+- [ ] Work stealing, so a busy core hands tasks to idle ones
+- [ ] Tasks also take turns inside deep recursion, not only in loops
 
 Robustness
 - [ ] Fuzzing the lexer, parser, checker and VM finds no crash

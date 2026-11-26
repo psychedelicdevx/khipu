@@ -10,12 +10,14 @@ use crate::error::Error;
 use crate::interpreter::Interpreter;
 use crate::lexer::lex;
 use crate::parser::{Op, Parser};
+use crate::task;
 use crate::value::{
     Closure, EnumValue, Fields, GlobalStore, Instance, StructDef, Value, binary, equal,
     write_number,
 };
 
 const MAX_FRAMES: usize = 10_000;
+const SLICE: u32 = 10_000;
 
 pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Fields>>>>>;
 pub type Loading = Rc<RefCell<Vec<PathBuf>>>;
@@ -34,6 +36,8 @@ pub struct Vm {
     dir: PathBuf,
     modules: Modules,
     loading: Loading,
+    budget: u32,
+    pub preemptive: bool,
 }
 
 impl Vm {
@@ -45,6 +49,21 @@ impl Vm {
             dir: dir.to_path_buf(),
             modules,
             loading,
+            budget: SLICE,
+            preemptive: false,
+        }
+    }
+
+    pub fn task(dir: &Path) -> Self {
+        Vm {
+            globals: GlobalStore::default(),
+            stack: Vec::with_capacity(16),
+            frames: Vec::with_capacity(4),
+            dir: dir.to_path_buf(),
+            modules: Modules::default(),
+            loading: Loading::default(),
+            budget: SLICE,
+            preemptive: true,
         }
     }
 
@@ -74,6 +93,60 @@ impl Vm {
         if result.is_err() {
             self.frames.clear();
             self.stack.truncate(bottom);
+        }
+        result
+    }
+
+    pub fn call(&mut self, function: Value, args: Vec<Value>) -> Result<Value, Error> {
+        if let Value::Native(native) = &function {
+            return (native.function)(&args).map_err(|message| Error::new(0, message));
+        }
+        self.prepare(function, args)?;
+        self.resume()
+    }
+
+    pub fn prepare(&mut self, function: Value, args: Vec<Value>) -> Result<(), Error> {
+        let closure = match &function {
+            Value::Function(closure) => Rc::clone(closure),
+            other => {
+                return Err(Error::new(
+                    0,
+                    format!("{} is not a function", other.type_name()),
+                ));
+            }
+        };
+        let expected = closure.proto.arity as usize;
+        if args.len() != expected {
+            return Err(Error::new(
+                0,
+                format!(
+                    "{} expects {expected} argument{}, got {}",
+                    closure.proto.label(),
+                    if expected == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            ));
+        }
+        let bottom = self.stack.len();
+        self.stack.push(function);
+        self.stack.extend(args);
+        self.frames.push(Frame {
+            closure,
+            ip: 0,
+            base: bottom + 1,
+            return_to: bottom,
+        });
+        Ok(())
+    }
+
+    pub fn resume(&mut self) -> Result<Value, Error> {
+        let result = self.execute();
+        if let Err(error) = &result
+            && error.message != task::BLOCKED
+            && error.message != task::YIELDED
+        {
+            self.frames.clear();
+            self.stack.clear();
         }
         result
     }
@@ -158,6 +231,15 @@ impl Vm {
                                 Ok(value) => {
                                     self.stack.truncate(callee_at);
                                     self.stack.push(value);
+                                }
+                                Err(message) if message == task::BLOCKED => {
+                                    self.frames.push(Frame {
+                                        closure: Rc::clone(&closure),
+                                        ip: ip - 1,
+                                        base,
+                                        return_to,
+                                    });
+                                    return Err(Error::new(0, message));
                                 }
                                 Err(message) => fail!(message),
                             }
@@ -383,6 +465,15 @@ impl Vm {
                                         self.stack.truncate(args_at);
                                         self.stack.push(value);
                                     }
+                                    Err(message) if message == task::BLOCKED => {
+                                        self.frames.push(Frame {
+                                            closure: Rc::clone(&closure),
+                                            ip: ip - 1,
+                                            base,
+                                            return_to,
+                                        });
+                                        return Err(Error::new(0, message));
+                                    }
                                     Err(message) => fail!(message),
                                 }
                             }
@@ -416,7 +507,24 @@ impl Vm {
                             other.type_name()
                         )),
                     },
-                    Code::Jump(target) => ip = target as usize,
+                    Code::Jump(target) => {
+                        if (target as usize) < ip {
+                            self.budget -= 1;
+                            if self.budget == 0 {
+                                self.budget = SLICE;
+                                if self.preemptive {
+                                    self.frames.push(Frame {
+                                        closure: Rc::clone(&closure),
+                                        ip: target as usize,
+                                        base,
+                                        return_to,
+                                    });
+                                    return Err(Error::new(0, task::YIELDED));
+                                }
+                            }
+                        }
+                        ip = target as usize
+                    }
                     Code::JumpUnlessLess(target) => jump_unless!(Op::Less, |x, y| x < y, target),
                     Code::JumpUnlessLessEqual(target) => {
                         jump_unless!(Op::LessEqual, |x, y| x <= y, target)

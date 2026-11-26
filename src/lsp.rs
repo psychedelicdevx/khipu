@@ -9,9 +9,9 @@ use crate::format::format;
 use crate::lexer::lex;
 use crate::parser::{Parser, Type};
 
-const KEYWORDS: [&str; 19] = [
+const KEYWORDS: [&str; 20] = [
     "let", "fn", "return", "if", "else", "while", "for", "in", "break", "continue", "import",
-    "from", "struct", "enum", "match", "true", "false", "none", "test",
+    "from", "struct", "enum", "match", "true", "false", "none", "test", "select",
 ];
 
 struct Document {

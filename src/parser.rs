@@ -22,6 +22,7 @@ pub enum Type {
     StructDef(String),
     Enum(String),
     EnumDef(String),
+    Channel,
 }
 
 impl std::fmt::Display for Type {
@@ -35,6 +36,7 @@ impl std::fmt::Display for Type {
             Type::List(inner) if **inner == Type::Any => write!(f, "list"),
             Type::List(inner) => write!(f, "list<{inner}>"),
             Type::Record => write!(f, "record"),
+            Type::Channel => write!(f, "channel"),
             Type::Function(params, returns) => {
                 let params: Vec<String> = params.iter().map(Type::to_string).collect();
                 write!(f, "fn({}) -> {returns}", params.join(", "))
@@ -273,6 +275,12 @@ impl Parser {
                 }
                 Ok(Stmt::Test(title, self.block()?))
             }
+            Some(Token::Ident(word))
+                if word == "select" && matches!(self.peek_next(), Some(Token::LeftBrace)) =>
+            {
+                self.pos += 2;
+                self.select_statement()
+            }
             Some(Token::Return) => {
                 self.pos += 1;
                 if self.function_depth == 0 {
@@ -378,6 +386,84 @@ impl Parser {
                 }
             }
         }
+    }
+
+    fn select_statement(&mut self) -> Result<Stmt, Error> {
+        let line = self.line;
+        let hidden = format!("select#{}", self.pos);
+        let mut channels = Vec::new();
+        let mut arms: Vec<(Option<String>, Block)> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.peek() == Some(&Token::RightBrace) {
+                self.pos += 1;
+                break;
+            }
+            let binding = match (self.peek(), self.peek_next()) {
+                (Some(Token::Ident(name)), Some(Token::Equals)) => {
+                    let name = name.clone();
+                    self.pos += 2;
+                    Some(name)
+                }
+                _ => None,
+            };
+            match self.advance() {
+                Some(Token::Ident(word)) if word == "receive" => {}
+                Some(token) => {
+                    return Err(self.error(format!(
+                        "each select arm starts with receive(channel), found {token}"
+                    )));
+                }
+                None => return Err(self.error("select is never closed".to_string())),
+            }
+            self.expect(Token::LeftParen)?;
+            channels.push(self.free_expression()?);
+            self.expect(Token::RightParen)?;
+            self.expect(Token::FatArrow)?;
+            let body = if self.peek() == Some(&Token::LeftBrace) {
+                self.block()?
+            } else {
+                let at = self
+                    .tokens
+                    .get(self.pos)
+                    .map_or(self.line, |(_, line)| *line);
+                vec![(at, self.statement()?)]
+            };
+            arms.push((binding, body));
+            self.skip_newlines();
+            if self.peek() == Some(&Token::Comma) {
+                self.pos += 1;
+            }
+        }
+        if arms.is_empty() {
+            return Err(self.error("select needs at least one receive(channel) arm".to_string()));
+        }
+
+        let picked = |slot: f64| {
+            Expr::Index(
+                Box::new(Expr::Variable(hidden.clone())),
+                Box::new(Expr::Number(slot)),
+            )
+        };
+        let mut chain: Option<Block> = None;
+        for (index, (binding, mut body)) in arms.into_iter().enumerate().rev() {
+            if let Some(name) = binding {
+                body.insert(0, (line, Stmt::Let(name, None, picked(1.0))));
+            }
+            let condition = Expr::Binary(
+                Box::new(picked(0.0)),
+                Op::Equal,
+                Box::new(Expr::Number(index as f64)),
+            );
+            chain = Some(vec![(line, Stmt::If(condition, body, chain))]);
+        }
+        let wait = Expr::Call(
+            Box::new(Expr::Variable("select#".to_string())),
+            vec![Expr::List(channels)],
+        );
+        let mut block = vec![(line, Stmt::Let(hidden, None, wait))];
+        block.extend(chain.unwrap_or_default());
+        Ok(Stmt::If(Expr::Bool(true), block, None))
     }
 
     fn loop_body(&mut self) -> Result<Block, Error> {
@@ -822,6 +908,7 @@ impl Parser {
                     }
                 }
                 "record" => Type::Record,
+                "channel" => Type::Channel,
                 _ => Type::Named(name),
             },
             Some(Token::NoneKeyword) => Type::None,

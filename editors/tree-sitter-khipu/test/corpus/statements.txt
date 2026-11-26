@@ -109,3 +109,43 @@ import { shout, whisper } from "text.kp"
     name: (identifier)
     path: (string
       (string_content))))
+
+================================================================================
+Select across channels
+================================================================================
+
+select {
+    job = receive(jobs) => handle(job)
+    receive(quit) => {
+        return
+    }
+}
+let p = Point {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (select_statement
+    keyword: (identifier)
+    (select_arm
+      name: (identifier)
+      receive: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (identifier)))
+      body: (expression_statement
+        (call_expression
+          function: (identifier)
+          arguments: (arguments
+            (identifier)))))
+    (select_arm
+      receive: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (identifier)))
+      body: (block
+        (return_statement))))
+  (let_statement
+    name: (identifier)
+    value: (struct_literal
+      name: (identifier))))

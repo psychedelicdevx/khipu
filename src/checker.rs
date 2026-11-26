@@ -52,6 +52,20 @@ impl Checker {
             ("print".to_string(), Type::Any),
             ("range".to_string(), Type::Any),
             ("assert".to_string(), Type::Any),
+            ("spawn".to_string(), Type::Any),
+            ("select#".to_string(), Type::Any),
+            (
+                "channel".to_string(),
+                Type::Function(Vec::new(), Box::new(Type::Channel)),
+            ),
+            (
+                "send".to_string(),
+                Type::Function(vec![Type::Channel, Type::Any], Box::new(Type::None)),
+            ),
+            (
+                "receive".to_string(),
+                Type::Function(vec![Type::Channel], Box::new(Type::Any)),
+            ),
             (
                 "assert_eq".to_string(),
                 Type::Function(vec![Type::Any, Type::Any], Box::new(Type::None)),

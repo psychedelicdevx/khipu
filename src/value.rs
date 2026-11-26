@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::compiler::Proto;
 use crate::parser::Op;
+use crate::task::{self, Channel};
 
 pub type NativeFn = fn(&[Value]) -> Result<Value, String>;
 pub type Fields = Vec<(Rc<str>, Value)>;
@@ -24,6 +26,7 @@ pub enum Value {
     Instance(Rc<Instance>),
     EnumDef(Rc<EnumDef>),
     Enum(Rc<EnumValue>),
+    Channel(Arc<Channel>),
 }
 
 pub struct Native {
@@ -82,6 +85,7 @@ impl Value {
             Value::Instance(_) => "struct",
             Value::EnumDef(_) => "enum type",
             Value::Enum(_) => "enum",
+            Value::Channel(_) => "channel",
         }
     }
 
@@ -122,6 +126,7 @@ impl fmt::Display for Value {
             Value::Cell(cell) => write!(f, "{}", cell.borrow()),
             Value::StructDef(def) => write!(f, "<struct {}>", def.name),
             Value::EnumDef(def) => write!(f, "<enum {}>", def.name),
+            Value::Channel(_) => write!(f, "<channel>"),
             Value::Instance(instance) => {
                 let values = instance.fields.borrow();
                 let fields: Vec<String> = instance
@@ -215,7 +220,7 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
             }
             let (xs, ys) = (x.fields.borrow(), y.fields.borrow());
             Some(
-                Rc::ptr_eq(&x.def, &y.def)
+                (Rc::ptr_eq(&x.def, &y.def) || x.def.name == y.def.name)
                     && xs
                         .iter()
                         .zip(ys.iter())
@@ -223,13 +228,14 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
             )
         }
         (Value::Enum(x), Value::Enum(y)) => Some(
-            Rc::ptr_eq(&x.def, &y.def)
+            (Rc::ptr_eq(&x.def, &y.def) || x.def.name == y.def.name)
                 && x.variant == y.variant
                 && x.values
                     .iter()
                     .zip(y.values.iter())
                     .all(|(a, b)| equal(a, b).unwrap_or(false)),
         ),
+        (Value::Channel(x), Value::Channel(y)) => Some(Arc::ptr_eq(x, y)),
         (Value::None, other) | (other, Value::None) => Some(matches!(other, Value::None)),
         _ => None,
     }
@@ -296,7 +302,7 @@ pub fn symbol(op: Op) -> &'static str {
     }
 }
 
-pub static NATIVES: [Native; 7] = [
+pub static NATIVES: [Native; 12] = [
     Native {
         name: "print",
         function: print,
@@ -324,6 +330,26 @@ pub static NATIVES: [Native; 7] = [
     Native {
         name: "assert_eq",
         function: assert_eq,
+    },
+    Native {
+        name: "spawn",
+        function: task::spawn,
+    },
+    Native {
+        name: "channel",
+        function: task::channel,
+    },
+    Native {
+        name: "send",
+        function: task::send,
+    },
+    Native {
+        name: "receive",
+        function: task::receive,
+    },
+    Native {
+        name: "select#",
+        function: task::select,
     },
 ];
 

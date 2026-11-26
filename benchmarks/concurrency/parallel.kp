@@ -1,0 +1,22 @@
+let N = 100000
+let TASKS = 8
+let results = channel()
+
+fn crunch(seed: number) {
+    let total = 0
+    let i = 0
+    while i < N {
+        total = (total + i * seed) % 1000003
+        i = i + 1
+    }
+    send(results, total)
+}
+
+for seed in range(1, TASKS + 1) {
+    spawn(crunch, seed)
+}
+let sum = 0
+for _ in range(TASKS) {
+    sum = sum + receive(results)
+}
+print(sum)

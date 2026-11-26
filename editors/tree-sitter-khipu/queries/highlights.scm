@@ -36,7 +36,7 @@
 (call_expression
   function: (field_expression field: (identifier) @function.method.call))
 ((call_expression function: (identifier) @function.builtin)
-  (#any-of? @function.builtin "print" "len" "push" "range" "keys" "assert" "assert_eq"))
+  (#any-of? @function.builtin "print" "len" "push" "range" "keys" "assert" "assert_eq" "spawn" "channel" "send" "receive"))
 
 ((identifier) @type
   (#match? @type "^[A-Z]"))
@@ -72,6 +72,7 @@
 ] @keyword.import
 
 (test_block keyword: (identifier) @keyword)
+(select_statement keyword: (identifier) @keyword.conditional)
 
 [
   "=" "==" "!=" "<" "<=" ">" ">=" "+" "-" "*" "/" "%" "&&" "||" "!" "??" "->" "=>"

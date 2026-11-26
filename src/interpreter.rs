@@ -122,6 +122,41 @@ mod tests {
     }
 
     #[test]
+    fn runs_tasks_that_talk_over_channels() {
+        let workers = "let done = channel()\nfn square(n: number) {\n    send(done, n * n)\n}\nfor n in range(1, 11) {\n    spawn(square, n)\n}\nlet total = 0\nfor _ in range(10) {\n    total = total + receive(done)\n}\ntotal";
+        assert_eq!(number(workers), 385.0);
+
+        let copies = "let box = channel()\nlet items: list = [1, 2]\npush(items, items)\nsend(box, items)\nlet got = receive(box)\npush(got, 3)\nlen(items) * 10 + len(got[2])";
+        assert_eq!(number(copies), 34.0);
+
+        let shapes = "struct P {\n    x: number,\n\n    fn double(self) -> number {\n        return self.x * 2\n    }\n}\nenum S {\n    A(number),\n}\nlet back = channel()\nfn echo(p: P, s: S) {\n    send(back, [p, s])\n}\nspawn(echo, P { x: 4 }, S.A(1))\nlet got = receive(back)\ngot[0].double() == 8 && got[1] == S.A(1) && got[0] == P { x: 4 }";
+        assert!(boolean(shapes));
+
+        let closures = "let back = channel()\nlet base = 5\nfn countdown(n: number) -> number {\n    if n == 0 {\n        return base\n    }\n    return countdown(n - 1) + 1\n}\nfn run(f: fn(number) -> number) {\n    send(back, f(3))\n}\nspawn(run, countdown)\nreceive(back)";
+        assert_eq!(number(closures), 8.0);
+
+        let picks = "let a = channel()\nlet b = channel()\nsend(b, 7)\nlet got = 0\nselect {\n    x = receive(a) => {\n        got = x\n    }\n    y = receive(b) => {\n        got = y * 2\n    }\n}\ngot";
+        assert_eq!(number(picks), 14.0);
+
+        let stuck = error(
+            "let nobody = channel()\nfn wait() {\n    receive(channel())\n}\nspawn(wait)\nreceive(nobody)",
+        );
+        assert_eq!(stuck.line, 6);
+        assert_eq!(
+            stuck.message,
+            "deadlock: every task is waiting on a channel that will never get a value"
+        );
+        assert_eq!(
+            error("select {}").message,
+            "select needs at least one receive(channel) arm"
+        );
+        assert_eq!(
+            error("send(1, 2)").message,
+            "argument 1 of 'send' should be channel, got number"
+        );
+    }
+
+    #[test]
     fn skips_tests_in_a_normal_run_and_asserts() {
         assert_eq!(
             number("test \"never runs\" {\n    assert(false)\n}\nlet a = 1\na"),

@@ -97,6 +97,12 @@
       "sustained": 10000000
     },
     {
+      "name": "parallel",
+      "path": "concurrency/parallel",
+      "cold": 100000,
+      "sustained": 5000000
+    },
+    {
       "name": "empty",
       "path": "startup/empty",
       "cold": null,

@@ -24,6 +24,8 @@ module.exports = grammar({
     [$._expression, $.struct_literal],
     [$.block, $.record],
     [$.test_block, $._expression],
+    [$.select_statement, $._expression, $.struct_literal],
+    [$.select_statement, $.struct_literal],
   ],
 
   rules: {
@@ -43,6 +45,7 @@ module.exports = grammar({
         $.struct_declaration,
         $.enum_declaration,
         $.test_block,
+        $.select_statement,
         $.assignment,
         $.expression_statement,
       ),
@@ -126,6 +129,25 @@ module.exports = grammar({
 
     test_block: ($) =>
       seq(field('keyword', $.identifier), field('name', $.string), field('body', $.block)),
+
+    select_statement: ($) =>
+      prec.dynamic(
+        2,
+        seq(
+          field('keyword', $.identifier),
+          '{',
+          repeat(seq($.select_arm, optional(','))),
+          '}',
+        ),
+      ),
+
+    select_arm: ($) =>
+      seq(
+        optional(seq(field('name', $.identifier), '=')),
+        field('receive', $.call_expression),
+        '=>',
+        field('body', choice(prec.dynamic(1, $.block), $._statement)),
+      ),
 
     assignment: ($) =>
       prec.right(seq(field('left', $._expression), '=', field('right', $._expression))),
