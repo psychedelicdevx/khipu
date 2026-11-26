@@ -189,6 +189,11 @@ mod native {
     fn git(args: &[&str], dir: Option<&Path>) -> Result<String, String> {
         let mut command = Command::new("git");
         command.args(["-c", "protocol.ext.allow=never"]);
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(name);
+            }
+        }
         if let Some(dir) = dir {
             command.arg("-C").arg(dir);
         }
@@ -494,7 +499,13 @@ mod tests {
     use crate::parser::Parser;
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let status = Command::new("git")
+        let mut command = Command::new("git");
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(name);
+            }
+        }
+        let status = command
             .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
             .arg("-C")
             .arg(dir)
