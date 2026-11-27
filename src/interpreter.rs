@@ -948,6 +948,143 @@ ws.onclose = (event) => {
     }
 
     #[test]
+    fn bytes_hold_binary_data_and_convert_to_and_from_strings() {
+        assert_eq!(number("\"héllo\".to_bytes().len()"), 6.0);
+        assert_eq!(
+            string("\"héllo\".to_bytes().slice(0, 3).to_string() ?? \"bad\""),
+            "hé"
+        );
+        assert!(boolean("\"é\".to_bytes().slice(0, 1).to_string() == none"));
+        assert_eq!(number("\"abcdef\".to_bytes().slice(-2, 100).len()"), 2.0);
+        assert!(boolean("\"ab\".to_bytes() == \"ab\".to_bytes()"));
+        assert!(boolean("\"ab\".to_bytes() != \"ba\".to_bytes()"));
+        assert_eq!(string("\"${\"abc\".to_bytes()}\""), "<3 bytes>");
+        assert_eq!(number("let b: bytes = \"xyz\".to_bytes()\nlen(b)"), 3.0);
+        assert_eq!(
+            number("let c = channel()\nsend(c, \"ab\".to_bytes())\nlen(receive(c))"),
+            2.0
+        );
+        assert_eq!(
+            error("let b: bytes = \"x\"").message,
+            "'b' should be bytes, got string"
+        );
+        assert_eq!(
+            error("\"x\".to_bytes() + \"y\"").message,
+            "cannot use '+' on bytes and string, use \"${...}\" to put values inside a string"
+        );
+    }
+
+    fn http_exchange(port: u32, request: &[u8]) -> (String, Vec<u8>) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream.write_all(request).unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut out = Vec::new();
+        stream.read_to_end(&mut out).unwrap();
+        let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let body = out.split_off(split);
+        (String::from_utf8_lossy(&out).into_owned(), body)
+    }
+
+    #[test]
+    fn binary_bodies_and_files_pass_through_untouched() {
+        let dir = std::env::temp_dir().join(format!("khipu-binary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("all.bin");
+        let every: Vec<u8> = (0..=255).collect();
+        std::fs::write(&path, &every).unwrap();
+        let port = 20000 + std::process::id() % 20000 + 21;
+        let handler = format!(
+            "fn handle(request: Request) -> Response {{\n    if request.path == \"/file\" {{\n        return Response.file(\"{}\")\n    }}\n    return Response {{ status: 200, body: request.bytes, headers: {{ \"x-length\": \"${{request.bytes.len()}}\" }} }}\n}}",
+            path.display()
+        );
+        start_server(port, &handler);
+        let (head, body) = http_exchange(port, b"GET /file HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(
+            head.contains("content-type: application/octet-stream"),
+            "{head}"
+        );
+        assert_eq!(body, every);
+        let mut post = b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 256\r\n\r\n".to_vec();
+        post.extend_from_slice(&every);
+        let (head, body) = http_exchange(port, &post);
+        assert!(head.contains("x-length: 256\r\n"), "{head}");
+        assert_eq!(body, every);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    const BINARY_ECHO: &str = "fn chat(socket: channel) {\n    let message = receive(socket)\n    while message != none {\n        send(socket, message)\n        message = receive(socket)\n    }\n}\nfn handle(request: Request) -> Response {\n    return Response.websocket(chat)\n}";
+
+    #[test]
+    fn websocket_binary_frames_go_both_ways() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 22;
+        start_server(port, BINARY_ECHO);
+        let (mut socket, head) = upgrade(port, "/");
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        socket
+            .write_all(&[0x82, 0x83, 0, 0, 0, 0, 0xff, 0x00, 0x80])
+            .unwrap();
+        let mut echo = [0u8; 5];
+        socket.read_exact(&mut echo).unwrap();
+        assert_eq!(echo, [0x82, 0x03, 0xff, 0x00, 0x80]);
+        socket
+            .write_all(&[0x82, 0x82, 0, 0, 0, 0, b'o', b'k'])
+            .unwrap();
+        let mut binary = [0u8; 4];
+        socket.read_exact(&mut binary).unwrap();
+        assert_eq!(&binary, b"\x82\x02ok");
+        socket
+            .write_all(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i'])
+            .unwrap();
+        let mut text = [0u8; 4];
+        socket.read_exact(&mut text).unwrap();
+        assert_eq!(&text, b"\x81\x02hi");
+    }
+
+    const BINARY_CLIENT: &str = r#"
+const port = process.argv[1];
+const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+ws.binaryType = "arraybuffer";
+const fail = (why) => { console.log(why); process.exit(1); };
+setTimeout(() => fail("TIMEOUT"), 10000);
+ws.onerror = () => fail("ERROR");
+ws.onopen = () => ws.send(new Uint8Array([0, 255, 128, 7]));
+ws.onmessage = (event) => {
+  const got = Array.from(new Uint8Array(event.data));
+  if (!(event.data instanceof ArrayBuffer) || got.join() !== "0,255,128,7") fail("WRONG " + got);
+  console.log("OK");
+  process.exit(0);
+};
+"#;
+
+    #[test]
+    fn a_websocket_echoes_binary_messages_to_node() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("node is not installed, skipping the WebSocket check");
+            return;
+        }
+        let port = 20000 + std::process::id() % 20000 + 23;
+        start_server(port, BINARY_ECHO);
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(BINARY_CLIENT)
+            .arg(port.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "OK",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;
         let source = format!(
@@ -1326,7 +1463,7 @@ ws.onclose = (event) => {
             (
                 "fn f(x) {\n    return len(x)\n}\nf(5)",
                 2,
-                "len needs a list, a string or a record, got number",
+                "len needs a list, a string, bytes or a record, got number",
             ),
             (
                 "range(\"a\")",

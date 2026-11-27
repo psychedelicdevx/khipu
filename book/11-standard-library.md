@@ -144,6 +144,30 @@ print(missing.status, missing.body)
 
 Run the server in one terminal and the client in another. `examples/web` in the repository has a bigger pair: a notes server and a client that posts to it.
 
+Bodies are not always text. `bytes` holds binary data: `"text".to_bytes()` makes it from a string, `len()` and `slice(start, end)` count and cut it by byte, and `to_string()` gives the text back, or `none` if the bytes are not valid UTF-8:
+
+```js
+let data = "héllo".to_bytes()
+print(data.len(), data.slice(0, 3).to_string(), data.slice(0, 2).to_string(), data)
+```
+
+```text
+6 hé none <6 bytes>
+```
+
+A request carries its body both ways, as `body` (the text, with invalid UTF-8 replaced) and as `bytes`. A `Response` body can be a string or `bytes`, and `Response.file` reads the file as bytes, so images and archives are served untouched:
+
+```js
+fn handle(request: Request) -> Response {
+    if request.path == "/logo.png" {
+        return Response.file("logo.png")
+    }
+    return Response { status: 200, body: request.bytes, headers: { "content-type": "application/octet-stream" } }
+}
+
+Http.serve(8080, handle)
+```
+
 ## Exercises
 
 1. Print a random whole number from 1 to 100.

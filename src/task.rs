@@ -30,12 +30,12 @@ pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Ch
     })
 }
 
-pub fn deliver(channel: &Channel, text: String) {
+pub fn deliver(channel: &Channel, message: Slot) {
     push(
         channel,
         Graph {
             nodes: Vec::new(),
-            roots: vec![Slot::Str(text)],
+            roots: vec![message],
         },
     );
 }
@@ -79,6 +79,7 @@ pub enum Slot {
     Bool(bool),
     None,
     Str(String),
+    Bytes(Vec<u8>),
     Native(&'static Native),
     Channel(Arc<Channel>),
     Node(usize),
@@ -346,6 +347,7 @@ impl Packer {
             Value::Bool(b) => return Slot::Bool(*b),
             Value::None => return Slot::None,
             Value::Str(text) => return Slot::Str(text.to_string()),
+            Value::Bytes(bytes) => return Slot::Bytes(bytes.to_vec()),
             Value::Native(native) => return Slot::Native(native),
             Value::Channel(channel) => return Slot::Channel(Arc::clone(channel)),
             Value::Cell(cell) => self.cell(cell),
@@ -454,6 +456,7 @@ impl Unpacker {
             Slot::Bool(b) => Value::Bool(*b),
             Slot::None => Value::None,
             Slot::Str(text) => Value::str(text),
+            Slot::Bytes(bytes) => Value::Bytes(Rc::new(bytes.clone())),
             Slot::Native(native) => Value::Native(native),
             Slot::Channel(channel) => Value::Channel(Arc::clone(channel)),
             Slot::Node(index) => {

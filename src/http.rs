@@ -355,7 +355,7 @@ mod server {
         Ok(Value::Number(store(&LISTENERS, listener) as f64))
     }
 
-    type Incoming = (String, String, Vec<(String, String)>, String);
+    type Incoming = (String, String, Vec<(String, String)>, Vec<u8>);
 
     const BAD_REQUEST: &[u8] =
         b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
@@ -448,7 +448,7 @@ mod server {
         } else {
             has("keep-alive") || version != "HTTP/1.0"
         };
-        let body = String::from_utf8_lossy(&buf[body_start..total]).into_owned();
+        let body = buf[body_start..total].to_vec();
         Parsed::Request(
             (method.to_string(), target.to_string(), found, body),
             keep_alive,
@@ -632,7 +632,7 @@ mod server {
                         Value::str(&path),
                         Value::str(&query),
                         record(found),
-                        Value::str(&body),
+                        Value::str(&String::from_utf8_lossy(&body)),
                     ]));
                 }
                 None => {
@@ -689,14 +689,14 @@ mod server {
             }
         };
         let body = text(&args[2], "Response")?;
-        write_response(&mut stream, status, &body, &args[3], false)?;
+        write_response(&mut stream, status, body.as_bytes(), &args[3], false)?;
         Ok(Value::None)
     }
 
     fn write_response<S: Write + ?Sized>(
         stream: &mut S,
         status: u16,
-        body: &str,
+        body: &[u8],
         headers_value: &Value,
         keep_alive: bool,
     ) -> Result<(), String> {
@@ -727,7 +727,7 @@ mod server {
             if keep_alive { "keep-alive" } else { "close" }
         ));
         let mut response = head.into_bytes();
-        response.extend_from_slice(body.as_bytes());
+        response.extend_from_slice(body);
         let _ = stream.write_all(&response);
         Ok(())
     }
@@ -815,7 +815,7 @@ mod server {
         }
     }
 
-    fn response_parts(value: &Value) -> Result<(u16, String, Value), String> {
+    fn response_parts(value: &Value) -> Result<(u16, Vec<u8>, Value), String> {
         let Value::Instance(instance) = value else {
             return Err(format!(
                 "a handler must return a Response, got {}",
@@ -838,11 +838,17 @@ mod server {
                 "a response status must be from 100 to 599, got {status}"
             ));
         }
-        let Some(Value::Str(body)) = field("body") else {
-            return Err("a handler must return a Response with a string body".to_string());
+        let body = match field("body") {
+            Some(Value::Str(text)) => text.as_bytes().to_vec(),
+            Some(Value::Bytes(bytes)) => bytes.to_vec(),
+            _ => {
+                return Err(
+                    "a handler must return a Response with a string or bytes body".to_string(),
+                );
+            }
         };
         let headers = field("headers").unwrap_or_else(|| Value::record(Vec::new()));
-        Ok((status as u16, body.to_string(), headers))
+        Ok((status as u16, body, headers))
     }
 
     const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -1016,15 +1022,17 @@ mod server {
 
     impl crate::task::Endpoint for Socket {
         fn send(&self, value: &Value) -> Result<(), String> {
-            let Value::Str(message) = value else {
-                return Err(format!(
-                    "a websocket can only send a string, got {}",
-                    value.type_name()
-                ));
+            let (opcode, message) = match value {
+                Value::Str(text) => (0x1, text.as_bytes()),
+                Value::Bytes(bytes) => (0x2, bytes.as_slice()),
+                other => {
+                    return Err(format!(
+                        "a websocket can only send a string or bytes, got {}",
+                        other.type_name()
+                    ));
+                }
             };
-            if self.closed.load(Ordering::SeqCst)
-                || self.write(0x1, message.as_bytes(), true).is_err()
-            {
+            if self.closed.load(Ordering::SeqCst) || self.write(opcode, message, true).is_err() {
                 return Err("cannot send on a closed websocket".to_string());
             }
             Ok(())
@@ -1078,9 +1086,12 @@ mod server {
                             self.partial = Some((kind, data));
                             continue;
                         }
-                        let text = String::from_utf8(data)
-                            .map_err(|_| code(if kind == 0x1 { 1007 } else { 1003 }))?;
-                        crate::task::deliver(channel, text);
+                        let message = if kind == 0x2 {
+                            crate::task::Slot::Bytes(data)
+                        } else {
+                            crate::task::Slot::Str(String::from_utf8(data).map_err(|_| code(1007))?)
+                        };
+                        crate::task::deliver(channel, message);
                     }
                 }
             }
@@ -1254,7 +1265,7 @@ mod server {
         method: &str,
         target: &str,
         found: Vec<(String, String)>,
-        body: &str,
+        body: Vec<u8>,
     ) -> Value {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let headers_record = Value::record(
@@ -1269,7 +1280,8 @@ mod server {
             ("query", Value::str(query)),
             ("query_params", Value::record(parse_query(query))),
             ("headers", headers_record),
-            ("body", Value::str(body)),
+            ("body", Value::str(&String::from_utf8_lossy(&body))),
+            ("bytes", Value::Bytes(Rc::new(body))),
         ];
         match request_def {
             Some(def) => {
@@ -1315,7 +1327,7 @@ mod server {
                 write_response(
                     lock(&stream).as_mut(),
                     500,
-                    INTERNAL_ERROR,
+                    INTERNAL_ERROR.as_bytes(),
                     &Value::record(Vec::new()),
                     keep_alive,
                 )
@@ -1330,7 +1342,7 @@ mod server {
                     let _ = write_response(
                         lock(&stream).as_mut(),
                         426,
-                        "this address only speaks websockets",
+                        b"this address only speaks websockets",
                         &Value::record(vec![(Rc::from("sec-websocket-version"), Value::str("13"))]),
                         keep_alive,
                     );
@@ -1346,7 +1358,11 @@ mod server {
             Ok(response) => response,
             Err(message) => {
                 eprintln!("in a request handler: {message}");
-                (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
+                (
+                    500,
+                    INTERNAL_ERROR.as_bytes().to_vec(),
+                    Value::record(Vec::new()),
+                )
             }
         };
         if write_response(
@@ -1361,7 +1377,7 @@ mod server {
             let _ = write_response(
                 lock(&stream).as_mut(),
                 500,
-                INTERNAL_ERROR,
+                INTERNAL_ERROR.as_bytes(),
                 &Value::record(Vec::new()),
                 keep_alive,
             );
@@ -1396,7 +1412,7 @@ mod server {
                 key,
                 leftover: std::mem::take(&mut conn.buf),
             });
-            let request = build_request(request_def, &method, &target, found, &body);
+            let request = build_request(request_def, &method, &target, found, body);
             let more = keep_alive
                 && upgrade.is_none()
                 && conn.served + 1 < limits.max_requests
@@ -1833,7 +1849,7 @@ mod server {
             let (method, target, headers, body) = read_request_bytes(raw).unwrap();
             assert_eq!(method, "POST");
             assert_eq!(target, "/submit?a=1&b=2");
-            assert_eq!(body, "hello");
+            assert_eq!(body, b"hello");
             assert!(headers.contains(&("host".to_string(), "localhost".to_string())));
             assert!(headers.contains(&("x-test".to_string(), "yes".to_string())));
             assert!(headers.contains(&("content-length".to_string(), "5".to_string())));
@@ -1851,8 +1867,8 @@ mod server {
             client.shutdown(Shutdown::Write).unwrap();
             let (method, target, _, body) = server_thread.join().unwrap().unwrap();
             assert_eq!(
-                (method.as_str(), target.as_str(), body.as_str()),
-                ("GET", "/x", "abc")
+                (method.as_str(), target.as_str(), body.as_slice()),
+                ("GET", "/x", &b"abc"[..])
             );
         }
 
@@ -1860,7 +1876,7 @@ mod server {
         fn accepts_lf_only_line_endings() {
             let raw = b"GET /x HTTP/1.1\nHost: h\nContent-Length: 3\n\nabc";
             let (_, _, _, body) = read_request_bytes(raw).unwrap();
-            assert_eq!(body, "abc");
+            assert_eq!(body, b"abc");
         }
 
         #[test]
@@ -1920,14 +1936,14 @@ mod server {
             let raw =
                 b"POST / HTTP/1.1\r\nTransfer-Encoding: identity\r\nContent-Length: 3\r\n\r\nabc";
             let (_, _, _, body) = read_request_bytes(raw).unwrap();
-            assert_eq!(body, "abc");
+            assert_eq!(body, b"abc");
         }
 
         #[test]
         fn body_past_content_length_is_left_aside() {
             let raw = b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcEXTRA";
             let (_, _, _, body) = read_request_bytes(raw).unwrap();
-            assert_eq!(body, "abc");
+            assert_eq!(body, b"abc");
         }
 
         #[test]
@@ -2265,7 +2281,7 @@ mod server {
             open.reader.take(&open.socket, &open.channel).unwrap();
             assert_eq!(received(receive(&open)), "Hello, world");
             assert_eq!(server_frame(&mut client), (0x8a, b"are you there".to_vec()));
-            assert_eq!(received(receive(&open)), "binary text");
+            assert!(matches!(receive(&open), Value::Bytes(b) if b.as_slice() == b"binary text"));
             open.socket.send(&Value::str("back")).unwrap();
             assert_eq!(server_frame(&mut client), (0x81, b"back".to_vec()));
         }
@@ -2273,7 +2289,6 @@ mod server {
         #[test]
         fn each_protocol_error_closes_with_its_code() {
             closes_with(&masked(0x81, &[0xff, 0xfe]), MAX_BODY, 1007);
-            closes_with(&masked(0x82, &[0xff, 0xfe]), MAX_BODY, 1003);
             closes_with(&[0x81, 0x01, b'x'], MAX_BODY, 1002);
             closes_with(&masked(0xc1, b"x"), MAX_BODY, 1002);
             closes_with(&masked(0x83, b"x"), MAX_BODY, 1002);
@@ -2312,7 +2327,7 @@ mod server {
             );
             assert_eq!(
                 open.socket.send(&Value::Number(1.0)).unwrap_err(),
-                "a websocket can only send a string, got number"
+                "a websocket can only send a string or bytes, got number"
             );
         }
 

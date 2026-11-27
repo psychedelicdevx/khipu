@@ -201,6 +201,7 @@ fn heap_address(value: &Value) -> Option<usize> {
         | Value::Bool(_)
         | Value::None
         | Value::Str(_)
+        | Value::Bytes(_)
         | Value::Native(_)
         | Value::EnumDef(_)
         | Value::Channel(_) => return None,

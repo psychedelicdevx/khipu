@@ -213,6 +213,7 @@ pub enum Value {
     Bool(bool),
     None,
     Str(Rc<String>),
+    Bytes(Rc<Vec<u8>>),
     List(Rc<RefCell<List>>),
     Record(Rc<RefCell<Record>>),
     Function(Rc<Closure>),
@@ -331,6 +332,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::None => "none",
             Value::Str(_) => "string",
+            Value::Bytes(_) => "bytes",
             Value::List(_) => "list",
             Value::Record(_) => "record",
             Value::Function(_) | Value::Native(..) => "function",
@@ -442,6 +444,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::None => write!(f, "none"),
             Value::Str(s) => write!(f, "{s}"),
+            Value::Bytes(bytes) => write!(f, "<{} bytes>", bytes.len()),
             Value::List(items) => {
                 let items: Vec<String> = items
                     .borrow()
@@ -571,6 +574,7 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
                     .zip(y.values.iter())
                     .all(|(a, b)| equal(a, b).unwrap_or(false)),
         ),
+        (Value::Bytes(x), Value::Bytes(y)) => Some(x == y),
         (Value::Channel(x), Value::Channel(y)) => Some(Arc::ptr_eq(x, y)),
         (Value::None, other) | (other, Value::None) => Some(matches!(other, Value::None)),
         _ => None,
@@ -747,9 +751,10 @@ fn len(args: &[Value]) -> Result<Value, String> {
     match arguments::<1>("len", args)? {
         [Value::List(items)] => Ok(Value::Number(items.borrow().len() as f64)),
         [Value::Str(s)] => Ok(Value::Number(s.chars().count() as f64)),
+        [Value::Bytes(bytes)] => Ok(Value::Number(bytes.len() as f64)),
         [Value::Record(fields)] => Ok(Value::Number(fields.borrow().len() as f64)),
         [other] => Err(format!(
-            "len needs a list, a string or a record, got {}",
+            "len needs a list, a string, bytes or a record, got {}",
             other.type_name()
         )),
     }

@@ -76,7 +76,7 @@ let reply = Http.get("http://localhost:8080/hello")
 print(reply.status, reply.json().message)
 ```
 
-`Http` also has `post`, `post_json` and `request` for any method and headers, over `http://` or `https://`. `Http.serve` answers on `localhost` with a handler running on every core, while idle connections and open WebSockets wait in one event loop and cost memory, not threads; see [`examples/web`](examples/web). `Json.parse` and `Json.stringify` turn text into records, lists, numbers and back.
+`Http` also has `post`, `post_json` and `request` for any method and headers, over `http://` or `https://`. `Http.serve` answers on `localhost` with a handler running on every core, while idle connections and open WebSockets wait in one event loop and cost memory, not threads; see [`examples/web`](examples/web). Binary data is `bytes`: `"text".to_bytes()`, `len()`, `slice(start, end)` and `to_string()`, which gives `none` for invalid UTF-8; a request has its body as `body` and as `bytes`, a `Response` body can be either, and `Response.file` serves any file untouched. `Json.parse` and `Json.stringify` turn text into records, lists, numbers and back.
 
 `File` also has `read`, `exists`, `list` and `delete`; `Process` has `args`, `env` and `exit`. A file that cannot be read stops the program with an error that says why, on the line that tried.
 

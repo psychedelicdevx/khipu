@@ -5,7 +5,7 @@ use crate::value::{Native, Value, equal};
 
 pub const PRELUDE: &str = include_str!("prelude.kp");
 
-pub static NATIVES: [Native; 42] = [
+pub static NATIVES: [Native; 45] = [
     native("upper#", upper),
     native("lower#", lower),
     native("trim#", trim),
@@ -38,6 +38,9 @@ pub static NATIVES: [Native; 42] = [
     native("last#", last),
     native("lines#", lines),
     native("read_file#", read_file),
+    native("read_bytes#", read_bytes),
+    native("bytes_text#", bytes_text),
+    native("string_bytes#", string_bytes),
     native("write_file#", write_file),
     native("append_file#", append_file),
     native("file_exists#", file_exists),
@@ -182,6 +185,10 @@ fn bounds(len: usize, start: &Value, end: &Value) -> Result<(usize, usize), Stri
 
 fn slice(args: &[Value]) -> Result<Value, String> {
     match &args[0] {
+        Value::Bytes(bytes) => {
+            let (start, end) = bounds(bytes.len(), &args[1], &args[2])?;
+            Ok(Value::Bytes(Rc::new(bytes[start..end].to_vec())))
+        }
         Value::Str(whole) => {
             let chars: Vec<char> = whole.chars().collect();
             let (start, end) = bounds(chars.len(), &args[1], &args[2])?;
@@ -429,6 +436,25 @@ fn read_file(args: &[Value]) -> Result<Value, String> {
     std::fs::read_to_string(path.as_str())
         .map(|contents| Value::str(&contents))
         .map_err(|error| failed("read", &path, error))
+}
+
+fn read_bytes(args: &[Value]) -> Result<Value, String> {
+    let path = text(&args[0], "File.read_bytes")?;
+    std::fs::read(path.as_str())
+        .map(|contents| Value::Bytes(Rc::new(contents)))
+        .map_err(|error| failed("read", &path, error))
+}
+
+fn bytes_text(args: &[Value]) -> Result<Value, String> {
+    match &args[0] {
+        Value::Bytes(bytes) => Ok(std::str::from_utf8(bytes).map_or(Value::None, Value::str)),
+        other => Err(format!("to_string needs bytes, got {}", other.type_name())),
+    }
+}
+
+fn string_bytes(args: &[Value]) -> Result<Value, String> {
+    let text = text(&args[0], "to_bytes")?;
+    Ok(Value::Bytes(Rc::new(text.as_bytes().to_vec())))
 }
 
 fn write_file(args: &[Value]) -> Result<Value, String> {

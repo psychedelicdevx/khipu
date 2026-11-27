@@ -296,7 +296,11 @@ fn websocket_errors_name_the_problem_and_the_line() {
         stream.write_all(&masked(0x88, &[0x03, 0xe8])).unwrap();
         assert_eq!(read_rest(&mut stream), [0x88, 0x02, 0x03, 0xe8]);
     });
-    points_at(&stderr, "a websocket can only send a string, got number", 4);
+    points_at(
+        &stderr,
+        "a websocket can only send a string or bytes, got number",
+        4,
+    );
     points_at(&stderr, "select cannot wait on a websocket", 7);
     points_at(&stderr, "cannot send on a closed websocket", 13);
 }

@@ -21,7 +21,7 @@ const SLICE: u32 = 10_000;
 
 pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Record>>>>>;
 pub type Loading = Rc<RefCell<Vec<PathBuf>>>;
-pub type Methods = Rc<[HashMap<String, Value>; 4]>;
+pub type Methods = Rc<[HashMap<String, Value>; 5]>;
 
 thread_local! {
     static TASK_METHODS: Methods = crate::interpreter::Interpreter::new().methods();
@@ -62,7 +62,7 @@ impl Vm {
     }
 
     pub fn load_methods(&mut self) {
-        let mut methods: [HashMap<String, Value>; 4] = Default::default();
+        let mut methods: [HashMap<String, Value>; 5] = Default::default();
         let globals = self.globals.borrow();
         for (name, value) in globals.names.iter().zip(&globals.values) {
             let (Some((kind, method)), Some(value)) = (name.split_once('#'), value) else {
@@ -73,6 +73,7 @@ impl Vm {
                 "string" => 1,
                 "number" => 2,
                 "bool" => 3,
+                "bytes" => 4,
                 _ => continue,
             };
             methods[index].insert(method.to_string(), value.clone());
@@ -778,12 +779,17 @@ impl Vm {
                                     Err(message) => fail!(message),
                                 }
                             }
-                            Value::List(_) | Value::Str(_) | Value::Number(_) | Value::Bool(_) => {
+                            Value::List(_)
+                            | Value::Str(_)
+                            | Value::Number(_)
+                            | Value::Bool(_)
+                            | Value::Bytes(_) => {
                                 let kind = match &target {
                                     Value::List(_) => 0,
                                     Value::Str(_) => 1,
                                     Value::Number(_) => 2,
-                                    _ => 3,
+                                    Value::Bool(_) => 3,
+                                    _ => 4,
                                 };
                                 let Some(method) = self.methods[kind].get(name.as_str()).cloned()
                                 else {

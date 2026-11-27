@@ -14,6 +14,7 @@ pub enum Type {
     None,
     List(Box<Type>),
     Record,
+    Bytes,
     Function(Vec<Type>, Box<Type>),
     Optional(Box<Type>),
     Named(String),
@@ -36,6 +37,7 @@ impl std::fmt::Display for Type {
             Type::List(inner) if **inner == Type::Any => write!(f, "list"),
             Type::List(inner) => write!(f, "list<{inner}>"),
             Type::Record => write!(f, "record"),
+            Type::Bytes => write!(f, "bytes"),
             Type::Channel => write!(f, "channel"),
             Type::Function(params, returns) => {
                 let params: Vec<String> = params.iter().map(Type::to_string).collect();
@@ -1020,6 +1022,7 @@ impl Parser {
                     }
                 }
                 "record" => Type::Record,
+                "bytes" => Type::Bytes,
                 "channel" => Type::Channel,
                 _ => Type::Named(name),
             },

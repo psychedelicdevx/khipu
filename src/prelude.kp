@@ -62,6 +62,22 @@ fn string#to_number(self: string) -> number? {
     return to_number#(self)
 }
 
+fn string#to_bytes(self: string) -> bytes {
+    return string_bytes#(self)
+}
+
+fn bytes#len(self: bytes) -> number {
+    return len(self)
+}
+
+fn bytes#slice(self: bytes, start: number, end: number) -> bytes {
+    return slice#(self, start, end)
+}
+
+fn bytes#to_string(self: bytes) -> string? {
+    return bytes_text#(self)
+}
+
 fn string#to_string(self: string) -> string {
     return self
 }
@@ -393,7 +409,7 @@ struct Json {
 
 struct Response {
     status: number,
-    body: string,
+    body: any,
     headers: record,
 
     fn ok(self) -> bool {
@@ -417,7 +433,7 @@ struct Response {
     }
 
     fn file(path: string) -> Response {
-        return Response { status: 200, body: read_file#(path), headers: { "content-type": "application/octet-stream" } }
+        return Response { status: 200, body: read_bytes#(path), headers: { "content-type": "application/octet-stream" } }
     }
 
     fn stream(producer: any) -> any {
@@ -440,6 +456,7 @@ struct Request {
     query_params: record,
     headers: record,
     body: string,
+    bytes: bytes,
 
     fn json(self) -> any {
         return json_parse#(self.body)

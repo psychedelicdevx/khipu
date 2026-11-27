@@ -813,12 +813,13 @@ impl Checker {
                     self.check_args(&format!("{owner}.{method}"), &payload, &Type::None, args)?;
                     return Ok(Type::Enum(owner.clone()));
                 }
-                Type::List(_) | Type::Str | Type::Number | Type::Bool => {
+                Type::List(_) | Type::Str | Type::Number | Type::Bool | Type::Bytes => {
                     let kind = match &target_type {
                         Type::List(_) => "list",
                         Type::Str => "string",
                         Type::Number => "number",
-                        _ => "bool",
+                        Type::Bool => "bool",
+                        _ => "bytes",
                     };
                     let Some(Type::Function(params, returns)) =
                         self.global(&format!("{kind}#{method}")).cloned()
