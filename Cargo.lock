@@ -453,6 +453,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "ureq",
+ "webpki-roots",
 ]
 
 [[package]]

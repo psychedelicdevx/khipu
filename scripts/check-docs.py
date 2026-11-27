@@ -71,6 +71,8 @@ class Checker:
         print(f"  ok  {what}")
 
     def program(self, what, source, cwd):
+        if "Http.serve(" in source and self.servers:
+            self.port = free_port()
         source = source.replace("8080", str(self.port))
         path = Path(cwd) / "main.kp"
         path.write_text(source)

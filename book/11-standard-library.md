@@ -207,18 +207,38 @@ A socket waiting for a message costs memory, not a thread, so a server can hold 
 A client may ask for one of several subprotocols, and the program says which it speaks: `request.protocol(["chat.v2", "chat.v1"])` gives the first of the program's list that the client offered, or `none`, and `Response.websocket_with(chat, { protocol: chosen })` answers with it. When the client offers `permessage-deflate`, as browsers do, the server accepts it and compresses messages of 64 bytes or more; nothing in the program changes:
 
 ```js
-fn chat(socket: channel, protocol: string) {
-    send(socket, "speaking ${protocol}")
+fn chat(socket: channel, protocol: string?) {
+    send(socket, "speaking ${protocol ?? "plain"}")
+    let message = receive(socket)
+    while message != none {
+        send(socket, "echo: ${message}")
+        message = receive(socket)
+    }
 }
 
 fn handle(request: Request) -> Response {
-    let protocol = request.protocol(["chat.v2", "chat.v1"]) ?? "chat.v1"
+    let protocol = request.protocol(["chat.v2", "chat.v1"])
     return Response.websocket_with(fn(socket: channel) {
         chat(socket, protocol)
     }, { protocol: protocol })
 }
 
 Http.serve(8080, handle)
+```
+
+`Http.websocket(url)` is the other side: it connects to a `ws://` or `wss://` address and gives a socket that works the same way, with `send`, `receive`, `select` and `close`. `Http.websocket_with(url, options)` can list `protocols` to offer and add a `certificate` file to trust, for a server whose certificate is self-signed:
+
+```js
+let socket = Http.websocket_with("ws://localhost:8080/", { protocols: ["chat.v1"] })
+print(receive(socket))
+send(socket, "hello")
+print(receive(socket))
+close(socket)
+```
+
+```text
+speaking chat.v1
+echo: hello
 ```
 
 ## Exercises

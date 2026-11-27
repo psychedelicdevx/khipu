@@ -523,6 +523,14 @@ struct Http {
         return Http.request("POST", url, json_stringify#(value), { "content-type": "application/json" })
     }
 
+    fn websocket(url: string) -> channel {
+        return websocket_connect#(url, {})
+    }
+
+    fn websocket_with(url: string, options: record) -> channel {
+        return websocket_connect#(url, options)
+    }
+
     fn serve(port: number, handler: fn(Request) -> Response) {
         serve#(port, handler)
     }

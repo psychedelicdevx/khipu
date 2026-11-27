@@ -1339,6 +1339,58 @@ ws.onmessage = (event) => {
     }
 
     #[test]
+    fn the_websocket_client_talks_to_the_server_like_a_channel() {
+        let port = 20000 + std::process::id() % 20000 + 29;
+        start_server(port, ECHO_SERVER);
+        let client = format!(
+            "let ws = Http.websocket(\"ws://127.0.0.1:{port}/\")\nsend(ws, \"hi\")\nlet first = receive(ws)\nlet long = \"z\".repeat(70000)\nsend(ws, long)\nlet second = receive(ws) ?? \"\"\nclose(ws)\nlet after = receive(ws)\n\"${{first}} ${{len(second)}} ${{after}}\""
+        );
+        assert_eq!(string(&client), "echo: hi 70006 none");
+
+        let binary_port = port + 1;
+        start_server(binary_port, BINARY_ECHO);
+        let client = format!(
+            "let ws = Http.websocket(\"ws://localhost:{binary_port}/data\")\nlet quiet = channel()\nsend(ws, \"\u{e9}\".to_bytes().slice(0, 1))\nlet got = none\nselect {{\n    message = receive(ws) => got = message\n    receive(quiet) => got = \"wrong\"\n}}\nclose(ws, 4001, \"done\")\n\"${{got}} ${{got == \"\u{e9}\".to_bytes().slice(0, 1)}}\""
+        );
+        assert_eq!(string(&client), "<1 bytes> true");
+    }
+
+    #[test]
+    fn the_websocket_client_speaks_wss_and_names_what_went_wrong() {
+        let port = 20000 + std::process::id() % 20000 + 31;
+        let source = format!(
+            "{ECHO_SERVER}\nHttp.serve_tls({port}, \"tests/khipu-cert.pem\", \"tests/khipu-key.pem\", handle)"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+        let client = format!(
+            "let ws = Http.websocket_with(\"wss://localhost:{port}/\", {{ certificate: \"tests/khipu-cert.pem\", protocols: [\"chat.v1\"] }})\nsend(ws, \"secret\")\nreceive(ws)"
+        );
+        assert_eq!(string(&client), "echo: secret");
+        let untrusted = error(&format!("Http.websocket(\"wss://localhost:{port}/\")")).message;
+        assert!(
+            untrusted.starts_with(&format!("cannot reach wss://localhost:{port}/:")),
+            "{untrusted}"
+        );
+        assert!(untrusted.contains("certificate"), "{untrusted}");
+        assert_eq!(
+            error("Http.websocket(\"http://localhost/\")").message,
+            "Http.websocket needs a ws:// or wss:// address, got http://localhost/"
+        );
+        let plain = port + 1;
+        start_server(
+            plain,
+            "fn handle(request: Request) -> Response {\n    return Response.text(\"no\")\n}",
+        );
+        assert_eq!(
+            error(&format!("Http.websocket(\"ws://localhost:{plain}/\")")).message,
+            format!("ws://localhost:{plain}/ did not accept the websocket: HTTP/1.1 200 OK")
+        );
+    }
+
+    #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;
         let source = format!(
