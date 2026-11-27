@@ -1156,6 +1156,40 @@ ws.onclose = (event) => {
     }
 
     #[test]
+    fn past_max_connections_new_ones_wait_in_the_backlog() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 26;
+        let source = format!(
+            "fn handle(request: Request) -> Response {{\n    return Response.text(\"ok\")\n}}\nHttp.serve_with({port}, handle, {{ max_connections: 5 }})"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut idle: Vec<_> = (0..5)
+            .map(|_| std::net::TcpStream::connect(format!("localhost:{port}")).unwrap())
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut waiting = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        waiting
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        waiting
+            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+            .unwrap();
+        let mut first = [0u8; 1];
+        assert!(waiting.read(&mut first).is_err(), "answered past the limit");
+        idle.pop();
+        waiting
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut out = Vec::new();
+        waiting.read_to_end(&mut out).unwrap();
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;
         let source = format!(

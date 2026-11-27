@@ -154,7 +154,7 @@ Throughput
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
 - [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
-  (connections and sockets wait in the event loop; when every handler worker is busy and the queue of parsed requests, twice the workers, is full, the loop stops reading and accepting until one frees, and new connections wait in the kernel's backlog)
+  (connections and sockets wait in the event loop; when every handler worker is busy and the queue of parsed requests, twice the workers, is full, the loop stops reading and accepting until one frees; past `max_connections` open connections, 10,000 by default, it stops accepting; a WebSocket whose handler has 64 messages waiting is not read until it catches up; in each case the wait is in the kernel's buffers)
 - [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
 - [x] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
 - [x] HTTPS serving with a certificate and key from files, using the TLS the client already has

@@ -41,6 +41,10 @@ pub fn deliver(channel: &Channel, message: Slot) {
     );
 }
 
+pub fn pending(channel: &Channel) -> usize {
+    lock(&channel.state).queue.len()
+}
+
 pub fn seal(channel: &Channel) {
     let mut world = world();
     let woken: Vec<Waiter> = {

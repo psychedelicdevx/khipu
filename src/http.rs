@@ -196,6 +196,7 @@ mod server {
     const READ_TIMEOUT: Duration = Duration::from_secs(10);
     const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+    const MAX_CONNECTIONS: usize = 10_000;
 
     #[derive(Clone, Copy)]
     struct Limits {
@@ -204,6 +205,7 @@ mod server {
         max_header_line: usize,
         max_headers: usize,
         max_requests: usize,
+        max_connections: usize,
         read_timeout: Duration,
         idle_timeout: Duration,
         request_timeout: Duration,
@@ -217,6 +219,7 @@ mod server {
                 max_header_line: MAX_HEADER_LINE,
                 max_headers: MAX_HEADERS,
                 max_requests: usize::MAX,
+                max_connections: MAX_CONNECTIONS,
                 read_timeout: READ_TIMEOUT,
                 idle_timeout: IDLE_TIMEOUT,
                 request_timeout: REQUEST_TIMEOUT,
@@ -252,6 +255,7 @@ mod server {
             max_header_line: num(record, "max_header_line", base.max_header_line),
             max_headers: num(record, "max_headers", base.max_headers),
             max_requests: num(record, "max_requests", base.max_requests),
+            max_connections: num(record, "max_connections", base.max_connections),
             read_timeout,
             idle_timeout: secs(record, "idle_timeout", base.idle_timeout.min(read_timeout)),
             request_timeout: secs(record, "request_timeout", base.request_timeout),
@@ -480,7 +484,7 @@ mod server {
     trait Stream: Read + Write + Send {
         fn tcp(&self) -> &TcpStream;
         fn close(&mut self);
-        fn impatient(&mut self);
+        fn wait(&mut self, wait: Option<Duration>);
     }
 
     struct Patient {
@@ -520,8 +524,8 @@ mod server {
         fn close(&mut self) {
             let _ = self.tcp.shutdown(std::net::Shutdown::Write);
         }
-        fn impatient(&mut self) {
-            self.wait = None;
+        fn wait(&mut self, wait: Option<Duration>) {
+            self.wait = wait;
         }
     }
 
@@ -534,8 +538,8 @@ mod server {
             let _ = self.conn.write_tls(&mut self.sock);
             self.sock.close();
         }
-        fn impatient(&mut self) {
-            self.sock.impatient();
+        fn wait(&mut self, wait: Option<Duration>) {
+            self.sock.wait = wait;
         }
     }
 
@@ -591,7 +595,23 @@ mod server {
         true
     }
 
+    struct Ticket(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Ticket {
+        fn new(open: &Arc<std::sync::atomic::AtomicUsize>) -> Ticket {
+            open.fetch_add(1, Ordering::SeqCst);
+            Ticket(Arc::clone(open))
+        }
+    }
+
+    impl Drop for Ticket {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
     struct Conn {
+        _ticket: Ticket,
         stream: SharedStream,
         fd: RawFd,
         buf: Vec<u8>,
@@ -986,6 +1006,7 @@ mod server {
     const BUSY: Duration = Duration::from_millis(100);
 
     struct Socket {
+        _ticket: Ticket,
         stream: SharedStream,
         fd: RawFd,
         writing: Mutex<()>,
@@ -1104,10 +1125,13 @@ mod server {
         }
     }
 
+    const SOCKET_QUEUE: usize = 64;
+
     struct Open {
         socket: Arc<Socket>,
         channel: Arc<Channel>,
         reader: Reader,
+        held: bool,
     }
 
     impl Open {
@@ -1116,6 +1140,10 @@ mod server {
                 Err(farewell) => self.socket.shut(farewell.as_deref(), false),
                 Ok(()) if !open => self.socket.shut(None, false),
                 Ok(()) if self.socket.closed.load(Ordering::SeqCst) => {}
+                Ok(()) if crate::task::pending(&self.channel) >= SOCKET_QUEUE => {
+                    self.held = true;
+                    hub.hold(Entry::Socket(self));
+                }
                 Ok(()) => hub.park(Entry::Socket(self)),
             }
         }
@@ -1135,11 +1163,12 @@ mod server {
             {
                 return;
             }
-            out.impatient();
+            out.wait(None);
         }
         let mut made = None;
         let channel = crate::task::endpoint(|channel| {
             let socket = Arc::new(Socket {
+                _ticket: Ticket::new(&hub.open),
                 stream,
                 fd,
                 writing: Mutex::new(()),
@@ -1156,6 +1185,7 @@ mod server {
             socket: Arc::clone(&socket),
             channel: Arc::clone(&channel),
             reader: Reader::new(upgrade.leftover, &hub.limits),
+            held: false,
         };
         open.heard(hub, true);
         crate::task::spawn_with(
@@ -1412,6 +1442,7 @@ mod server {
         } = job;
         let limits = hub.limits;
         ACTIVE.fetch_add(1, Ordering::SeqCst);
+        lock(&conn.stream).wait(Some(limits.request_timeout));
         loop {
             let (method, target, found, body) = incoming;
             let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
@@ -1446,6 +1477,7 @@ mod server {
                     break;
                 }
                 Parsed::Incomplete => {
+                    lock(&conn.stream).wait(None);
                     conn.since = Instant::now();
                     conn.started = (!conn.buf.is_empty()).then_some(conn.since);
                     hub.park(Entry::Http(conn));
@@ -1501,6 +1533,9 @@ mod server {
                             || now > conn.since + limits.read_timeout
                     }
                 },
+                Entry::Socket(open) if open.held => {
+                    crate::task::pending(&open.channel) < SOCKET_QUEUE / 2
+                }
                 Entry::Socket(open) => now > open.reader.since + open.reader.timeout,
             }
         }
@@ -1511,6 +1546,7 @@ mod server {
         entries: Mutex<HashMap<u64, Entry>>,
         next: AtomicU64,
         queued: std::sync::atomic::AtomicUsize,
+        open: Arc<std::sync::atomic::AtomicUsize>,
         limits: Limits,
     }
 
@@ -1525,8 +1561,14 @@ mod server {
                 entries: Mutex::new(HashMap::new()),
                 next: AtomicU64::new(LISTENER + 1),
                 queued: std::sync::atomic::AtomicUsize::new(0),
+                open: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 limits,
             })
+        }
+
+        fn hold(&self, entry: Entry) {
+            let token = self.next.fetch_add(1, Ordering::Relaxed);
+            lock(&self.entries).insert(token, entry);
         }
 
         fn park(&self, entry: Entry) {
@@ -1597,6 +1639,11 @@ mod server {
                 match entry {
                     Entry::Http(conn) if conn.buf.is_empty() => {}
                     Entry::Http(conn) => conn.reject(),
+                    Entry::Socket(mut open) if open.held => {
+                        open.held = false;
+                        open.reader.since = now;
+                        open.heard(self, true);
+                    }
                     Entry::Socket(open) if open.reader.pinged => {
                         open.socket.shut(Some(&1001u16.to_be_bytes()), false)
                     }
@@ -1613,8 +1660,12 @@ mod server {
             }
         }
 
+        fn full(&self) -> bool {
+            self.open.load(Ordering::SeqCst) >= self.limits.max_connections
+        }
+
         fn accept(&self, listener: &TcpListener, tls: Option<&Arc<rustls::ServerConfig>>) {
-            loop {
+            while !self.full() {
                 let tcp = match listener.accept() {
                     Ok((tcp, _)) => tcp,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
@@ -1628,10 +1679,7 @@ mod server {
                     continue;
                 }
                 let fd = tcp.as_raw_fd();
-                let tcp = Patient {
-                    tcp,
-                    wait: Some(self.limits.request_timeout),
-                };
+                let tcp = Patient { tcp, wait: None };
                 let stream: Box<dyn Stream> = match tls {
                     Some(config) => match rustls::ServerConnection::new(Arc::clone(config)) {
                         Ok(conn) => Box::new(rustls::StreamOwned::new(conn, tcp)),
@@ -1643,6 +1691,7 @@ mod server {
                     None => Box::new(tcp),
                 };
                 self.park(Entry::Http(Conn {
+                    _ticket: Ticket::new(&self.open),
                     stream: Arc::new(Mutex::new(stream)),
                     fd,
                     buf: Vec::new(),
@@ -1664,6 +1713,7 @@ mod server {
             let _ = self.poller.arm(listening, LISTENER);
             let mut tokens = Vec::new();
             let mut swept = Instant::now();
+            let mut accepting = true;
             while !flag.load(Ordering::SeqCst) {
                 tokens.clear();
                 if self.poller.wait(&mut tokens, TICK).is_err() {
@@ -1672,7 +1722,10 @@ mod server {
                 for &token in &tokens {
                     if token == LISTENER {
                         self.accept(listener, tls);
-                        let _ = self.poller.arm(listening, LISTENER);
+                        accepting = !self.full();
+                        if accepting {
+                            let _ = self.poller.arm(listening, LISTENER);
+                        }
                         continue;
                     }
                     let entry = lock(&self.entries).remove(&token);
@@ -1683,6 +1736,10 @@ mod server {
                 if swept.elapsed() >= TICK {
                     self.sweep();
                     swept = Instant::now();
+                    if !accepting && !self.full() {
+                        accepting = true;
+                        let _ = self.poller.arm(listening, LISTENER);
+                    }
                 }
             }
             let left: Vec<Entry> = lock(&self.entries)
@@ -2222,6 +2279,7 @@ mod server {
             let mut made = None;
             let channel = crate::task::endpoint(|channel| {
                 let socket = Arc::new(Socket {
+                    _ticket: super::Ticket::new(&Arc::default()),
                     stream: Arc::new(Mutex::new(Box::new(Patient {
                         tcp: server,
                         wait: None,
@@ -2239,6 +2297,7 @@ mod server {
                 socket: made.unwrap(),
                 channel,
                 reader: Reader::new(frames.to_vec(), &limits),
+                held: false,
             };
             (open, client)
         }
@@ -2335,6 +2394,27 @@ mod server {
                 open.socket.send(&Value::Number(1.0)).unwrap_err(),
                 "a websocket can only send a string or bytes, got number"
             );
+        }
+
+        #[test]
+        fn a_socket_whose_handler_falls_behind_stops_being_read() {
+            let hub = Hub::new(Limits::default()).unwrap();
+            let frames: Vec<u8> = (0..70).flat_map(|_| text_frame(b"m")).collect();
+            let (open, _client) = socket(&frames, MAX_BODY);
+            let channel = Arc::clone(&open.channel);
+            open.heard(&hub, true);
+            let held = |hub: &Hub| {
+                super::lock(&hub.entries)
+                    .values()
+                    .any(|entry| matches!(entry, Entry::Socket(open) if open.held))
+            };
+            assert!(held(&hub));
+            for _ in 0..40 {
+                crate::task::receive(&[Value::Channel(Arc::clone(&channel))]).unwrap();
+            }
+            hub.sweep();
+            assert!(!held(&hub));
+            assert_eq!(super::lock(&hub.entries).len(), 1);
         }
 
         #[test]
