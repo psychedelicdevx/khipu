@@ -414,12 +414,7 @@ impl Packer {
                 else {
                     unreachable!()
                 };
-                let fields = instance
-                    .fields
-                    .borrow()
-                    .iter()
-                    .map(|v| packer.slot(v))
-                    .collect();
+                let fields = instance.fields().iter().map(|v| packer.slot(v)).collect();
                 Node::Instance(def, fields)
             }),
             Value::EnumDef(def) => self.node(address(def), |_| Node::EnumDef(pack_enum(def))),
@@ -537,10 +532,7 @@ impl Unpacker {
                     return;
                 };
                 self.nodes[index] = Node::Instance(def, fields);
-                Value::instance(Instance {
-                    def: def_value,
-                    fields: RefCell::new(Vec::new()),
-                })
+                Value::instance(Instance::new(def_value, Vec::new()))
             }
             Node::EnumDef(def) => Value::EnumDef(Rc::new(unpack_enum(&def))),
             Node::Enum(def, variant, values) => {
@@ -589,7 +581,7 @@ impl Unpacker {
             }
             (Node::Instance(_, fields), Some(Made::Value(Value::Instance(instance)))) => {
                 let fields = fields.iter().map(|v| self.value(v)).collect();
-                *instance.fields.borrow_mut() = fields;
+                *instance.fields_mut() = fields;
             }
             _ => {}
         }

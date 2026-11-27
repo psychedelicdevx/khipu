@@ -968,8 +968,7 @@ mod tests {
         let block = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
         match Interpreter::new().run_main(&block).unwrap() {
             Some(Value::Instance(instance)) => instance
-                .fields
-                .borrow()
+                .fields()
                 .iter()
                 .map(|field| match field {
                     Value::Number(n) => *n,

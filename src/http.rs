@@ -120,7 +120,7 @@ fn to_json(value: &Value) -> Result<Json, String> {
                 .def
                 .fields
                 .iter()
-                .zip(instance.fields.borrow().iter())
+                .zip(instance.fields().iter())
                 .map(|(name, value)| Ok((name.to_string(), to_json(value)?)))
                 .collect::<Result<_, String>>()?,
         ),
@@ -202,7 +202,6 @@ pub use server::{
 
 #[cfg(not(target_arch = "wasm32"))]
 mod server {
-    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -391,6 +390,51 @@ mod server {
 
     type Incoming = (String, String, Vec<(String, String)>, Vec<u8>);
 
+    type Span = std::ops::Range<usize>;
+
+    struct Head {
+        method: Span,
+        target: Span,
+        headers: Vec<(Span, Span)>,
+        body: Span,
+    }
+
+    struct Raw {
+        buf: Vec<u8>,
+        head: Head,
+    }
+
+    impl Raw {
+        fn text(&self, span: &Span) -> &str {
+            std::str::from_utf8(&self.buf[span.clone()]).unwrap_or("")
+        }
+
+        fn headers(&self) -> Vec<(&str, &str)> {
+            self.head
+                .headers
+                .iter()
+                .map(|(name, value)| (self.text(name), self.text(value)))
+                .collect()
+        }
+
+        fn owned(&self) -> Incoming {
+            (
+                self.text(&self.head.method).to_string(),
+                self.text(&self.head.target).to_string(),
+                self.headers()
+                    .into_iter()
+                    .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
+                    .collect(),
+                self.buf[self.head.body.clone()].to_vec(),
+            )
+        }
+    }
+
+    fn take_request(buf: &mut Vec<u8>, used: usize) -> Vec<u8> {
+        let rest = buf.split_off(used);
+        std::mem::replace(buf, rest)
+    }
+
     const BAD_REQUEST: &[u8] =
         b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
 
@@ -404,7 +448,12 @@ mod server {
     enum Parsed {
         Incomplete,
         Bad,
-        Request(Incoming, bool, usize),
+        Request(Head, bool, usize),
+    }
+
+    fn span(whole: &str, part: &str) -> Span {
+        let start = part.as_ptr() as usize - whole.as_ptr() as usize;
+        start..start + part.len()
     }
 
     fn parse_request(buf: &[u8], limits: &Limits) -> Parsed {
@@ -435,7 +484,7 @@ mod server {
         let mut length = 0usize;
         let mut seen_length = false;
         let mut count = 0usize;
-        let mut connection = String::new();
+        let (mut close, mut alive) = (false, false);
         for raw in lines {
             let line = raw.strip_suffix('\r').unwrap_or(raw);
             if line.is_empty() {
@@ -448,15 +497,16 @@ mod server {
             let Some((name, value)) = line.split_once(':') else {
                 return Parsed::Bad;
             };
-            let name = name.trim().to_lowercase();
-            let value = value.trim();
-            if !valid_header_name(&name) {
+            let (name, value) = (name.trim(), value.trim());
+            if !valid_header_name(name) {
                 return Parsed::Bad;
             }
-            if name == "transfer-encoding" && !value.eq_ignore_ascii_case("identity") {
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                && !value.eq_ignore_ascii_case("identity")
+            {
                 return Parsed::Bad;
             }
-            if name == "content-length" {
+            if name.eq_ignore_ascii_case("content-length") {
                 if seen_length || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                     return Parsed::Bad;
                 }
@@ -466,25 +516,29 @@ mod server {
                     _ => return Parsed::Bad,
                 };
             }
-            if name == "connection" {
-                connection = value.to_lowercase();
+            if name.eq_ignore_ascii_case("connection") {
+                let has = |token: &str| {
+                    value
+                        .split(',')
+                        .any(|c| c.trim().eq_ignore_ascii_case(token))
+                };
+                (close, alive) = (has("close"), has("keep-alive"));
             }
-            found.push((name, value.to_string()));
+            found.push((span(head, name), span(head, value)));
         }
         let body_start = head_len + term_len;
         let total = body_start + length;
         if buf.len() < total {
             return Parsed::Incomplete;
         }
-        let has = |token: &str| connection.split(',').any(|c| c.trim() == token);
-        let keep_alive = if has("close") {
-            false
-        } else {
-            has("keep-alive") || version != "HTTP/1.0"
-        };
-        let body = buf[body_start..total].to_vec();
+        let keep_alive = !close && (alive || version != "HTTP/1.0");
         Parsed::Request(
-            (method.to_string(), target.to_string(), found, body),
+            Head {
+                method: span(head, method),
+                target: span(head, target),
+                headers: found,
+                body: body_start..total,
+            },
             keep_alive,
             total,
         )
@@ -498,7 +552,16 @@ mod server {
         let mut received = Vec::new();
         loop {
             match parse_request(&received, &limits) {
-                Parsed::Request(incoming, _, _) => return Some(incoming),
+                Parsed::Request(head, _, used) => {
+                    received.truncate(used);
+                    return Some(
+                        Raw {
+                            buf: received,
+                            head,
+                        }
+                        .owned(),
+                    );
+                }
                 Parsed::Bad => return None,
                 Parsed::Incomplete if Instant::now() > deadline => return None,
                 Parsed::Incomplete => {}
@@ -878,7 +941,7 @@ mod server {
                 .fields
                 .iter()
                 .position(|f| &**f == name)
-                .and_then(|at| instance.fields.borrow().get(at).cloned())
+                .and_then(|at| instance.field(at))
         };
         let Some(Value::Number(status)) = field("status") else {
             return Err("a handler must return a Response with a number status".to_string());
@@ -903,12 +966,12 @@ mod server {
 
     const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-    fn upgrade_key(method: &str, found: &[(String, String)]) -> Option<String> {
+    fn upgrade_key<S: AsRef<str>>(method: &str, found: &[(S, S)]) -> Option<String> {
         let header = |name: &str| {
             found
                 .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                .map(|(_, value)| value.trim())
+                .find(|(n, _)| n.as_ref().eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_ref().trim())
         };
         let key = header("sec-websocket-key")?;
         let upgrade = method == "GET"
@@ -921,11 +984,11 @@ mod server {
         upgrade.then(|| key.to_string())
     }
 
-    fn offered(found: &[(String, String)], name: &str) -> Vec<String> {
+    fn offered<S: AsRef<str>>(found: &[(S, S)], name: &str) -> Vec<String> {
         found
             .iter()
-            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
-            .flat_map(|(_, value)| value.split(','))
+            .filter(|(header, _)| header.as_ref().eq_ignore_ascii_case(name))
+            .flat_map(|(_, value)| value.as_ref().split(','))
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty())
             .collect()
@@ -1763,47 +1826,52 @@ mod server {
         pairs
     }
 
-    fn build_request(
-        request_def: Option<&Rc<StructDef>>,
-        method: &str,
-        target: &str,
-        found: Vec<(String, String)>,
-        body: Vec<u8>,
-    ) -> Value {
+    fn request_field(raw: &Raw, name: &str) -> Value {
+        let target = raw.text(&raw.head.target);
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        let headers_record = Value::record(
-            found
-                .into_iter()
-                .map(|(name, value)| (Rc::from(name.as_str()), Value::str(&value)))
-                .collect(),
-        );
-        let given = [
-            ("method", Value::str(method)),
-            ("path", Value::str(path)),
-            ("query", Value::str(query)),
-            ("query_params", Value::record(parse_query(query))),
-            ("headers", headers_record),
-            ("body", Value::str(&String::from_utf8_lossy(&body))),
-            ("bytes", Value::Bytes(Rc::new(body))),
-        ];
-        match request_def {
-            Some(def) => {
-                let mut fields = vec![Value::None; def.fields.len()];
-                for (name, value) in given {
-                    if let Some(at) = def.fields.iter().position(|f| &**f == name) {
-                        fields[at] = value;
-                    }
-                }
-                Value::instance(Instance {
-                    def: Rc::clone(def),
-                    fields: RefCell::new(fields),
-                })
-            }
-            None => Value::record(
-                given
+        match name {
+            "method" => Value::str(raw.text(&raw.head.method)),
+            "path" => Value::str(path),
+            "query" => Value::str(query),
+            "query_params" => Value::record(parse_query(query)),
+            "headers" => Value::record(
+                raw.headers()
                     .into_iter()
-                    .map(|(name, value)| (Rc::from(name), value))
+                    .map(|(name, value)| {
+                        let name: Rc<str> = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+                            Rc::from(name.to_ascii_lowercase())
+                        } else {
+                            Rc::from(name)
+                        };
+                        (name, Value::str(value))
+                    })
                     .collect(),
+            ),
+            "body" => Value::str(&String::from_utf8_lossy(&raw.buf[raw.head.body.clone()])),
+            "bytes" => Value::Bytes(Rc::new(raw.buf[raw.head.body.clone()].to_vec())),
+            _ => Value::None,
+        }
+    }
+
+    fn build_request(request_def: Option<&Rc<StructDef>>, raw: Raw) -> Value {
+        match request_def {
+            Some(def) => Value::instance(Instance::lazy(
+                Rc::clone(def),
+                Box::new(move |name| request_field(&raw, name)),
+            )),
+            None => Value::record(
+                [
+                    "method",
+                    "path",
+                    "query",
+                    "query_params",
+                    "headers",
+                    "body",
+                    "bytes",
+                ]
+                .into_iter()
+                .map(|name| (Rc::from(name), request_field(&raw, name)))
+                .collect(),
             ),
         }
     }
@@ -1917,7 +1985,7 @@ mod server {
 
     struct Job {
         conn: Conn,
-        incoming: Incoming,
+        incoming: Raw,
         keep_alive: bool,
     }
 
@@ -1937,14 +2005,16 @@ mod server {
         ACTIVE.fetch_add(1, Ordering::SeqCst);
         lock(&conn.stream).wait(Some(limits.request_timeout));
         loop {
-            let (method, target, found, body) = incoming;
-            let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
-                key,
-                leftover: std::mem::take(&mut conn.buf),
-                protocols: offered(&found, "sec-websocket-protocol"),
-                deflate: offers_deflate(&offered(&found, "sec-websocket-extensions").join(",")),
-            });
-            let request = build_request(request_def, &method, &target, found, body);
+            let upgrade = {
+                let found = incoming.headers();
+                upgrade_key(incoming.text(&incoming.head.method), &found).map(|key| Upgrade {
+                    key,
+                    leftover: std::mem::take(&mut conn.buf),
+                    protocols: offered(&found, "sec-websocket-protocol"),
+                    deflate: offers_deflate(&offered(&found, "sec-websocket-extensions").join(",")),
+                })
+            };
+            let request = build_request(request_def, incoming);
             let more = keep_alive
                 && upgrade.is_none()
                 && conn.served + 1 < limits.max_requests
@@ -1962,9 +2032,11 @@ mod server {
                 read_into(&conn.stream, &mut conn.buf, cap);
             }
             match parse_request(&conn.buf, &limits) {
-                Parsed::Request(next, alive, used) => {
-                    conn.buf.drain(..used);
-                    incoming = next;
+                Parsed::Request(head, alive, used) => {
+                    incoming = Raw {
+                        buf: take_request(&mut conn.buf, used),
+                        head,
+                    };
                     keep_alive = alive;
                 }
                 Parsed::Bad => {
@@ -2088,8 +2160,11 @@ mod server {
                         conn.started.get_or_insert(now);
                     }
                     match parse_request(&conn.buf, &self.limits) {
-                        Parsed::Request(incoming, keep_alive, used) => {
-                            conn.buf.drain(..used);
+                        Parsed::Request(head, keep_alive, used) => {
+                            let incoming = Raw {
+                                buf: take_request(&mut conn.buf, used),
+                                head,
+                            };
                             conn.started = None;
                             self.queued.fetch_add(1, Ordering::SeqCst);
                             let _ = jobs.send(Job {
@@ -2380,6 +2455,7 @@ mod server {
             MAX_REQUEST_HEAD, Open, Patient, Reader, Socket, Stream, accept_key, deflate,
             frame_bytes, inflate, offers_deflate, parse_frame, respond, store, upgrade_key,
         };
+        use super::{Parsed, Raw, build_request, parse_request, take_request};
         use crate::task::Endpoint;
         use crate::value::Value;
 
@@ -2401,6 +2477,70 @@ mod server {
             let result = read_request(&server);
             let _ = writer.join();
             result
+        }
+
+        #[test]
+        fn a_request_is_spans_of_its_buffer_until_a_field_is_read() {
+            use crate::value::{Instance, StructDef};
+            let names = [
+                "method",
+                "path",
+                "query",
+                "query_params",
+                "headers",
+                "body",
+                "bytes",
+            ];
+            let mut buf = b"POST /a?x=1 HTTP/1.1\r\nX-Mixed: Yes\r\nContent-Length: 3\r\n\r\nh\xffiGET / HTTP/1.1\r\n".to_vec();
+            let Parsed::Request(head, keep_alive, used) = parse_request(&buf, &Limits::default())
+            else {
+                panic!("not parsed");
+            };
+            assert!(keep_alive);
+            assert_eq!((head.method.clone(), head.target.clone()), (0..4, 5..11));
+            assert_eq!(head.body, used - 3..used);
+            let raw = Raw {
+                buf: take_request(&mut buf, used),
+                head,
+            };
+            assert_eq!(buf, b"GET / HTTP/1.1\r\n");
+            assert_eq!(raw.headers(), [("X-Mixed", "Yes"), ("Content-Length", "3")]);
+            let def = Rc::new(StructDef {
+                name: Rc::from("Request"),
+                fields: names.iter().map(|name| Rc::from(*name)).collect(),
+                optional: Rc::from([]),
+                methods: Vec::new(),
+            });
+            let request = build_request(Some(&def), raw);
+            let Value::Instance(instance) = &request else {
+                panic!("not an instance");
+            };
+            let made = |instance: &Instance| -> Vec<bool> {
+                instance
+                    .made_fields()
+                    .borrow()
+                    .iter()
+                    .map(|value| !matches!(value, Value::None))
+                    .collect()
+            };
+            assert_eq!(made(instance), [false; 7]);
+            assert_eq!(instance.field(1).unwrap().to_string(), "/a");
+            assert_eq!(
+                made(instance),
+                [false, true, false, false, false, false, false]
+            );
+            let Some(Value::Record(headers)) = instance.field(4) else {
+                panic!("no headers");
+            };
+            assert_eq!(headers.borrow().get("x-mixed").unwrap().to_string(), "Yes");
+            assert_eq!(instance.field(5).unwrap().to_string(), "h\u{fffd}i");
+            let Some(Value::Bytes(bytes)) = instance.field(6) else {
+                panic!("no bytes");
+            };
+            assert_eq!(bytes.as_slice(), b"h\xffi");
+            instance.set(0, Value::str("PUT"));
+            assert_eq!(instance.fields()[0].to_string(), "PUT");
+            assert_eq!(made(instance), [true, true, true, true, true, true, true]);
         }
 
         #[test]

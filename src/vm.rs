@@ -743,7 +743,7 @@ impl Vm {
                                 }
                                 let field = proto.caches[ip - 1]
                                     .position(&instance.def.fields, name)
-                                    .map(|at| instance.fields.borrow()[at].clone());
+                                    .and_then(|at| instance.field(at));
                                 match field {
                                     Some(value) => {
                                         self.stack[target_at] = value;
@@ -943,7 +943,7 @@ impl Vm {
                             }
                             Value::Instance(instance) => {
                                 match proto.caches[ip - 1].position(&instance.def.fields, name) {
-                                    Some(at) => instance.fields.borrow_mut()[at] = value,
+                                    Some(at) => instance.set(at, value),
                                     None => fail!(format!(
                                         "{} has no field '{name}'",
                                         instance.def.name
@@ -991,10 +991,7 @@ impl Vm {
                                 None => fail!(format!("{} is missing field '{field}'", def.name)),
                             }
                         }
-                        self.stack.push(Value::instance(Instance {
-                            def,
-                            fields: RefCell::new(fields),
-                        }));
+                        self.stack.push(Value::instance(Instance::new(def, fields)));
                     }
                     Code::Test(pattern, fail_at) => match &proto.patterns[pattern as usize] {
                         PatternTest::Value { slot, constant } => {
@@ -1469,7 +1466,7 @@ fn field_of(target: &Value, name: &str, cache: &FieldCache) -> Result<Value, Str
     match target {
         Value::Record(record) => get_field(record, name, cache),
         Value::Instance(instance) => match cache.position(&instance.def.fields, name) {
-            Some(at) => Ok(instance.fields.borrow()[at].clone()),
+            Some(at) => Ok(instance.field(at).unwrap_or(Value::None)),
             None if instance.def.methods.iter().any(|(m, _)| &**m == name) => Err(format!(
                 "'{name}' is a method of {}, call it like value.{name}(...)",
                 instance.def.name

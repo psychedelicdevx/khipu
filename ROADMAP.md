@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `█████████░` 22 / 24 |
+| 9. HTTP without limits | `██████████` 23 / 24 |
 | 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
@@ -147,8 +147,8 @@ Today `Http.serve` answers one request at a time on one thread. A backend should
 Throughput
 - [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
 - [x] Keep-alive and pipelining, so a connection serves many requests without reconnecting
-- [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
-  (reassessed after `bytes`, still not reachable: `bytes` is an owned `Rc<Vec<u8>>` and `Value` is not `Send`, so the body could at best become one slice of a buffer moved to the worker, while method, path, query and every header stay `string` fields that are copied into `Rc<String>` when the `Request` is built; reaching the item needs lazy string values that point into a shared buffer, a change to the value model, not to the server)
+- [x] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
+  (the parser gives byte ranges into the read buffer, the buffer moves to the worker with the request, and each `Request` field is made from its range the first time the program reads it; a field read is one copy into an owned `string` or `bytes`, since those values own their data)
 - [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
 - [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in docs/benchmarks.md, for a hello route, a JSON route and a route that reads a file
 
