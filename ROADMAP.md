@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `███████░░░` 11 / 15 |
+| 9. HTTP without limits | `████████░░` 12 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -149,7 +149,7 @@ Throughput
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
   (not reachable end to end: Khipu `Request` fields are owned `Value::Str(Rc<String>)`, `Value` is not `Send`, and concurrency copies per worker; only internal copies can be shaved, never zero-copy into Khipu; do not retry without changing the value model)
 - [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
-- [ ] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file
+- [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file
 
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
