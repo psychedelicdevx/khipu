@@ -7,12 +7,16 @@ struct point {
     long long y;
 };
 
-int main(void) {
+long long work(long long n) {
     volatile struct point point = {3, 4};
     long long total = 0;
-    for (long long i = 0; i < N; i++) {
+    for (long long i = 0; i < n; i++) {
         total = total + point.x * point.y;
     }
-    printf("%lld\n", total);
+    return total;
+}
+
+int main(void) {
+    printf("%lld\n", work(N));
     return 0;
 }
