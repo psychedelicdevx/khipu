@@ -68,3 +68,67 @@ empty           cold      Khipu 3.3 ms  Python 13 ms  Node 22 ms  C 2.2 ms  Rust
 ```
 
 Kill-number baseline for step 1 is the same program with a struct passed through a call in the hot loop, run on `main`; the control is recorded below with the step-1 result. Step 2's baseline is `lists` sustained = **94 ms** here, so the branch needs **≤ 47 ms** to pass.
+
+## After step 1
+
+`python3 scripts/bench.py --no-write` on the branch after the struct-call change, same machine and command as Before. `struct_access.kp` now builds the point in `make(x, y) -> Point`, passes it to `area(p: Point) -> number` inside the hot loop, and every other language version was changed to the same program. Full output (every benchmark, cold and sustained):
+
+```
+fib             cold      Khipu 5.7 ms  Python 26 ms  Node 25 ms  C 2.9 ms  Rust 3.0 ms
+fib             sustained Khipu 21 ms  Python 139 ms  Node 34 ms  C 6.3 ms  Rust 6.2 ms
+fib_iterative   cold      Khipu 13 ms  Python 57 ms  Node 26 ms  C 3.2 ms  Rust 3.5 ms
+fib_iterative   sustained Khipu 93 ms  Python 454 ms  Node 44 ms  C 9.8 ms  Rust 12 ms
+loop            cold      Khipu 6.1 ms  Python 225 ms  Node 35 ms  C 2.5 ms  Rust 2.7 ms
+loop            sustained Khipu 26 ms  Python 2342 ms  Node 153 ms  C 2.5 ms  Rust 2.7 ms
+nested_loops    cold      Khipu 4.2 ms  Python 19 ms  Node 24 ms  C 2.4 ms  Rust 2.8 ms
+nested_loops    sustained Khipu 9.7 ms  Python 242 ms  Node 28 ms  C 4.5 ms  Rust 4.8 ms
+sieve           cold      Khipu 9.9 ms  Python 27 ms  Node 25 ms  C 2.5 ms  Rust 2.7 ms
+sieve           sustained Khipu 191 ms  Python 557 ms  Node 55 ms  C 5.2 ms  Rust 5.3 ms
+matrix          cold      Khipu 6.3 ms  Python 19 ms  Node 24 ms  C 2.3 ms  Rust 2.6 ms
+matrix          sustained Khipu 119 ms  Python 267 ms  Node 28 ms  C 3.1 ms  Rust 4.8 ms
+mandelbrot      cold      Khipu 4.1 ms  Python 27 ms  Node 24 ms  C 2.5 ms  Rust 2.7 ms
+mandelbrot      sustained Khipu 6.5 ms  Python 237 ms  Node 27 ms  C 4.0 ms  Rust 4.3 ms
+lists           cold      Khipu 13 ms  Python 41 ms  Node 28 ms  C 2.9 ms  Rust 3.2 ms
+lists           sustained Khipu 92 ms  Python 288 ms  Node 79 ms  C 5.4 ms  Rust 6.3 ms
+records         cold      Khipu 21 ms  Python 47 ms  Node 25 ms  C 2.4 ms  Rust 2.7 ms
+records         sustained Khipu 174 ms  Python 345 ms  Node 27 ms  C 2.2 ms  Rust 2.6 ms
+strings         cold      Khipu 25 ms  Python 43 ms  Node 28 ms  C 11 ms  Rust 11 ms
+strings         sustained Khipu 201 ms  Python 292 ms  Node 43 ms  C 88 ms  Rust 107 ms
+calls           cold      Khipu 14 ms  Python 32 ms  Node 25 ms  C 2.5 ms  Rust 2.6 ms
+calls           sustained Khipu 110 ms  Python 205 ms  Node 36 ms  C 2.5 ms  Rust 2.6 ms
+closures        cold      Khipu 16 ms  Python 37 ms  Node 24 ms  C 2.6 ms  Rust 2.8 ms
+closures        sustained Khipu 126 ms  Python 245 ms  Node 30 ms  C 5.0 ms  Rust 4.4 ms
+locals          cold      Khipu 4.7 ms  Python 40 ms  Node 27 ms  C 2.4 ms  Rust 2.4 ms
+locals          sustained Khipu 12 ms  Python 283 ms  Node 67 ms  C 2.7 ms  Rust 2.8 ms
+globals         cold      Khipu 23 ms  Python 78 ms  Node 24 ms  C 3.0 ms  Rust 4.4 ms
+globals         sustained Khipu 101 ms  Python 343 ms  Node 27 ms  C 4.9 ms  Rust 11 ms
+record_access   cold      Khipu 30 ms  Python 98 ms  Node 24 ms  C 2.7 ms  Rust 3.5 ms
+record_access   sustained Khipu 268 ms  Python 889 ms  Node 29 ms  C 5.0 ms  Rust 11 ms
+struct_access   cold      Khipu 5.8 ms  Python 45 ms  Node 24 ms  C 2.5 ms  Rust 3.4 ms
+struct_access   sustained Khipu 21 ms  Python 321 ms  Node 28 ms  C 2.4 ms  Rust 10 ms
+parallel        cold      Khipu 11 ms  Python 137 ms  Node 47 ms  C 3.2 ms  Rust 3.4 ms
+parallel        sustained Khipu 280 ms  Python 423 ms  Node 79 ms  C 22 ms  Rust 21 ms
+empty           cold      Khipu 3.8 ms  Python 14 ms  Node 23 ms  C 2.5 ms  Rust 2.6 ms
+```
+
+Control: the *same call version* of `struct_access.kp` was copied into a clean worktree of `main` (1102d03) and run with `python3 scripts/bench.py --no-write --only struct_access`, three times:
+
+```
+struct_access   cold      Khipu 37 ms  Python 47 ms  Node 25 ms  C 2.5 ms  Rust 3.5 ms
+struct_access   sustained Khipu 334 ms  Python 325 ms  Node 28 ms  C 2.8 ms  Rust 11 ms
+struct_access   cold      Khipu 37 ms  Python 44 ms  Node 24 ms  C 2.4 ms  Rust 3.4 ms
+struct_access   sustained Khipu 386 ms  Python 344 ms  Node 29 ms  C 2.6 ms  Rust 11 ms
+struct_access   cold      Khipu 36 ms  Python 45 ms  Node 24 ms  C 2.5 ms  Rust 3.6 ms
+struct_access   sustained Khipu 332 ms  Python 325 ms  Node 28 ms  C 2.5 ms  Rust 11 ms
+```
+
+Khipu `struct_access` sustained: **21 ms** on the branch against 332–386 ms on main for the identical program — at least **15.8× faster**, past the required 2×. The gain comes from the kernel, not from the benchmark shape: the cold-run compile attempt on main rejects the struct call, so the whole loop stays interpreted.
+
+## Open questions
+
+- A returned struct's interpreter `StructDef` carries methods, which the kernel IR does not carry. Where does the native boundary get it?
+  - Proposed answer: reuse the definition of an input instance of the same struct when there is one, otherwise find the struct definition in the program's globals by name; if neither exists, fail the native call so the interpreter reruns it. Taken.
+- `Native` has to stay `Copy` because it lives in `Tier` cells. How does it keep the layout needed to convert struct fields at the boundary?
+  - Proposed answer: leak a small clone of the compiled `Kernel` with `Box::leak` (safe, bounded by `MAX_COMPILES`) and store the `&'static Kernel`. Taken. No new `unsafe` was added, so the count in CONTRIBUTING.md stays at three.
+- Should the WebAssembly backend emit a kernel where a struct crosses a call boundary?
+  - Proposed answer: no. `wasmgen::module` returns `Err` and the web page falls back to the interpreter, as it already does for kernels containing structs. Taken.

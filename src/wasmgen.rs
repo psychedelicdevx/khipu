@@ -84,6 +84,7 @@ fn valtype(kind: Kind) -> u8 {
     match kind {
         Kind::Num => F64,
         Kind::Bool => I32,
+        Kind::Struct(_) => unreachable!("struct kernels are rejected before emission"),
     }
 }
 
@@ -195,15 +196,28 @@ pub fn module(kernels: &[Kernel]) -> Result<(Vec<u8>, Vec<Export>), String> {
 }
 
 fn has_structs(kernel: &Kernel) -> bool {
-    fn in_block(block: &[Stmt]) -> bool {
+    fn in_block(kernel: &Kernel, block: &[Stmt]) -> bool {
         block.iter().any(|stmt| match stmt {
             Stmt::MakeStruct(..) | Stmt::SetField(..) => true,
-            Stmt::If(_, then, otherwise) => in_block(then) || in_block(otherwise),
-            Stmt::While(_, body) | Stmt::For { body, .. } => in_block(body),
+            Stmt::Set(slot, _) => {
+                matches!(kernel.locals.get(*slot as usize), Some(Kind::Struct(_)))
+            }
+            Stmt::If(_, then, otherwise) => in_block(kernel, then) || in_block(kernel, otherwise),
+            Stmt::While(_, body) | Stmt::For { body, .. } => in_block(kernel, body),
             _ => false,
         })
     }
-    in_block(&kernel.body)
+    let flat = kernel.flat_returns().len() > 1
+        || kernel
+            .signature
+            .params
+            .iter()
+            .any(|kind| matches!(kind, Kind::Struct(_)))
+        || kernel
+            .locals
+            .iter()
+            .any(|kind| matches!(kind, Kind::Struct(_)));
+    flat || in_block(kernel, &kernel.body)
 }
 
 fn kernel_types(kernel: &Kernel) -> (Vec<u8>, Vec<u8>) {
@@ -435,6 +449,7 @@ impl Emitter<'_> {
         match self.kernel.signature.returns {
             Kind::Num => f64_const(&mut self.out, f64::NAN),
             Kind::Bool => i32_const(&mut self.out, 0),
+            Kind::Struct(_) => unreachable!("struct kernels are rejected before emission"),
         }
     }
 
@@ -622,6 +637,9 @@ impl Emitter<'_> {
                     (Kind::Bool, Cmp::Le) => I32_LE_U,
                     (Kind::Bool, Cmp::Gt) => I32_GT_U,
                     (Kind::Bool, Cmp::Ge) => I32_GE_U,
+                    (Kind::Struct(_), _) => {
+                        unreachable!("struct kernels are rejected before emission")
+                    }
                 });
             }
             Expr::And(left, right) => {
@@ -659,7 +677,7 @@ impl Emitter<'_> {
                 self.labels -= 1;
                 self.out.push(END);
             }
-            Expr::GetField(..) => unreachable!(),
+            Expr::Struct(..) | Expr::GetField(..) => unreachable!(),
         }
     }
 }

@@ -5,12 +5,20 @@ struct Point {
     y: number,
 }
 
+fn make(x: number, y: number) -> Point {
+    return Point { x: x, y: y }
+}
+
+fn area(p: Point) -> number {
+    return p.x * p.y
+}
+
 fn work(n: number) -> number {
-    let point = Point { x: 3, y: 4 }
+    let point = make(3, 4)
     let total = 0
     let i = 0
     while i < n {
-        total = total + point.x * point.y
+        total = total + area(point)
         i = i + 1
     }
     return total

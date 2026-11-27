@@ -9,12 +9,20 @@ class Point:
         self.y = y
 
 
+def make(x, y):
+    return Point(x, y)
+
+
+def area(p):
+    return p.x * p.y
+
+
 def work(n):
-    point = Point(3, 4)
+    point = make(3, 4)
     total = 0
     i = 0
     while i < n:
-        total = total + point.x * point.y
+        total = total + area(point)
         i = i + 1
     return total
 

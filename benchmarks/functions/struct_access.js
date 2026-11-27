@@ -7,12 +7,20 @@ class Point {
     }
 }
 
+function make(x, y) {
+    return new Point(x, y)
+}
+
+function area(p) {
+    return p.x * p.y
+}
+
 function work(n) {
-    const point = new Point(3, 4)
+    const point = make(3, 4)
     let total = 0
     let i = 0
     while (i < n) {
-        total = total + point.x * point.y
+        total = total + area(point)
         i = i + 1
     }
     return total

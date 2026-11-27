@@ -3,17 +3,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler::Proto;
-use crate::kernel::{self, Kind, LoopSource, Source};
-use crate::value::{Closure, Value};
+use crate::kernel::{self, Kernel, Kind, LoopSource, Source};
+use crate::value::{Closure, GlobalStore, Instance, Value};
 
 const CALLS_BEFORE_COMPILING: u32 = 64;
 
 #[derive(Clone, Copy)]
 pub struct Native {
     pub target: Target,
+    pub kernel: &'static Kernel,
     pub arity: u8,
     pub bool_params: u16,
-    pub returns_bool: bool,
     pub generation: u32,
 }
 
@@ -127,11 +127,11 @@ fn install(
         };
         let native = Native {
             target,
+            kernel: Box::leak(Box::new(kernel.clone())),
             arity: kinds.len() as u8,
             bool_params: kinds.iter().enumerate().fold(0, |mask, (at, kind)| {
                 mask | (u16::from(*kind == Kind::Bool) << at)
             }),
-            returns_bool: kernel.signature.returns == Kind::Bool,
             generation,
         };
         if let Some(proto) = protos.get(&kernel.name)
@@ -217,7 +217,7 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
 
 pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()> {
     let mut raw = arguments(native, values)?;
-    run(native, &mut raw, depth)?;
+    let _ = run(native, &mut raw, depth)?;
     for (at, value) in values.iter_mut().enumerate() {
         *value = if native.bool_params & (1 << at) != 0 {
             Value::Bool(raw[at] != 0.0)
@@ -228,10 +228,10 @@ pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()>
     Some(())
 }
 
-pub fn call(native: &Native, args: &[Value], depth: u32) -> Option<Value> {
+pub fn call(native: &Native, args: &[Value], globals: &GlobalStore, depth: u32) -> Option<Value> {
     let mut raw = arguments(native, args)?;
-    let value = run(native, &mut raw, depth)?;
-    Some(result(native, value))
+    let out = run(native, &mut raw, depth)?;
+    result(native, &out, args, globals)
 }
 
 pub fn arguments(native: &Native, args: &[Value]) -> Option<[f64; 16]> {
@@ -239,22 +239,94 @@ pub fn arguments(native: &Native, args: &[Value]) -> Option<[f64; 16]> {
         return None;
     }
     let mut raw = [0.0; 16];
-    for (at, arg) in args.iter().enumerate() {
-        let wants_bool = native.bool_params & (1 << at) != 0;
-        raw[at] = match (arg, wants_bool) {
-            (Value::Number(n), false) => *n,
-            (Value::Bool(b), true) => f64::from(*b),
+    let mut at = 0;
+    let kinds: Vec<Kind> = if native.kernel.loop_vars > 0 {
+        native.kernel.locals[..native.kernel.loop_vars].to_vec()
+    } else {
+        native.kernel.signature.params.clone()
+    };
+    for (arg, kind) in args.iter().zip(&kinds) {
+        match (arg, kind) {
+            (Value::Number(n), Kind::Num) => {
+                raw[at] = *n;
+                at += 1;
+            }
+            (Value::Bool(b), Kind::Bool) => {
+                raw[at] = f64::from(*b);
+                at += 1;
+            }
+            (Value::Instance(instance), Kind::Struct(index)) => {
+                let (name, layout) = &native.kernel.layouts[*index as usize];
+                if &*instance.def.name != name || instance.def.fields.len() != layout.len() {
+                    return None;
+                }
+                let fields = instance.fields.borrow();
+                if fields.len() != layout.len() {
+                    return None;
+                }
+                let start = at;
+                for (offset, ((field, kind), value)) in layout.iter().zip(fields.iter()).enumerate()
+                {
+                    if instance.def.fields[offset].as_ref() != field.as_str() {
+                        return None;
+                    }
+                    raw[start + offset] = match (value, kind) {
+                        (Value::Number(n), Kind::Num) => *n,
+                        (Value::Bool(b), Kind::Bool) => f64::from(*b),
+                        _ => return None,
+                    };
+                }
+                at += layout.len();
+            }
             _ => return None,
-        };
+        }
+        if at > raw.len() {
+            return None;
+        }
     }
     Some(raw)
 }
 
-pub fn result(native: &Native, raw: f64) -> Value {
-    if native.returns_bool {
-        Value::Bool(raw != 0.0)
-    } else {
-        Value::Number(raw)
+fn result(
+    native: &Native,
+    raw: &[f64; 16],
+    args: &[Value],
+    globals: &GlobalStore,
+) -> Option<Value> {
+    match native.kernel.signature.returns {
+        Kind::Num => Some(Value::Number(raw[0])),
+        Kind::Bool => Some(Value::Bool(raw[0] != 0.0)),
+        Kind::Struct(index) => {
+            let (name, layout) = &native.kernel.layouts[index as usize];
+            let def = args
+                .iter()
+                .find_map(|arg| match arg {
+                    Value::Instance(instance) if &*instance.def.name == name => {
+                        Some(Rc::clone(&instance.def))
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    let globals = globals.borrow();
+                    let slot = globals.names.iter().position(|known| known == name)?;
+                    match &globals.values[slot] {
+                        Some(Value::StructDef(def)) => Some(Rc::clone(def)),
+                        _ => None,
+                    }
+                })?;
+            let mut fields = Vec::with_capacity(layout.len());
+            for (at, (_, kind)) in layout.iter().enumerate() {
+                fields.push(match kind {
+                    Kind::Num => Value::Number(raw[at]),
+                    Kind::Bool => Value::Bool(raw[at] != 0.0),
+                    Kind::Struct(_) => return None,
+                });
+            }
+            Some(Value::instance(Instance {
+                def,
+                fields: RefCell::new(fields),
+            }))
+        }
     }
 }
 
@@ -275,21 +347,24 @@ mod backend {
         Some(compiled.into_iter().map(|c| c.entry).collect())
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<f64> {
+    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<[f64; 16]> {
         CONTEXT.with(|context| {
             let mut context = context.borrow_mut();
             context.error = 0;
             context.depth = depth;
+            let mut out = [0.0; 16];
             // SAFETY: `native.target` was produced by `jit::compile` for a kernel
-            // with `native.arity` values, `raw` holds 16 f64 slots, and the
-            // context lives for the whole call.
-            let value = unsafe { (native.target)(&mut *context, raw.as_mut_ptr()) };
+            // with `native.arity` values, `raw` and `out` hold 16 f64 slots, and
+            // the context lives for the whole call.
+            let value =
+                unsafe { (native.target)(&mut *context, raw.as_mut_ptr(), out.as_mut_ptr()) };
+            out[0] = value;
             if context.error != 0 {
                 context.error = 0;
                 context.depth = 0;
                 return None;
             }
-            Some(value)
+            Some(out)
         })
     }
 }
@@ -321,7 +396,7 @@ mod backend {
         })
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<f64> {
+    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<[f64; 16]> {
         // SAFETY: both imports are provided by the page that instantiated this
         // module; `raw` holds 16 f64 slots at the given pointer.
         let (value, failed) = unsafe {
@@ -336,7 +411,9 @@ mod backend {
         if failed != 0 {
             return None;
         }
-        Some(value)
+        let mut out = [0.0; 16];
+        out[0] = value;
+        Some(out)
     }
 }
 
