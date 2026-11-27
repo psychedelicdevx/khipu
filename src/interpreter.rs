@@ -1379,6 +1379,14 @@ ws.onmessage = (event) => {
             error("Http.websocket(\"http://localhost/\")").message,
             "Http.websocket needs a ws:// or wss:// address, got http://localhost/"
         );
+        assert_eq!(
+            error("Http.websocket(\"ws://localhost/a\\nx-evil: 1\")").message,
+            "Http.websocket cannot use an address with spaces or control characters, got \"ws://localhost/a\\nx-evil: 1\""
+        );
+        assert_eq!(
+            error("Http.websocket_with(\"ws://localhost/\", { protocols: [\"a\\nb\"] })").message,
+            "a websocket protocol must be a token, got \"a\\nb\""
+        );
         let plain = port + 1;
         start_server(
             plain,

@@ -1414,6 +1414,11 @@ mod server {
                 ));
             }
         };
+        if rest.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+            return Err(format!(
+                "Http.websocket cannot use an address with spaces or control characters, got {url:?}"
+            ));
+        }
         let (authority, path) = match rest.split_once('/') {
             Some((authority, path)) => (authority, format!("/{path}")),
             None => (rest, "/".to_string()),
@@ -1425,6 +1430,16 @@ mod server {
                     .map_err(|_| format!("'{port}' in {url} is not a port"))?,
             ),
             None => (authority, if secure { 443 } else { 80 }),
+        };
+        let protocols = match option("protocols") {
+            Some(Value::List(protocols)) => {
+                let names: Vec<String> = protocols.borrow().iter().map(|p| p.to_string()).collect();
+                if let Some(bad) = names.iter().find(|name| !valid_header_name(name)) {
+                    return Err(format!("a websocket protocol must be a token, got {bad:?}"));
+                }
+                Some(names)
+            }
+            _ => None,
         };
         let failed = |error: std::io::Error| format!("cannot reach {url}: {error}");
         let tcp = TcpStream::connect((host, port)).map_err(failed)?;
@@ -1451,8 +1466,7 @@ mod server {
         let mut request = format!(
             "GET {path} HTTP/1.1\r\nhost: {authority}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: {key}\r\nsec-websocket-version: 13\r\n"
         );
-        if let Some(Value::List(protocols)) = option("protocols") {
-            let names: Vec<String> = protocols.borrow().iter().map(|p| p.to_string()).collect();
+        if let Some(names) = &protocols {
             request.push_str(&format!("sec-websocket-protocol: {}\r\n", names.join(", ")));
         }
         request.push_str("\r\n");
