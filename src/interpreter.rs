@@ -683,6 +683,27 @@ mod tests {
     }
 
     #[test]
+    fn idle_connections_do_not_starve_new_requests() {
+        let port = 20000 + std::process::id() % 20000 + 41;
+        let source = format!(
+            "fn handle(request: Request) -> Response {{\n    return Response.text(\"ok\")\n}}\nHttp.serve_with({port}, handle, {{ read_timeout: 0.2, idle_timeout: 0.2 }})"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        ready(port);
+        let idle: Vec<_> = (0..200)
+            .filter_map(|_| std::net::TcpStream::connect(format!("localhost:{port}")).ok())
+            .collect();
+        assert!(idle.len() > 150, "{}", idle.len());
+        let started = std::time::Instant::now();
+        let ok = raw_get(port, "/");
+        assert!(ok.starts_with("HTTP/1.1 200 OK"), "{ok}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        drop(idle);
+    }
+
+    #[test]
     fn routing_matches_method_path_and_parameters() {
         let port = 20000 + std::process::id() % 20000 + 14;
         let source = format!(

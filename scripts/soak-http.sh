@@ -26,7 +26,7 @@ done
 
 RSS="$OUT/rss.log"
 : > "$RSS"
-printf 'epoch_ms rss_kb\n' > "$RSS"
+printf 'epoch_s rss_kb\n' > "$RSS"
 
 wrk -t"$THREADS" -c"$CONNECTIONS" -d"$DURATION" "$URL/hello" > "$OUT/wrk.txt" &
 WRK=$!
@@ -34,7 +34,7 @@ WRK=$!
 while kill -0 "$WRK" 2>/dev/null; do
     if kill -0 "$SERVER" 2>/dev/null; then
         rss=$(ps -o rss= -p "$SERVER" | tr -d ' ')
-        printf '%s %s\n' "$(date +%s%3N)" "${rss:-0}" >> "$RSS"
+        printf '%s %s\n' "$(date +%s)" "${rss:-0}" >> "$RSS"
     fi
     sleep 60
 done

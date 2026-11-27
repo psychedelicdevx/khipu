@@ -154,6 +154,7 @@ Throughput
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
 - [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
+  (the pool is threads that block on reads, 8 per core between 16 and 128; that many idle connections hold every worker until the idle timeout, 5 s by default; non-blocking IO is the real fix, see AUDIT.md)
 - [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
 - [x] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
 - [x] HTTPS serving with a certificate and key from files, using the TLS the client already has

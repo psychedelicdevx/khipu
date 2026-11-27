@@ -180,3 +180,14 @@ A separate agent read the repository cold, without having written any of it, and
 | 10e | `spawn` wakes one idle worker; if that worker was already waking for a parked task, the new job waits until that worker is free, while other idle workers sleep | Written down: a latency loss with no deadlock or wrong result. The README describes the mechanism as a shared queue, not stealing of started tasks, which is accurate |
 
 The review also checked the three `unsafe` sites, the collector's conservativeness, the scheduler's lock order and wake-ups, the fused instructions, both code generators and the contract desugaring, and found nothing wrong there.
+
+## Phase 9 review
+
+The HTTP server was rebuilt on a branch by one agent and reviewed cold by another. The suite at the end was 148 tests plus the HTTP fuzzer in `tests/http_fuzz.rs`, all green, and the `wrk` comparison against Node, Go and Rust is in BENCHMARKS.md under HTTP.
+
+**Soak.** `scripts/soak-http.sh` ran `wrk -t4 -c100` against `benchmarks/http/server.kp` for 43 minutes before it was stopped (the machine was needed). Resident memory was sampled every minute: 77 MB on average over the first fifteen minutes, 75 MB over the last thirteen, with a sawtooth between 29 MB and 192 MB as the collector ran. Flat in trend, so no leak at that horizon. The `wrk` output was lost with the process. The 24 hour run the roadmap asks for has not happened; the command is the script with `DURATION=24h`.
+
+**Starvation, found and narrowed.** The pool had one worker per core and each worker blocks reading its connection, so ten idle connections made the server unreachable to everyone until the 10 second read timeout. Verified by holding one idle connection per core and watching a fresh `curl` time out. The pool is now 8 workers per core, between 16 and 128, and a kept-alive connection waiting for its next request is cut off after an `idle_timeout` of 5 seconds, changeable with the other limits. A client now needs as many connections as there are workers to block the server, and holds it for one timeout per round. That is a documented limit, not a fix: the fix is non-blocking IO, which is a phase of its own. A test holds 200 idle connections and checks a new request is still answered.
+
+**Not done, on purpose.** Zero-copy parsing cannot reach Khipu values as the value model stands, written under the item. WebSockets are not started. The soak is 43 minutes, not 24 hours.
+

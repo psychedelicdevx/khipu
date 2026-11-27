@@ -185,6 +185,7 @@ mod server {
     const MAX_HEADER_LINE: usize = 8 * 1024;
     const MAX_HEADERS: usize = 100;
     const READ_TIMEOUT: Duration = Duration::from_secs(10);
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[derive(Clone, Copy)]
@@ -195,6 +196,7 @@ mod server {
         max_headers: usize,
         max_requests: usize,
         read_timeout: Duration,
+        idle_timeout: Duration,
         request_timeout: Duration,
     }
 
@@ -207,6 +209,7 @@ mod server {
                 max_headers: MAX_HEADERS,
                 max_requests: usize::MAX,
                 read_timeout: READ_TIMEOUT,
+                idle_timeout: IDLE_TIMEOUT,
                 request_timeout: REQUEST_TIMEOUT,
             }
         }
@@ -233,13 +236,15 @@ mod server {
         };
         let record = record.borrow();
         let record = &*record;
+        let read_timeout = secs(record, "read_timeout", base.read_timeout);
         Limits {
             max_body: num(record, "max_body", base.max_body),
             max_request_head: num(record, "max_request_head", base.max_request_head),
             max_header_line: num(record, "max_header_line", base.max_header_line),
             max_headers: num(record, "max_headers", base.max_headers),
             max_requests: num(record, "max_requests", base.max_requests),
-            read_timeout: secs(record, "read_timeout", base.read_timeout),
+            read_timeout,
+            idle_timeout: secs(record, "idle_timeout", base.idle_timeout.min(read_timeout)),
             request_timeout: secs(record, "request_timeout", base.request_timeout),
         }
     }
@@ -465,12 +470,17 @@ mod server {
         Bad,
     }
 
-    fn read_request_conn(conn: &mut Conn, limits: Limits) -> ReadReq {
+    fn read_request_conn(conn: &mut Conn, limits: Limits, first: bool) -> ReadReq {
+        let timeout = if first {
+            limits.read_timeout
+        } else {
+            limits.idle_timeout
+        };
         let _ = conn
             .stream
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .set_read_timeout(Some(limits.read_timeout));
+            .set_read_timeout(Some(timeout));
         let deadline = Instant::now() + limits.request_timeout;
         let mut scratch = [0u8; 4096];
         let (head_len, term_len) = loop {
@@ -845,6 +855,9 @@ mod server {
     }
 
     const WORKER_STACK: usize = 16 * 1024 * 1024;
+    const WORKERS_PER_CORE: usize = 8;
+    const MIN_WORKERS: usize = 16;
+    const MAX_WORKERS: usize = 128;
     const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
     static SHUTDOWN_ARC: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
@@ -1049,7 +1062,7 @@ mod server {
         let mut served = 0usize;
         ACTIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         loop {
-            match read_request_conn(&mut conn, limits) {
+            match read_request_conn(&mut conn, limits, served == 0) {
                 ReadReq::Closed => break,
                 ReadReq::Bad => {
                     let _ = conn.stream.lock().unwrap_or_else(|p| p.into_inner()).write_all(
@@ -1195,7 +1208,8 @@ mod server {
         let dir = crate::task::program_dir();
         let workers = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
-            .max(1);
+            .saturating_mul(WORKERS_PER_CORE)
+            .clamp(MIN_WORKERS, MAX_WORKERS);
         let bound = workers.saturating_mul(2).max(1);
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<dyn Stream>>(bound);
         let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
