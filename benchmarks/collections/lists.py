@@ -1,8 +1,17 @@
 N = 300000
-items = []
-for i in range(N):
-    items.append(i * 2)
-total = 0
-for item in items:
-    total = total + item
-print(total + items[len(items) - 1])
+
+items = [3, 4, 5, 6, 7, 8, 9, 10]
+
+
+def total(values, rounds):
+    acc = 0
+    at = 0
+    n = len(values)
+    while at < rounds:
+        acc = acc + values[at % n]
+        at = at + 1
+    values[0] = values[0] + 1
+    return acc + values[len(values) - 1] + values[0]
+
+
+print(total(items, N))

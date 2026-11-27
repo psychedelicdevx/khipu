@@ -38,6 +38,7 @@ fn ty(kind: Kind) -> types::Type {
         Kind::Num => types::F64,
         Kind::Bool => types::I8,
         Kind::Struct(_) => unreachable!("struct values are passed as their fields"),
+        Kind::List => types::I64,
     }
 }
 
@@ -189,6 +190,11 @@ fn define_entry(
                 b.ins().fcmp(FloatCC::NotEqual, raw, zero)
             }
             Kind::Struct(_) => unreachable!("struct params are flattened"),
+            Kind::List => {
+                let mut flags = MemFlagsData::new();
+                flags.set_endianness(cranelift_codegen::ir::Endianness::Little);
+                b.ins().bitcast(types::I64, flags, raw)
+            }
         });
     }
     let call = b.ins().call(callee, &args);
@@ -202,6 +208,7 @@ fn define_entry(
                 b.ins().fcvt_from_uint(types::F64, wide)
             }
             Kind::Struct(_) => unreachable!("struct returns are flattened"),
+            Kind::List => unreachable!("a list cannot be returned from a kernel"),
         };
         if at == 0 {
             first = raw;
@@ -280,13 +287,14 @@ fn define_kernel(
                     let zero = b.ins().f64const(0.0);
                     b.ins().fcmp(FloatCC::NotEqual, raw, zero)
                 }
-                Kind::Struct(_) => unreachable!("loop variables are scalars"),
+                Kind::Struct(_) | Kind::List => unreachable!("loop variables are scalars"),
             }
         } else {
             match kind {
                 Kind::Num => b.ins().f64const(0.0),
                 Kind::Bool => b.ins().iconst(types::I8, 0),
                 Kind::Struct(_) => unreachable!("struct locals are split into fields"),
+                Kind::List => b.ins().iconst(types::I64, 0),
             }
         };
         b.def_var(variable, initial);
@@ -301,6 +309,11 @@ fn define_kernel(
                     let value = params[shift + offsets[logical] + field];
                     b.def_var(locals[*base as usize + field], value);
                 }
+            }
+            Kind::List => {
+                let at = shift + offsets[logical];
+                b.def_var(locals[*base as usize], params[at]);
+                b.def_var(locals[*base as usize + 1], params[at + 1]);
             }
             _ => b.def_var(locals[*base as usize], params[shift + offsets[logical]]),
         }
@@ -358,7 +371,7 @@ fn define_kernel(
                     let wide = lowering.b.ins().uextend(types::I32, value);
                     lowering.b.ins().fcvt_from_uint(types::F64, wide)
                 }
-                Kind::Struct(_) => unreachable!("loop variables are scalars"),
+                Kind::Struct(_) | Kind::List => unreachable!("loop variables are scalars"),
             };
             lowering
                 .b
@@ -392,6 +405,7 @@ fn failure_values(b: &mut FunctionBuilder, kinds: &[Kind]) -> Vec<Value> {
             Kind::Num => b.ins().f64const(f64::NAN),
             Kind::Bool => b.ins().iconst(types::I8, 0),
             Kind::Struct(_) => unreachable!("struct returns are flattened"),
+            Kind::List => unreachable!("a list cannot be returned from a kernel"),
         })
         .collect()
 }
@@ -415,7 +429,10 @@ impl Lowering<'_, '_> {
 
     fn assign(&mut self, slot: u32, expr: &Expr) {
         let values = self.expression(expr);
-        if self.kernel.struct_fields(slot).is_some() {
+        if self.kernel.locals.get(slot as usize) == Some(&Kind::List) {
+            self.b.def_var(self.locals[slot as usize], values[0]);
+            self.b.def_var(self.locals[slot as usize + 1], values[1]);
+        } else if self.kernel.struct_fields(slot).is_some() {
             for (at, value) in values.into_iter().enumerate() {
                 self.b.def_var(self.locals[slot as usize + at], value);
             }
@@ -437,6 +454,14 @@ impl Lowering<'_, '_> {
                 let value = self.scalar(value);
                 self.b
                     .def_var(self.locals[*base as usize + *offset as usize], value);
+            }
+            Stmt::SetIndexList(base, index, value) => {
+                let index = self.scalar(index);
+                let value = self.scalar(value);
+                let address = self.list_address(*base, index);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), value, address, 0);
             }
             Stmt::Discard(value) => {
                 self.expression(value);
@@ -573,6 +598,34 @@ impl Lowering<'_, '_> {
         }
     }
 
+    fn list_address(&mut self, base: u32, index: Value) -> Value {
+        let len = self.b.use_var(self.locals[base as usize + 1]);
+        let zero = self.b.ins().f64const(0.0);
+        let truncated = self.b.ins().trunc(index);
+        let whole = self.b.ins().fcmp(FloatCC::Equal, index, truncated);
+        let nonnegative = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, index, zero);
+        let in_range = self.b.ins().fcmp(FloatCC::LessThan, index, len);
+        let both = self.b.ins().band(whole, nonnegative);
+        let fine = self.b.ins().band(both, in_range);
+        let bad = self.b.create_block();
+        let good = self.b.create_block();
+        self.b.ins().brif(fine, good, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        self.b.seal_block(bad);
+        let one = self.b.ins().iconst(types::I32, 1);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), one, self.state, 4);
+        let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
+        self.b.ins().jump(self.propagate, &block_args(&failed));
+        self.b.switch_to_block(good);
+        self.b.seal_block(good);
+        let whole = self.b.ins().fcvt_to_sint_sat(types::I64, index);
+        let bytes = self.b.ins().imul_imm_s(whole, 8);
+        let pointer = self.b.use_var(self.locals[base as usize]);
+        self.b.ins().iadd(pointer, bytes)
+    }
+
     fn remainder(&mut self, left: Value, right: Value) -> Value {
         let whole_left = self.b.ins().trunc(left);
         let whole_right = self.b.ins().trunc(right);
@@ -616,7 +669,13 @@ impl Lowering<'_, '_> {
         let value = match expr {
             Expr::Num(n) => self.b.ins().f64const(*n),
             Expr::Bool(flag) => self.b.ins().iconst(types::I8, i64::from(*flag)),
-            Expr::Local(slot) => self.b.use_var(self.locals[*slot as usize]),
+            Expr::Local(slot) => {
+                let pointer = self.b.use_var(self.locals[*slot as usize]);
+                if self.kernel.locals.get(*slot as usize) == Some(&Kind::List) {
+                    return vec![pointer, self.b.use_var(self.locals[*slot as usize + 1])];
+                }
+                pointer
+            }
             Expr::Struct(base, _) => {
                 let fields = self
                     .kernel
@@ -630,6 +689,14 @@ impl Lowering<'_, '_> {
             Expr::GetField(base, offset) => self
                 .b
                 .use_var(self.locals[*base as usize + *offset as usize]),
+            Expr::ListLen(base) => self.b.use_var(self.locals[*base as usize + 1]),
+            Expr::IndexList(base, index) => {
+                let index = self.scalar(index);
+                let address = self.list_address(*base, index);
+                self.b
+                    .ins()
+                    .load(types::F64, MemFlagsData::trusted(), address, 0)
+            }
             Expr::Neg(inner) => {
                 let inner = self.scalar(inner);
                 self.b.ins().fneg(inner)
@@ -675,8 +742,8 @@ impl Lowering<'_, '_> {
                 };
                 self.b.ins().icmp(cc, left, right)
             }
-            Expr::Compare(_, Kind::Struct(_), _, _) => {
-                unreachable!("struct comparison is not lowered")
+            Expr::Compare(_, Kind::Struct(_) | Kind::List, _, _) => {
+                unreachable!("struct and list comparison is not lowered")
             }
             Expr::And(left, right) | Expr::Or(left, right) => {
                 let is_and = matches!(expr, Expr::And(..));
@@ -769,6 +836,7 @@ mod tests {
             &|name| sources.iter().find(|s| s.name == name).cloned(),
             &structs,
             true,
+            true,
         )
         .unwrap();
         let compiled = compile(&kernels).unwrap();
@@ -780,6 +848,33 @@ mod tests {
         let result =
             unsafe { (compiled[0].entry)(&mut context, args.as_mut_ptr(), out.as_mut_ptr()) };
         (result, context)
+    }
+
+    fn native_value(program: &str, root: &str, args: Vec<Value>) -> Option<f64> {
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let kernels = group(
+            root,
+            &|name| sources.iter().find(|s| s.name == name).cloned(),
+            &structs,
+            true,
+            true,
+        )
+        .unwrap();
+        let compiled = compile(&kernels).unwrap();
+        let native = crate::native::Native {
+            target: compiled[0].entry,
+            kernel: Box::leak(Box::new(kernels[0].clone())),
+            arity: kernels[0].arity() as u8,
+            bool_params: 0,
+            generation: 0,
+        };
+        let globals = crate::value::Globals::default().store();
+        crate::native::call(&native, &args, &globals, 0).map(|value| match value {
+            Value::Number(n) => n,
+            other => panic!("unexpected {other:?}"),
+        })
     }
 
     fn interpreted(program: &str, call: &str) -> f64 {
@@ -824,6 +919,7 @@ mod tests {
             root,
             &|name| sources.iter().find(|s| s.name == name).cloned(),
             &structs,
+            true,
             true,
         )
         .unwrap();
@@ -949,6 +1045,70 @@ mod tests {
     }
 
     #[test]
+    fn lists_of_numbers_match_the_interpreter() {
+        let program = "fn total(items: list<number>) -> number {\n    let sum = 0\n    let i = 0\n    let n = len(items)\n    while i < n {\n        sum = sum + items[i]\n        i = i + 1\n    }\n    items[0] = items[0] + 1\n    return sum + items[len(items) - 1]\n}\nfn at(items: list<number>, i: number) -> number {\n    return items[i]\n}";
+        for values in [vec![10.0, 20.0, 30.0], vec![0.0], vec![-1.5, 2.5]] {
+            let shown = values
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let got = native_value(
+                program,
+                "total",
+                vec![Value::list(values.into_iter().map(Value::Number).collect())],
+            )
+            .unwrap();
+            let want = interpreted(program, &format!("total([{shown}])"));
+            assert_eq!(got, want, "total([{shown}])");
+        }
+        let values = vec![Value::Number(1.0), Value::Number(2.0)];
+        assert_eq!(
+            native_value(program, "at", vec![Value::list(values), Value::Number(1.0)]),
+            Some(2.0)
+        );
+        assert_eq!(
+            native_value(
+                program,
+                "at",
+                vec![Value::list(vec![Value::Number(1.0)]), Value::Number(1.0)]
+            ),
+            None,
+            "an out-of-range index must fail the native call"
+        );
+        assert_eq!(
+            native_value(
+                program,
+                "at",
+                vec![Value::list(vec![Value::Number(1.0)]), Value::Number(0.5)]
+            ),
+            None,
+            "a fractional index must fail the native call"
+        );
+        let source = format!("{program}\nat([10, 20, 30], 4)");
+        let block = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
+        let error = Interpreter::new().run_main(&block).unwrap_err();
+        assert_eq!(error.message, "index 4 is out of range, the length is 3");
+    }
+
+    #[test]
+    fn list_kernels_reject_everything_but_indexing_assignment_and_length() {
+        let program = "fn created(n: number) -> number {\n    let xs = [n, n + 1]\n    return xs[0]\n}\nfn appended(n: number) -> number {\n    let xs = [n]\n    push(xs, n + 1)\n    return xs[0]\n}\nfn strings(xs: list<string>) -> number {\n    return len(xs)\n}\nfn returned(n: number) -> list<number> {\n    return [n]\n}\nfn looped(xs: list<number>) -> number {\n    let total = 0\n    for x in xs {\n        total = total + x\n    }\n    return total\n}\nfn written(xs: list<number>) -> number {\n    xs[0] = \"a\"\n    return len(xs)\n}";
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let find = |name: &str| sources.iter().find(|s| s.name == name).cloned();
+        for root in [
+            "created", "appended", "strings", "returned", "looped", "written",
+        ] {
+            assert!(
+                group(root, &find, &structs, true, true).is_err(),
+                "{root} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn returned_structs_match_the_interpreter() {
         let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn escape(n: number) -> Point {\n    return Point { y: n, x: n + 1 }\n}\nfn swapped(n: number) -> Point {\n    return Point { x: n, y: -n }\n}";
         for (root, argument) in [("escape", 3.0), ("escape", -7.5), ("swapped", 4.0)] {
@@ -989,15 +1149,22 @@ mod tests {
             "wrong_struct",
         ] {
             assert!(
-                group(root, &find, &structs, true).is_err(),
+                group(root, &find, &structs, true, true).is_err(),
                 "{root} must be rejected"
             );
         }
         for root in ["take", "escape"] {
             assert!(
-                group(root, &find, &structs, true).is_ok(),
+                group(root, &find, &structs, true, true).is_ok(),
                 "{root} must compile"
             );
         }
+        let wrong = "struct Point {\n    x: number,\n    y: number,\n}\nstruct Pair {\n    a: number,\n    b: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn wrong(n: number) -> number {\n    let p = Pair { a: n, b: n + 1 }\n    return take(p)\n}\nwrong(1)";
+        let block = Parser::new(lex(wrong).unwrap()).parse_program().unwrap();
+        let error = Interpreter::new().run_main(&block).unwrap_err();
+        assert_eq!(
+            error.message,
+            "argument 1 of 'take' should be Point, got Pair"
+        );
     }
 }

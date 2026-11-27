@@ -1,10 +1,10 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler::Proto;
 use crate::kernel::{self, Kernel, Kind, LoopSource, Source};
-use crate::value::{Closure, GlobalStore, Instance, Value};
+use crate::value::{Closure, GlobalStore, Instance, List, Value};
 
 const CALLS_BEFORE_COMPILING: u32 = 64;
 
@@ -82,6 +82,16 @@ fn range_is_builtin(globals: &crate::value::Globals) -> bool {
         })
 }
 
+fn len_is_builtin(globals: &crate::value::Globals) -> bool {
+    globals
+        .names
+        .iter()
+        .position(|name| name == "len")
+        .is_some_and(|slot| {
+            matches!(&globals.values[slot], Some(Value::Native(native)) if native.name == "len")
+        })
+}
+
 struct Lookup<'a> {
     store: &'a crate::value::GlobalStore,
     globals: std::cell::Ref<'a, crate::value::Globals>,
@@ -152,6 +162,7 @@ fn attempt(closure: &Closure, generation: u32) -> Option<Native> {
         protos: RefCell::new(HashMap::new()),
     };
     let builtin = range_is_builtin(&lookup.globals);
+    let len_builtin = len_is_builtin(&lookup.globals);
     let root_source = Rc::clone(root);
     let root_proto = Rc::clone(&closure.proto);
     lookup
@@ -169,6 +180,7 @@ fn attempt(closure: &Closure, generation: u32) -> Option<Native> {
         },
         &closure.proto.kernel_struct_layouts,
         builtin,
+        len_builtin,
     )
     .ok()?;
     let protos = lookup.protos.into_inner();
@@ -197,12 +209,14 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
             protos: RefCell::new(HashMap::new()),
         };
         let builtin = range_is_builtin(&lookup.globals);
+        let len_builtin = len_is_builtin(&lookup.globals);
         let kernels = kernel::group_loop(
             source,
             &kinds,
             &|name| lookup.find(name),
             &closure.proto.kernel_struct_layouts,
             builtin,
+            len_builtin,
         )
         .ok()?;
         let protos = lookup.protos.into_inner();
@@ -216,8 +230,10 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
 }
 
 pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()> {
-    let mut raw = arguments(native, values)?;
+    let mut lists = Vec::new();
+    let mut raw = arguments(native, values, &mut lists)?;
     let _ = run(native, &mut raw, depth)?;
+    drop(lists);
     for (at, value) in values.iter_mut().enumerate() {
         *value = if native.bool_params & (1 << at) != 0 {
             Value::Bool(raw[at] != 0.0)
@@ -229,12 +245,17 @@ pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()>
 }
 
 pub fn call(native: &Native, args: &[Value], globals: &GlobalStore, depth: u32) -> Option<Value> {
-    let mut raw = arguments(native, args)?;
+    let mut lists = Vec::new();
+    let mut raw = arguments(native, args, &mut lists)?;
     let out = run(native, &mut raw, depth)?;
     result(native, &out, args, globals)
 }
 
-pub fn arguments(native: &Native, args: &[Value]) -> Option<[f64; 16]> {
+pub fn arguments<'a>(
+    native: &Native,
+    args: &'a [Value],
+    lists: &mut Vec<RefMut<'a, List>>,
+) -> Option<[f64; 16]> {
     if args.len() != native.arity as usize {
         return None;
     }
@@ -260,6 +281,9 @@ pub fn arguments(native: &Native, args: &[Value]) -> Option<[f64; 16]> {
                 if &*instance.def.name != name || instance.def.fields.len() != layout.len() {
                     return None;
                 }
+                if at + layout.len() > raw.len() {
+                    return None;
+                }
                 let fields = instance.fields.borrow();
                 if fields.len() != layout.len() {
                     return None;
@@ -277,6 +301,20 @@ pub fn arguments(native: &Native, args: &[Value]) -> Option<[f64; 16]> {
                     };
                 }
                 at += layout.len();
+            }
+            (Value::List(items), Kind::List) => {
+                if at + 2 > raw.len() {
+                    return None;
+                }
+                let mut list = items.try_borrow_mut().ok()?;
+                let numbers = match &mut *list {
+                    List::Numbers(numbers) => numbers,
+                    _ => return None,
+                };
+                raw[at] = f64::from_bits(numbers.as_mut_ptr() as u64);
+                raw[at + 1] = numbers.len() as f64;
+                at += 2;
+                lists.push(list);
             }
             _ => return None,
         }
@@ -296,6 +334,7 @@ fn result(
     match native.kernel.signature.returns {
         Kind::Num => Some(Value::Number(raw[0])),
         Kind::Bool => Some(Value::Bool(raw[0] != 0.0)),
+        Kind::List => unreachable!("a list cannot be returned from a kernel"),
         Kind::Struct(index) => {
             let (name, layout) = &native.kernel.layouts[index as usize];
             let def = args
@@ -320,6 +359,7 @@ fn result(
                     Kind::Num => Value::Number(raw[at]),
                     Kind::Bool => Value::Bool(raw[at] != 0.0),
                     Kind::Struct(_) => return None,
+                    Kind::List => return None,
                 });
             }
             Some(Value::instance(Instance {

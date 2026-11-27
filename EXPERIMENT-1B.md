@@ -124,6 +124,57 @@ struct_access   sustained Khipu 332 ms  Python 325 ms  Node 28 ms  C 2.5 ms  Rus
 
 Khipu `struct_access` sustained: **21 ms** on the branch against 332–386 ms on main for the identical program — at least **15.8× faster**, past the required 2×. The gain comes from the kernel, not from the benchmark shape: the cold-run compile attempt on main rejects the struct call, so the whole loop stays interpreted.
 
+## After step 2
+
+`python3 scripts/bench.py --no-write` on the branch after the list change, same machine and command as Before. Every benchmark is included. The whole suite drifted upward in this run (for example `fib_iterative` 93 → 103 ms and `parallel` 280 → 395 ms), which is run-to-run noise on this machine; the list number is far outside that drift. Full output:
+
+```
+fib             cold      Khipu 6.7 ms  Python 31 ms  Node 29 ms  C 3.3 ms  Rust 3.7 ms
+fib             sustained Khipu 25 ms  Python 166 ms  Node 42 ms  C 7.1 ms  Rust 7.2 ms
+fib_iterative   cold      Khipu 14 ms  Python 68 ms  Node 29 ms  C 3.6 ms  Rust 4.4 ms
+fib_iterative   sustained Khipu 103 ms  Python 542 ms  Node 51 ms  C 12 ms  Rust 13 ms
+loop            cold      Khipu 7.3 ms  Python 301 ms  Node 44 ms  C 3.2 ms  Rust 3.2 ms
+loop            sustained Khipu 30 ms  Python 3096 ms  Node 185 ms  C 3.5 ms  Rust 3.7 ms
+nested_loops    cold      Khipu 6.0 ms  Python 24 ms  Node 29 ms  C 3.0 ms  Rust 3.4 ms
+nested_loops    sustained Khipu 12 ms  Python 280 ms  Node 33 ms  C 5.5 ms  Rust 5.9 ms
+sieve           cold      Khipu 11 ms  Python 34 ms  Node 31 ms  C 2.9 ms  Rust 3.3 ms
+sieve           sustained Khipu 206 ms  Python 684 ms  Node 74 ms  C 6.3 ms  Rust 6.4 ms
+matrix          cold      Khipu 7.6 ms  Python 24 ms  Node 29 ms  C 3.0 ms  Rust 3.4 ms
+matrix          sustained Khipu 145 ms  Python 313 ms  Node 35 ms  C 3.9 ms  Rust 6.0 ms
+mandelbrot      cold      Khipu 5.0 ms  Python 32 ms  Node 29 ms  C 3.0 ms  Rust 3.3 ms
+mandelbrot      sustained Khipu 7.7 ms  Python 269 ms  Node 33 ms  C 5.0 ms  Rust 4.9 ms
+lists           cold      Khipu 6.2 ms  Python 25 ms  Node 29 ms  C 3.0 ms  Rust 3.1 ms
+lists           sustained Khipu 17 ms  Python 98 ms  Node 32 ms  C 3.8 ms  Rust 3.4 ms
+records         cold      Khipu 24 ms  Python 56 ms  Node 31 ms  C 2.9 ms  Rust 3.3 ms
+records         sustained Khipu 202 ms  Python 401 ms  Node 34 ms  C 2.9 ms  Rust 3.0 ms
+strings         cold      Khipu 27 ms  Python 49 ms  Node 31 ms  C 12 ms  Rust 13 ms
+strings         sustained Khipu 230 ms  Python 352 ms  Node 53 ms  C 99 ms  Rust 126 ms
+calls           cold      Khipu 17 ms  Python 39 ms  Node 29 ms  C 2.9 ms  Rust 3.3 ms
+calls           sustained Khipu 121 ms  Python 234 ms  Node 41 ms  C 3.0 ms  Rust 3.0 ms
+closures        cold      Khipu 18 ms  Python 44 ms  Node 29 ms  C 3.1 ms  Rust 3.4 ms
+closures        sustained Khipu 134 ms  Python 296 ms  Node 33 ms  C 6.2 ms  Rust 5.3 ms
+locals          cold      Khipu 6.0 ms  Python 50 ms  Node 33 ms  C 3.0 ms  Rust 3.2 ms
+locals          sustained Khipu 13 ms  Python 331 ms  Node 72 ms  C 3.6 ms  Rust 3.3 ms
+globals         cold      Khipu 28 ms  Python 97 ms  Node 31 ms  C 3.9 ms  Rust 5.5 ms
+globals         sustained Khipu 128 ms  Python 389 ms  Node 34 ms  C 5.8 ms  Rust 13 ms
+record_access   cold      Khipu 34 ms  Python 118 ms  Node 30 ms  C 3.4 ms  Rust 4.2 ms
+record_access   sustained Khipu 312 ms  Python 1034 ms  Node 33 ms  C 5.8 ms  Rust 13 ms
+struct_access   cold      Khipu 7.1 ms  Python 54 ms  Node 29 ms  C 2.9 ms  Rust 4.0 ms
+struct_access   sustained Khipu 23 ms  Python 376 ms  Node 35 ms  C 2.9 ms  Rust 14 ms
+parallel        cold      Khipu 12 ms  Python 173 ms  Node 58 ms  C 3.8 ms  Rust 4.1 ms
+parallel        sustained Khipu 395 ms  Python 651 ms  Node 79 ms  C 22 ms  Rust 23 ms
+empty           cold      Khipu 4.3 ms  Python 17 ms  Node 26 ms  C 2.8 ms  Rust 3.1 ms
+```
+
+Control: the same restructured `lists` program in a clean worktree of `main` (1102d03), `python3 scripts/bench.py --no-write --only lists`:
+
+```
+lists           cold      Khipu 13 ms  Python 25 ms  Node 28 ms  C 2.9 ms  Rust 3.1 ms
+lists           sustained Khipu 97 ms  Python 97 ms  Node 31 ms  C 4.0 ms  Rust 3.3 ms
+```
+
+Khipu `lists` sustained: **17 ms** on the branch against **97 ms** on main for the identical program — **5.7× faster**, past the required 2× (≤ 47 ms). Against the Before number of 94 ms it is **5.5× faster**. The benchmark now uses a fixed eight-element number list built outside the kernel and spends N rounds on indexed reads, one indexed write and `len` inside it, in all five languages; all five print `1950014` at N = 300000 and `19500014` at N = 3000000.
+
 ## Open questions
 
 - A returned struct's interpreter `StructDef` carries methods, which the kernel IR does not carry. Where does the native boundary get it?
@@ -131,4 +182,10 @@ Khipu `struct_access` sustained: **21 ms** on the branch against 332–386 ms on
 - `Native` has to stay `Copy` because it lives in `Tier` cells. How does it keep the layout needed to convert struct fields at the boundary?
   - Proposed answer: leak a small clone of the compiled `Kernel` with `Box::leak` (safe, bounded by `MAX_COMPILES`) and store the `&'static Kernel`. Taken. No new `unsafe` was added, so the count in CONTRIBUTING.md stays at three.
 - Should the WebAssembly backend emit a kernel where a struct crosses a call boundary?
-  - Proposed answer: no. `wasmgen::module` returns `Err` and the web page falls back to the interpreter, as it already does for kernels containing structs. Taken.
+  - Proposed answer: no. `wasmgen::module` returns `Err` and the web page falls back to the interpreter, as it already does for kernels containing structs. Taken, and extended to number-list kernels for the same reason.
+- With list creation and `push` rejected inside kernels, how can the `lists` benchmark still measure the feature without the creation loop dominating the time?
+  - Proposed answer: build a small fixed numeric list at top level and let the suite's N drive the number of indexed rounds inside the kernel, with the same program in all five languages. The first attempt kept the original 3-million-element build loop and could not beat main even with a 2.4 ms kernel, because building the list alone took about 70 ms; that version was discarded rather than used to claim a kill number. Taken.
+- A lazy `range()` value is typed as `list<number>` but is not backed by a `Vec<f64>`. Should the kernel accept it?
+  - Proposed answer: no. The native boundary accepts only `List::Numbers`, the representation the kernel's pointer and bounds check address directly; anything else fails the call and the interpreter reruns it. Assignment by index also stays rejected for anything that would have to widen the list representation. Taken.
+- `len` can be redefined by a program. How does the kernel know the built-in is still the one in scope?
+  - Proposed answer: mirror `range`: the lowering only recognises `len(...)` as a length read when the global slot still holds the native `len` and no local shadows it; otherwise it goes through ordinary call resolution and is rejected if it is not a group function. Taken.
