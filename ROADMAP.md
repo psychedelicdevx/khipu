@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `█████░░░░░` 7 / 15 |
+| 9. HTTP without limits | `███████░░░` 10 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -147,19 +147,20 @@ Throughput
 - [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
 - [x] Keep-alive and pipelining, so a connection serves many requests without reconnecting
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
-- [ ] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
+  (not reachable end to end: Khipu `Request` fields are owned `Value::Str(Rc<String>)`, `Value` is not `Send`, and concurrency copies per worker; only internal copies can be shaved, never zero-copy into Khipu; do not retry without changing the value model)
+- [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
 - [ ] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file
 
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
 - [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
 - [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
-- [ ] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
+- [x] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
 - [ ] HTTPS serving with a certificate and key from files, using the TLS the client already has
 - [x] Fuzzed: malformed requests, truncated bodies, invalid UTF-8 in headers and a client that sends one byte a second never crash or hang the server
 
 Interface
-- [ ] `Request` gives method, path, query parameters, headers and body; `Response` sets status, headers and body, with `json`, `text`, `html` and `file` helpers
+- [x] `Request` gives method, path, query parameters, headers and body; `Response` sets status, headers and body, with `from_json`, `text`, `html` and `file` helpers
 - [x] Routing in the standard library: match on method and path with parameters, written in Khipu in `src/prelude.kp`
 - [ ] WebSockets: upgrade a request, then `send` and `receive` on it like a channel
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md

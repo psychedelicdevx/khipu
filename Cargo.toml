@@ -12,6 +12,7 @@ categories = ["compilers", "development-tools"]
 
 [dependencies]
 serde_json = "1"
+signal-hook = "0.4.6"
 
 [profile.release]
 lto = "fat"

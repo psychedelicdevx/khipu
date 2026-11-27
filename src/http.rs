@@ -4,10 +4,14 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 7] = [
+pub static NATIVES: [Native; 8] = [
     Native {
         name: "serve#",
         function: serve,
+    },
+    Native {
+        name: "emit#",
+        function: emit_chunk,
     },
     Native {
         name: "fetch#",
@@ -146,9 +150,14 @@ use unavailable as accept;
 use unavailable as respond;
 #[cfg(target_arch = "wasm32")]
 use unavailable as serve;
+#[cfg(target_arch = "wasm32")]
+use unavailable as emit_chunk;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use server::{accept, fetch, listen, respond, serve};
+pub use server::{
+    accept, active_count, begin_shutdown, drain, emit_chunk, fetch, is_shutdown, listen,
+    reset_shutdown, respond, serve,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod server {
@@ -162,7 +171,7 @@ mod server {
     use std::time::{Duration, Instant};
 
     use super::{headers, record, text};
-    use crate::value::{GlobalStore, Instance, StructDef, Value};
+    use crate::value::{GlobalStore, Instance, Native, StructDef, Value};
     use crate::vm::Vm;
 
     const MAX_BODY: usize = 10 * 1024 * 1024;
@@ -678,6 +687,75 @@ mod server {
 
     const INTERNAL_ERROR: &str = "internal server error";
 
+    thread_local! {
+        static STREAM_OUT: std::cell::RefCell<Option<TcpStream>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub fn emit_chunk(args: &[Value]) -> Result<Value, String> {
+        let chunk = match args.first() {
+            Some(Value::Str(text)) => text.to_string(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        };
+        STREAM_OUT.with(|out| {
+            if let Some(stream) = out.borrow().as_ref() {
+                let mut stream = match stream.try_clone() {
+                    Ok(stream) => stream,
+                    Err(_) => return Ok(Value::None),
+                };
+                let _ = stream.write_all(format!("{:x}\r\n{}\r\n", chunk.len(), chunk).as_bytes());
+                let _ = stream.flush();
+            }
+            Ok(Value::None)
+        })
+    }
+
+    fn is_stream(value: &Value) -> Option<Value> {
+        let Value::Record(record) = value else {
+            return None;
+        };
+        let record = record.borrow();
+        if record.iter().any(|(name, _)| &**name == "khipu_stream") {
+            record.get("khipu_stream")
+        } else {
+            None
+        }
+    }
+
+    fn stream_headers(stream: &mut TcpStream, keep_alive: bool) {
+        let mut head = "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ntransfer-encoding: chunked\r\n".to_string();
+        head.push_str(&format!(
+            "connection: {}\r\n\r\n",
+            if keep_alive { "keep-alive" } else { "close" }
+        ));
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.flush();
+    }
+
+    fn stream_response(stream: &mut TcpStream, vm: &mut Vm, producer: Value, keep_alive: bool) {
+        stream_headers(stream, keep_alive);
+        if let Ok(clone) = stream.try_clone() {
+            STREAM_OUT.with(|out| *out.borrow_mut() = Some(clone));
+        }
+        let result = vm.call(producer, vec![Value::Native(&EMIT_NATIVE)]);
+        STREAM_OUT.with(|out| *out.borrow_mut() = None);
+        match result {
+            Ok(_) => {
+                let _ = stream.write_all(b"0\r\n\r\n");
+                let _ = stream.flush();
+            }
+            Err(error) => {
+                eprintln!("{}", crate::task::render(&error));
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    static EMIT_NATIVE: Native = Native {
+        name: "emit#",
+        function: emit_chunk,
+    };
+
     fn struct_def(globals: &GlobalStore, name: &str) -> Option<Rc<StructDef>> {
         let store = globals.borrow();
         let slot = store.names.iter().position(|n| n == name)?;
@@ -718,6 +796,40 @@ mod server {
     }
 
     const WORKER_STACK: usize = 16 * 1024 * 1024;
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+    static SHUTDOWN_ARC: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+        std::sync::OnceLock::new();
+    static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn shutdown_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        SHUTDOWN_ARC
+            .get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .clone()
+    }
+
+    pub fn is_shutdown() -> bool {
+        shutdown_flag().load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn begin_shutdown() {
+        shutdown_flag().store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn reset_shutdown() {
+        shutdown_flag().store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn active_count() -> usize {
+        ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn drain(max: Duration) {
+        let start = Instant::now();
+        while ACTIVE.load(std::sync::atomic::Ordering::SeqCst) > 0 && start.elapsed() < max {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn percent_decode(text: &str) -> String {
         let bytes = text.as_bytes();
@@ -829,20 +941,32 @@ mod server {
         stream: &mut TcpStream,
         keep_alive: bool,
     ) {
-        let (status, response_body, response_headers) =
-            match vm.call(handler.clone(), vec![request]) {
-                Ok(value) => match response_parts(&value) {
-                    Ok(response) => response,
-                    Err(message) => {
-                        eprintln!("in a request handler: {message}");
-                        (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
-                    }
-                },
-                Err(error) => {
-                    eprintln!("{}", crate::task::render(&error));
-                    (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
-                }
-            };
+        let returned = match vm.call(handler.clone(), vec![request]) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("{}", crate::task::render(&error));
+                write_response(
+                    stream,
+                    500,
+                    INTERNAL_ERROR,
+                    &Value::record(Vec::new()),
+                    keep_alive,
+                )
+                .ok();
+                return;
+            }
+        };
+        if let Some(producer) = is_stream(&returned) {
+            stream_response(stream, vm, producer, keep_alive);
+            return;
+        }
+        let (status, response_body, response_headers) = match response_parts(&returned) {
+            Ok(response) => response,
+            Err(message) => {
+                eprintln!("in a request handler: {message}");
+                (500, INTERNAL_ERROR.to_string(), Value::record(Vec::new()))
+            }
+        };
         if write_response(
             stream,
             status,
@@ -874,6 +998,7 @@ mod server {
             buf: Vec::new(),
         };
         let mut served = 0usize;
+        ACTIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         loop {
             match read_request_conn(&mut conn, limits) {
                 ReadReq::Closed => break,
@@ -894,6 +1019,7 @@ mod server {
                 }
             }
         }
+        ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn http_worker(
@@ -944,6 +1070,10 @@ mod server {
         }
         let listener = TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
+        let _ = listener.set_nonblocking(true);
+        let flag = shutdown_flag();
+        let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, flag.clone());
+        let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, flag.clone());
         println!("listening on http://localhost:{port}");
         let dir = crate::task::program_dir();
         let workers = std::thread::available_parallelism()
@@ -964,9 +1094,20 @@ mod server {
                 .expect("could not start a request worker");
         }
         loop {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let _ = sender.send(stream);
+                    let _ = stream.set_nonblocking(false);
+                    if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    } else {
+                        let _ = sender.send(stream);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
                 }
                 Err(error) => {
                     eprintln!("could not accept a connection: {error}");
@@ -974,6 +1115,9 @@ mod server {
                 }
             }
         }
+        drop(sender);
+        drain(DRAIN_TIMEOUT);
+        Ok(Value::None)
     }
 
     #[cfg(test)]

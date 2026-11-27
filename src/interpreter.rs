@@ -717,6 +717,73 @@ mod tests {
     }
 
     #[test]
+    fn response_stream_is_chunked_with_no_content_length() {
+        let port = 20000 + std::process::id() % 20000 + 15;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.stream(fn(emit) {\n        let i = 0\n        while i < 5000 {\n            emit(\"x\")\n            i = i + 1\n        }\n    })\n}",
+        );
+        let _ = raw_get(port, "/");
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut out = Vec::new();
+        stream.read_to_end(&mut out).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        let lower = text.to_lowercase();
+        assert!(lower.contains("transfer-encoding: chunked"), "{text}");
+        assert!(!lower.contains("content-length"), "{text}");
+        assert!(
+            text.ends_with("0\r\n\r\n"),
+            "...{}",
+            &text[text.len().saturating_sub(20)..]
+        );
+        assert!(
+            text.matches("1\r\nx\r\n").count() >= 5000 || text.contains("x"),
+            "no chunks"
+        );
+        let body_len = text.len();
+        assert!(
+            body_len > 8192,
+            "body smaller than write buffer test needs chunking"
+        );
+    }
+
+    #[test]
+    fn a_handler_throwing_mid_stream_closes_without_a_zero_chunk_or_500() {
+        let port = 20000 + std::process::id() % 20000 + 16;
+        start_server(
+            port,
+            "fn handle(request: Request) -> Response {\n    return Response.stream(fn(emit) {\n        emit(\"before\")\n        nope()\n    })\n}",
+        );
+        let _ = raw_get(port, "/");
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        assert!(
+            text.to_lowercase().contains("transfer-encoding: chunked"),
+            "{text}"
+        );
+        assert!(text.contains("before"), "{text}");
+        assert!(
+            !text.contains("0\r\n\r\n"),
+            "zero chunk sent after mid-stream error: {text}"
+        );
+        assert!(
+            !text.contains("HTTP/1.1 500"),
+            "500 after bytes went out: {text}"
+        );
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);

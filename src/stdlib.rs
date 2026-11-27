@@ -506,6 +506,8 @@ fn exit(args: &[Value]) -> Result<Value, String> {
     use std::io::Write;
     let code = whole(&args[0], "Process.exit")?;
     let _ = std::io::stdout().flush();
+    crate::http::begin_shutdown();
+    crate::http::drain(std::time::Duration::from_secs(10));
     std::process::exit(code.clamp(0, 255) as i32)
 }
 
