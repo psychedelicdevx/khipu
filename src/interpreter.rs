@@ -958,6 +958,79 @@ ws.onclose = (event) => {
     }
 
     #[test]
+    fn bytes_index_build_from_lists_and_go_to_files() {
+        assert_eq!(
+            number("let b = bytes([0, 7, 255])\nb[0] + b[1] + b[2]"),
+            262.0
+        );
+        assert_eq!(number("\"h\u{e9}\".to_bytes()[1]"), 195.0);
+        assert!(boolean("bytes([104, 105]).to_string() == \"hi\""));
+        assert!(boolean("len(bytes([])) == 0"));
+        assert_eq!(
+            error("let b = bytes([1, 2])\nb[2]").message,
+            "index 2 is out of range, the length is 2"
+        );
+        assert_eq!(
+            error("let b = bytes([1, 2])\nb[0.5]").message,
+            "index must be a whole number, got 0.5"
+        );
+        assert_eq!(
+            error("let b = bytes([1])\nb[\"x\"]").message,
+            "index must be a number, got string"
+        );
+        let wide = error("let n = 256\nbytes([1, n])");
+        assert_eq!(
+            (wide.line, wide.message.as_str()),
+            (
+                2,
+                "bytes needs whole numbers from 0 to 255, got 256 at index 1"
+            )
+        );
+        assert_eq!(
+            error("let x: any = [1.5]\nbytes(x)").message,
+            "bytes needs whole numbers from 0 to 255, got 1.5 at index 0"
+        );
+        assert_eq!(
+            error("let x: any = [\"a\"]\nbytes(x)").message,
+            "bytes needs whole numbers from 0 to 255, got \"a\" at index 0"
+        );
+        assert_eq!(
+            error("let x: any = -1\nbytes([x])").message,
+            "bytes needs whole numbers from 0 to 255, got -1 at index 0"
+        );
+        let path = std::env::temp_dir().join(format!("khipu-bytes-{}.bin", std::process::id()));
+        let source = format!(
+            "let all = []\nfor n in range(256) {{\n    push(all, n)\n}}\nFile.write_bytes(\"{0}\", bytes(all))\nlet back = File.read_bytes(\"{0}\")\nlen(back) == 256 && back[200] == 200 && back == bytes(all)",
+            path.display()
+        );
+        assert!(boolean(&source));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            (0..=255).collect::<Vec<u8>>()
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            error("File.write_bytes(\"x\", \"text\")").message,
+            "argument 2 of 'File.write_bytes' should be bytes, got string"
+        );
+    }
+
+    #[test]
+    fn optional_struct_fields_may_be_left_out() {
+        let shape = "struct Note {\n    text: string,\n    tag: string?,\n}\n";
+        assert!(boolean(&format!(
+            "{shape}let n = Note {{ text: \"a\" }}\nn.tag == none && Note {{ text: \"a\", tag: \"b\" }}.tag == \"b\""
+        )));
+        assert_eq!(
+            error(&format!("{shape}Note {{ tag: \"b\" }}")).message,
+            "Note is missing field 'text'"
+        );
+        assert!(boolean(
+            "let r = Response { status: 200, body: \"x\", headers: {} }\nr.bytes == none"
+        ));
+    }
+
+    #[test]
     fn bytes_hold_binary_data_and_convert_to_and_from_strings() {
         assert_eq!(number("\"héllo\".to_bytes().len()"), 6.0);
         assert_eq!(
@@ -1020,6 +1093,14 @@ ws.onclose = (event) => {
         let (head, body) = http_exchange(port, &post);
         assert!(head.contains("x-length: 256\r\n"), "{head}");
         assert_eq!(body, every);
+        let copy = dir.join("copy.bin");
+        let client = format!(
+            "let reply = Http.get(\"http://127.0.0.1:{port}/file\")\nlet data = reply.bytes ?? bytes([])\nFile.write_bytes(\"{}\", data)\nlet posted = Http.request(\"POST\", \"http://127.0.0.1:{port}/echo\", \"h\u{e9}\", {{}})\n\"${{len(data)}} ${{data[0]}} ${{data[255]}} ${{data == File.read_bytes(\"{}\")}} ${{posted.bytes == \"h\u{e9}\".to_bytes()}} ${{posted.body}}\"",
+            copy.display(),
+            path.display()
+        );
+        assert_eq!(string(&client), "256 0 255 true true h\u{e9}");
+        assert_eq!(std::fs::read(&copy).unwrap(), every);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

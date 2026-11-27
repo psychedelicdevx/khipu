@@ -97,7 +97,7 @@ enum Node {
     Cell(Slot),
     Globals(Vec<String>, Vec<Option<Slot>>),
     Function(Arc<PortableProto>, Vec<usize>, usize),
-    StructDef(String, Vec<String>, Vec<(String, Slot)>),
+    StructDef(String, Vec<String>, Vec<String>, Vec<(String, Slot)>),
     Instance(usize, Vec<Slot>),
     EnumDef(PortableEnum),
     Enum(usize, usize, Vec<Slot>),
@@ -119,6 +119,8 @@ enum PortablePattern {
     Variant(u32, Option<String>, String, u32),
 }
 
+type PortableStruct = (String, Vec<String>, Vec<String>, Vec<String>);
+
 pub struct PortableProto {
     name: String,
     arity: u32,
@@ -128,7 +130,7 @@ pub struct PortableProto {
     protos: Vec<Arc<PortableProto>>,
     shapes: Vec<Vec<String>>,
     captures: Vec<Capture>,
-    structs: Vec<(String, Vec<String>, Vec<String>)>,
+    structs: Vec<PortableStruct>,
     enums: Vec<PortableEnum>,
     patterns: Vec<PortablePattern>,
     builtin: bool,
@@ -208,6 +210,7 @@ fn pack_proto(proto: &Rc<Proto>) -> Arc<PortableProto> {
                     info.name.to_string(),
                     strings(&info.fields),
                     strings(&info.methods),
+                    strings(&info.optional),
                 )
             })
             .collect(),
@@ -274,9 +277,10 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         structs: packed
             .structs
             .iter()
-            .map(|(name, fields, methods)| StructInfo {
+            .map(|(name, fields, methods, optional)| StructInfo {
                 name: Rc::from(name.as_str()),
                 fields: names(fields),
+                optional: names(optional),
                 methods: methods.iter().map(|m| Rc::from(m.as_str())).collect(),
             })
             .collect(),
@@ -387,7 +391,12 @@ impl Packer {
                     .iter()
                     .map(|(name, method)| (name.to_string(), packer.slot(method)))
                     .collect();
-                Node::StructDef(def.name.to_string(), strings(&def.fields), methods)
+                Node::StructDef(
+                    def.name.to_string(),
+                    strings(&def.fields),
+                    strings(&def.optional),
+                    methods,
+                )
             }),
             Value::Instance(instance) => self.node(address(instance), |packer| {
                 let Slot::Node(def) = packer.slot(&Value::StructDef(Rc::clone(&instance.def)))
@@ -500,7 +509,7 @@ impl Unpacker {
                 self.nodes[index] = Node::Function(proto, Vec::new(), 0);
                 value
             }
-            Node::StructDef(name, fields, methods) => {
+            Node::StructDef(name, fields, optional, methods) => {
                 let methods = methods
                     .iter()
                     .map(|(name, method)| (Rc::from(name.as_str()), self.value(method)))
@@ -508,6 +517,7 @@ impl Unpacker {
                 Value::struct_def(StructDef {
                     name: Rc::from(name),
                     fields: names(&fields),
+                    optional: names(&optional),
                     methods,
                 })
             }

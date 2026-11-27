@@ -234,6 +234,7 @@ pub struct Native {
 pub struct StructDef {
     pub name: Rc<str>,
     pub fields: Rc<[Rc<str>]>,
+    pub optional: Rc<[Rc<str>]>,
     pub methods: Vec<(Rc<str>, Value)>,
 }
 

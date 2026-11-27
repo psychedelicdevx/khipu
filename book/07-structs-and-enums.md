@@ -33,7 +33,7 @@ Point { x: 4, y: 6 }
 
 A method that takes `self` as its first parameter is called on a value with a dot. Inside it, `self.x` reads the value's own field and `self.x = ...` changes it.
 
-Creating a struct with a missing field (`Point { x: 1 }`) is an error: `Point is missing field 'y'`. So is a wrong type (`'Point.x' should be number, got string`) or reading a field that does not exist (`Point has no field 'z'`). Structs, like lists and records, are shared when assigned, and compared by contents:
+Creating a struct with a missing field (`Point { x: 1 }`) is an error: `Point is missing field 'y'`. The exception is a field whose type ends in `?`: it may be left out, and is then `none`, so `struct Note { text: string, tag: string? }` can be written `Note { text: "hi" }`. So is a wrong type (`'Point.x' should be number, got string`) or reading a field that does not exist (`Point has no field 'z'`). Structs, like lists and records, are shared when assigned, and compared by contents:
 
 ```js
 struct Account {

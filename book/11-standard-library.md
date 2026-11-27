@@ -66,7 +66,7 @@ SECOND LINE
 false
 ```
 
-`File.list("folder")` gives the names inside a folder. A file that cannot be read stops the program with an error that says why and points at the line that tried:
+`File.read_bytes(path)` and `File.write_bytes(path, data)` do the same with `bytes` (described under Http below), for files that are not text. `File.list("folder")` gives the names inside a folder. A file that cannot be read stops the program with an error that says why and points at the line that tried:
 
 ```text
 error: cannot read nope.txt: it does not exist
@@ -127,7 +127,7 @@ fn handle(request: Request) -> Response {
 Http.serve(8080, handle)
 ```
 
-`Http.serve` never returns, so a program that serves is stopped with Ctrl-C, which lets requests already being answered finish. Handlers run on every core at once; a connection that is waiting for its next request, or a WebSocket waiting for its next message, waits in one event loop instead of holding a thread, so ten thousand idle connections cost memory, not workers. The calls on the other side are `Http.get(url)`, `Http.post(url, body)`, `Http.post_json(url, value)` and `Http.request(method, url, body, headers)`, over `http://` or `https://`. Each gives a `Response` with `status`, `body`, `headers`, an `ok()` that is true for 2xx statuses, and `json()`:
+`Http.serve` never returns, so a program that serves is stopped with Ctrl-C, which lets requests already being answered finish. Handlers run on every core at once; a connection that is waiting for its next request, or a WebSocket waiting for its next message, waits in one event loop instead of holding a thread, so ten thousand idle connections cost memory, not workers. The calls on the other side are `Http.get(url)`, `Http.post(url, body)`, `Http.post_json(url, value)` and `Http.request(method, url, body, headers)`, over `http://` or `https://`. Each gives a `Response` with `status`, `body`, `headers`, an `ok()` that is true for 2xx statuses, and `json()`. The body is there twice: `body` as text, with invalid UTF-8 replaced, and `bytes` exactly as it arrived, so a download of an image can be written to disk with `File.write_bytes("logo.png", reply.bytes ?? bytes([]))` untouched. (`bytes` is typed `bytes?` because a `Response` the program builds itself may leave it out.)
 
 ```js
 let reply = Http.get("http://localhost:8080/hello")
@@ -144,16 +144,20 @@ print(missing.status, missing.body)
 
 Run the server in one terminal and the client in another. `examples/web` in the repository has a bigger pair: a notes server and a client that posts to it.
 
-Bodies are not always text. `bytes` holds binary data: `"text".to_bytes()` makes it from a string, `len()` and `slice(start, end)` count and cut it by byte, and `to_string()` gives the text back, or `none` if the bytes are not valid UTF-8:
+Bodies are not always text. `bytes` holds binary data: `"text".to_bytes()` makes it from a string and `bytes([104, 105])` from a list of whole numbers 0 to 255, `data[i]` reads one byte as a number, `len()` and `slice(start, end)` count and cut it by byte, and `to_string()` gives the text back, or `none` if the bytes are not valid UTF-8:
 
 ```js
 let data = "héllo".to_bytes()
 print(data.len(), data.slice(0, 3).to_string(), data.slice(0, 2).to_string(), data)
+print(data[0], data[1], bytes([104, 105]).to_string())
 ```
 
 ```text
 6 hé none <6 bytes>
+104 195 hi
 ```
+
+An index past the end is the same error a list gives, and a number outside 0 to 255, or not whole, is an error that names it and its index.
 
 A request carries its body both ways, as `body` (the text, with invalid UTF-8 replaced) and as `bytes`. A `Response` body can be a string or `bytes`, and `Response.file` reads the file as bytes, so images and archives are served untouched:
 

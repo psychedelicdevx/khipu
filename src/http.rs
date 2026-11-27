@@ -347,14 +347,15 @@ mod server {
                 )
             })
             .collect();
-        let body = response
+        let raw = response
             .body_mut()
-            .read_to_string()
+            .read_to_vec()
             .map_err(|error| format!("cannot read the reply from {url}: {error}"))?;
         Ok(Value::list(vec![
             Value::Number(status as f64),
-            Value::str(&body),
+            Value::str(&String::from_utf8_lossy(&raw)),
             record(found),
+            Value::Bytes(Rc::new(raw)),
         ]))
     }
 

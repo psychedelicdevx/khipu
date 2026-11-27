@@ -635,7 +635,8 @@ impl Checker {
                 match &target {
                     Type::List(item) if index_ok => (**item).clone(),
                     Type::Str if index_ok => Type::Str,
-                    Type::List(_) | Type::Str => {
+                    Type::Bytes if index_ok => Type::Number,
+                    Type::List(_) | Type::Str | Type::Bytes => {
                         return self.fail(format!("index must be a number, got {index}"));
                     }
                     Type::Record if index == Type::Number => {
@@ -948,8 +949,8 @@ impl Checker {
                 None => return self.fail(format!("{name} has no field '{field}'")),
             }
         }
-        for (field, _) in &info.fields {
-            if !fields.iter().any(|(given, _)| given == field) {
+        for (field, ty) in &info.fields {
+            if !matches!(ty, Type::Optional(_)) && !fields.iter().any(|(given, _)| given == field) {
                 return self.fail(format!("{name} is missing field '{field}'"));
             }
         }

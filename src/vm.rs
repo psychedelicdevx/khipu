@@ -959,6 +959,7 @@ impl Vm {
                         let def = StructDef {
                             name: Rc::clone(&info.name),
                             fields: Rc::clone(&info.fields),
+                            optional: Rc::clone(&info.optional),
                             methods: info.methods.iter().cloned().zip(methods).collect(),
                         };
                         self.stack.push(Value::struct_def(def));
@@ -983,6 +984,7 @@ impl Vm {
                                 Some(at) => {
                                     fields.push(std::mem::replace(&mut given[at], Value::None))
                                 }
+                                None if def.optional.contains(field) => fields.push(Value::None),
                                 None => fail!(format!("{} is missing field '{field}'", def.name)),
                             }
                         }
@@ -1446,6 +1448,9 @@ fn index_into(target: &Value, index: &Value, cache: &FieldCache) -> Result<Value
             let at = position(index, chars.len())?;
             Ok(Value::str(&chars[at].to_string()))
         }
+        Value::Bytes(bytes) => Ok(Value::Number(f64::from(
+            bytes[position(index, bytes.len())?],
+        ))),
         Value::Record(record) => match index {
             Value::Str(name) => get_field(record, name, cache),
             other => Err(format!(
