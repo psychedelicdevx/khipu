@@ -147,7 +147,7 @@ Throughput
 - [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
 - [x] Keep-alive and pipelining, so a connection serves many requests without reconnecting
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
-  (not reachable end to end: Khipu `Request` fields are owned `Value::Str(Rc<String>)`, `Value` is not `Send`, and concurrency copies per worker; only internal copies can be shaved, never zero-copy into Khipu; do not retry without changing the value model)
+  (reassessed after `bytes`, still not reachable: `bytes` is an owned `Rc<Vec<u8>>` and `Value` is not `Send`, so the body could at best become one slice of a buffer moved to the worker, while method, path, query and every header stay `string` fields that are copied into `Rc<String>` when the `Request` is built; reaching the item needs lazy string values that point into a shared buffer, a change to the value model, not to the server)
 - [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
 - [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file
 
