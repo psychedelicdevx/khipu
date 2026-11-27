@@ -22,6 +22,16 @@ pub struct Channel {
 pub trait Endpoint: Send + Sync {
     fn send(&self, value: &Value) -> Result<(), String>;
     fn close(&self, code: u16, reason: &str);
+    fn protocol(&self) -> Option<String>;
+}
+
+pub fn protocol(channel: &Channel) -> Option<String> {
+    channel.port.as_ref()?.protocol()
+}
+
+pub fn fail(channel: &Channel, message: String) {
+    lock(&channel.state).failure.get_or_insert(message);
+    seal(channel);
 }
 
 pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Channel> {
@@ -70,6 +80,7 @@ struct ChannelState {
     queue: VecDeque<Graph>,
     waiters: VecDeque<Waiter>,
     closed: bool,
+    failure: Option<String>,
 }
 
 struct Waiter {
@@ -627,19 +638,22 @@ fn take_or_wait(
     worker: Option<usize>,
     task: u64,
     counted: bool,
-) -> Option<(usize, Graph)> {
+) -> Option<(usize, Result<Graph, String>)> {
     for (index, channel) in channels.iter().enumerate() {
         let mut state = lock(&channel.state);
         if let Some(value) = state.queue.pop_front() {
-            return Some((index, value));
+            return Some((index, Ok(value)));
+        }
+        if let Some(failure) = &state.failure {
+            return Some((index, Err(failure.clone())));
         }
         if state.closed {
             return Some((
                 index,
-                Graph {
+                Ok(Graph {
                     nodes: Vec::new(),
                     roots: vec![Slot::None],
-                },
+                }),
             ));
         }
         state
@@ -655,8 +669,8 @@ fn take_or_wait(
     None
 }
 
-fn received(index: usize, graph: Graph) -> (usize, Value) {
-    (index, unpack(graph).remove(0))
+fn received(index: usize, graph: Result<Graph, String>) -> Result<(usize, Value), String> {
+    Ok((index, unpack(graph?).remove(0)))
 }
 
 pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
@@ -671,7 +685,7 @@ pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
                 world.blocked -= count;
             }
             drop(world);
-            return Ok(received(index, value));
+            return received(index, value);
         }
         if counted && world.blocked >= world.live {
             WAKE.notify_all();
@@ -689,7 +703,7 @@ pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
                 world.blocked -= count;
             }
             drop(world);
-            return Ok(received(index, value));
+            return received(index, value);
         }
         while armed.load(Ordering::Acquire) && (!counted || world.blocked < world.live) {
             world = WAKE

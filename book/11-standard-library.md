@@ -231,10 +231,11 @@ fn handle(request: Request) -> Response {
 Http.serve(8080, handle)
 ```
 
-`Http.websocket(url)` is the other side: it connects to a `ws://` or `wss://` address and gives a socket that works the same way, with `send`, `receive`, `select` and `close`. `Http.websocket_with(url, options)` can list `protocols` to offer and add a `certificate` file to trust, for a server whose certificate is self-signed:
+`Http.websocket(url)` is the other side: it connects to a `ws://` or `wss://` address and gives a socket that works the same way, with `send`, `receive`, `select` and `close`. `Http.websocket_with(url, options)` can list `protocols` to offer and add a `certificate` file to trust, for a server whose certificate is self-signed. `socket.protocol()` gives the protocol the server chose, or `none`, and works on the server's side of a socket too:
 
 ```js
 let socket = Http.websocket_with("ws://localhost:8080/", { protocols: ["chat.v1"] })
+print(socket.protocol())
 print(receive(socket))
 send(socket, "hello")
 print(receive(socket))
@@ -242,9 +243,12 @@ close(socket)
 ```
 
 ```text
+chat.v1
 speaking chat.v1
 echo: hello
 ```
+
+The client offers `permessage-deflate` and compresses messages of 64 bytes or more when the server accepts it, as Khipu's server does. It also watches the connection: after 30 seconds without hearing anything it sends a ping, and if 30 more pass with no answer, the socket is closed and the `receive` (or `select`) waiting on it stops the program with an error saying the server timed out, so a socket to a machine that has vanished does not wait forever. `ping_interval` and `ping_timeout` in the options change the two periods, in seconds: `Http.websocket_with(url, { ping_interval: 5, ping_timeout: 2 })`.
 
 ## Exercises
 

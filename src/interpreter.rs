@@ -1519,6 +1519,175 @@ ws.onmessage = (event) => {
         );
     }
 
+    fn read_client_frame(stream: &mut std::net::TcpStream) -> (u8, Vec<u8>) {
+        use std::io::Read;
+        let mut head = [0u8; 2];
+        stream.read_exact(&mut head).unwrap();
+        let len = match head[1] & 0x7f {
+            126 => {
+                let mut wide = [0u8; 2];
+                stream.read_exact(&mut wide).unwrap();
+                u16::from_be_bytes(wide) as usize
+            }
+            short => short as usize,
+        };
+        let mut mask = [0u8; 4];
+        stream.read_exact(&mut mask).unwrap();
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).unwrap();
+        for (at, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[at % 4];
+        }
+        (head[0], payload)
+    }
+
+    fn raw_websocket_peer(
+        answer: &'static str,
+        talk: impl FnOnce(std::net::TcpStream) + Send + 'static,
+    ) -> (u16, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sender, heads) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let key = head
+                .lines()
+                .find_map(|line| line.strip_prefix("sec-websocket-key: "))
+                .unwrap()
+                .trim()
+                .to_string();
+            let digest = ring::digest::digest(
+                &ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+                format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
+            );
+            let accept = crate::web::base64(digest.as_ref());
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\n{answer}\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let _ = sender.send(head);
+            talk(stream);
+        });
+        (port, heads)
+    }
+
+    #[test]
+    fn the_websocket_client_reads_the_chosen_protocol() {
+        let port = 20000 + std::process::id() % 20000 + 42;
+        start_server(port, PROTOCOL_SERVER);
+        let client = format!(
+            "let ws = Http.websocket_with(\"ws://127.0.0.1:{port}/\", {{ protocols: [\"chat.v1\", \"chat.v2\"] }})\nlet long = \"y\".repeat(70000)\nsend(ws, long)\nlet back = receive(ws) ?? \"\"\nlet plain = Http.websocket(\"ws://127.0.0.1:{port}/\")\nlet chosen = \"${{ws.protocol()}} ${{plain.protocol()}} ${{channel().protocol()}} ${{len(back)}}\"\nclose(ws)\nclose(plain)\nchosen"
+        );
+        assert_eq!(string(&client), "chat.v2 none none 70006");
+        let (wrong, _) = raw_websocket_peer("sec-websocket-protocol: chat.v9\r\n", drop);
+        assert_eq!(
+            error(&format!(
+                "Http.websocket_with(\"ws://127.0.0.1:{wrong}/\", {{ protocols: [\"chat.v1\"] }})"
+            ))
+            .message,
+            format!(
+                "ws://127.0.0.1:{wrong}/ chose a websocket protocol it was not offered: chat.v9"
+            )
+        );
+        let (odd, _) = raw_websocket_peer("sec-websocket-extensions: x-unknown\r\n", drop);
+        assert_eq!(
+            error(&format!("Http.websocket(\"ws://127.0.0.1:{odd}/\")")).message,
+            format!(
+                "ws://127.0.0.1:{odd}/ answered with an extension it was not offered: x-unknown"
+            )
+        );
+    }
+
+    #[test]
+    fn the_websocket_client_compresses_and_answers_pings_kept_alive() {
+        use std::io::Write;
+        let (port, heads) = raw_websocket_peer(
+            "sec-websocket-extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n",
+            |mut stream| {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+                    .unwrap();
+                let quiet_until =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1200);
+                let mut pings = 0;
+                while std::time::Instant::now() < quiet_until {
+                    let mut head = [0u8; 2];
+                    if std::io::Read::read_exact(&mut stream, &mut head).is_err() {
+                        continue;
+                    }
+                    assert_eq!(head, [0x89, 0x80]);
+                    let mut mask = [0u8; 4];
+                    std::io::Read::read_exact(&mut stream, &mut mask).unwrap();
+                    stream.write_all(&[0x8a, 0x00]).unwrap();
+                    pings += 1;
+                }
+                assert!(pings >= 2, "{pings} pings");
+                stream.set_read_timeout(None).unwrap();
+                let message = "late ".repeat(40);
+                let mut frame = vec![0xc1, 0];
+                let packed = raw_deflate(message.as_bytes());
+                frame[1] = packed.len() as u8;
+                frame.extend_from_slice(&packed);
+                stream.write_all(&frame).unwrap();
+                let (first, payload) = read_client_frame(&mut stream);
+                assert_eq!(first, 0xc1);
+                assert_eq!(raw_inflate(&payload), "reply ".repeat(30).into_bytes());
+                let _ = std::io::Read::read_to_end(&mut stream, &mut Vec::new());
+            },
+        );
+        let client = format!(
+            "let ws = Http.websocket_with(\"ws://127.0.0.1:{port}/\", {{ ping_interval: 0.2, ping_timeout: 0.3 }})\nlet got = receive(ws) ?? \"\"\nsend(ws, \"reply \".repeat(30))\nclose(ws)\n\"${{len(got)}} ${{got.slice(0, 5)}}\""
+        );
+        assert_eq!(string(&client), "200 late ");
+        let head = heads.recv().unwrap();
+        assert!(
+            head.contains("sec-websocket-extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn the_websocket_client_times_out_on_a_silent_peer() {
+        let (port, _) = raw_websocket_peer("", |mut stream| {
+            let mut seen = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stream, &mut seen);
+            assert_eq!(seen.get(..2), Some(&[0x89, 0x80][..]), "{seen:?}");
+        });
+        let source: &'static str = Box::leak(
+            format!(
+                "let ws = Http.websocket_with(\"ws://127.0.0.1:{port}/\", {{ ping_interval: 0.2, ping_timeout: 0.3 }})\nlet quiet = channel()\n\nselect {{\n    message = receive(ws) => print(message)\n    receive(quiet) => print(\"wrong\")\n}}"
+            )
+            .into_boxed_str(),
+        );
+        let started = std::time::Instant::now();
+        let timed_out = error_within(source, 10);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            (timed_out.line, timed_out.message),
+            (
+                4,
+                format!(
+                    "the websocket to ws://127.0.0.1:{port}/ timed out: no answer to a ping within 0.3 seconds"
+                )
+            )
+        );
+        assert_eq!(
+            error("Http.websocket_with(\"ws://127.0.0.1:1/\", { ping_timeout: 0 })").message,
+            "the websocket option ping_timeout must be a number of seconds above 0, got 0"
+        );
+    }
+
     fn run_in(interpreter: &mut Interpreter, source: &str) -> Result<Option<Value>, Error> {
         let program = Parser::new(lex(source)?).parse_program()?;
         interpreter.run(&program)

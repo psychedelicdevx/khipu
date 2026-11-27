@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `█████████░` 21 / 24 |
+| 9. HTTP without limits | `█████████░` 22 / 24 |
 | 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
@@ -172,7 +172,7 @@ Interface
 - [x] A WebSocket client: `Http.websocket(url)` returns a socket that works with `send` and `receive` like the server side, over TLS when the URL is `wss`
 - [x] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in docs/audit.md
-- [ ] The WebSocket client at parity with the server: pings and a timeout on a silent server so a socket to a dead peer does not wait forever, `permessage-deflate` when the server accepts it, and the protocol the server chose readable from the program
+- [x] The WebSocket client at parity with the server: pings and a timeout on a silent server so a socket to a dead peer does not wait forever, `permessage-deflate` when the server accepts it, and the protocol the server chose readable from the program
 - [x] `bytes` as a full value: `data[i]` for one byte, `bytes([..])` from a list of numbers, `File.read_bytes` and `File.write_bytes`, and binary bodies from `Http.get` and `Http.request`
 - [x] `close(channel)` on a plain channel: `receive` drains what is queued and then gives `none`, `select` sees it like a closed socket, and `send` after `close` is an error with its line
 

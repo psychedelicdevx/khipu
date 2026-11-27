@@ -70,6 +70,10 @@ fn bytes(values: list<number>) -> bytes {
     return bytes_from#(values)
 }
 
+fn channel#protocol(self: channel) -> string? {
+    return websocket_protocol#(self)
+}
+
 fn bytes#len(self: bytes) -> number {
     return len(self)
 }

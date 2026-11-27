@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 12] = [
+pub static NATIVES: [Native; 13] = [
     Native {
         name: "serve#",
         function: serve,
@@ -44,6 +44,10 @@ pub static NATIVES: [Native; 12] = [
     Native {
         name: "websocket_connect#",
         function: websocket_connect,
+    },
+    Native {
+        name: "websocket_protocol#",
+        function: websocket_protocol,
     },
     Native {
         name: "json_parse#",
@@ -145,6 +149,18 @@ fn json_parse(args: &[Value]) -> Result<Value, String> {
     serde_json::from_str(&source)
         .map(from_json)
         .map_err(|error| format!("invalid JSON: {error}"))
+}
+
+fn websocket_protocol(args: &[Value]) -> Result<Value, String> {
+    match &args[0] {
+        Value::Channel(channel) => {
+            Ok(crate::task::protocol(channel).map_or(Value::None, |name| Value::str(&name)))
+        }
+        other => Err(format!(
+            "protocol needs a channel, got {}",
+            other.type_name()
+        )),
+    }
 }
 
 fn json_stringify(args: &[Value]) -> Result<Value, String> {
@@ -1056,6 +1072,23 @@ mod server {
         })
     }
 
+    const DEFLATE_OFFER: &str =
+        "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+
+    fn answers_deflate(extensions: &str) -> bool {
+        let mut params = extensions.split(';').map(str::trim);
+        params.next() == Some("permessage-deflate")
+            && params.all(|param| {
+                let name = param.split('=').next().unwrap_or("").trim();
+                matches!(
+                    name,
+                    "server_no_context_takeover"
+                        | "client_no_context_takeover"
+                        | "server_max_window_bits"
+                )
+            })
+    }
+
     fn deflate(data: &[u8]) -> Vec<u8> {
         let mut compress = flate2::Compress::new(flate2::Compression::fast(), false);
         let mut out = Vec::with_capacity(data.len() / 2 + 64);
@@ -1133,6 +1166,7 @@ mod server {
         timeout: Duration,
         deflate: bool,
         client: bool,
+        protocol: Option<String>,
     }
 
     impl Socket {
@@ -1188,6 +1222,10 @@ mod server {
             let mut payload = code.to_be_bytes().to_vec();
             payload.extend_from_slice(reason.as_bytes());
             self.shut(Some(&payload), true);
+        }
+
+        fn protocol(&self) -> Option<String> {
+            self.protocol.clone()
         }
     }
 
@@ -1324,6 +1362,7 @@ mod server {
                 timeout: hub.limits.request_timeout,
                 deflate: upgrade.deflate,
                 client: false,
+                protocol: protocol.clone(),
             });
             made = Some(Arc::clone(&socket));
             socket
@@ -1399,6 +1438,9 @@ mod server {
             .map_err(|error| format!("cannot start TLS with {host}: {error}"))
     }
 
+    const PING_INTERVAL: Duration = Duration::from_secs(30);
+    const PING_TIMEOUT: Duration = Duration::from_secs(30);
+
     pub fn websocket_connect(args: &[Value]) -> Result<Value, String> {
         let url = text(&args[0], "Http.websocket")?;
         let options = match args.get(1) {
@@ -1406,6 +1448,15 @@ mod server {
             _ => None,
         };
         let option = |name: &str| options.as_ref().and_then(|record| record.get(name));
+        let seconds = |name: &str, default: Duration| match option(name) {
+            None => Ok(default),
+            Some(Value::Number(n)) if n > 0.0 && n.is_finite() => Ok(Duration::from_secs_f64(n)),
+            Some(other) => Err(format!(
+                "the websocket option {name} must be a number of seconds above 0, got {other:?}"
+            )),
+        };
+        let ping_interval = seconds("ping_interval", PING_INTERVAL)?;
+        let ping_timeout = seconds("ping_timeout", PING_TIMEOUT)?;
         let (secure, rest) = match (url.strip_prefix("wss://"), url.strip_prefix("ws://")) {
             (Some(rest), _) => (true, rest),
             (_, Some(rest)) => (false, rest),
@@ -1470,7 +1521,9 @@ mod server {
         if let Some(names) = &protocols {
             request.push_str(&format!("sec-websocket-protocol: {}\r\n", names.join(", ")));
         }
-        request.push_str("\r\n");
+        request.push_str(&format!(
+            "sec-websocket-extensions: {DEFLATE_OFFER}\r\n\r\n"
+        ));
         stream
             .write_all(request.as_bytes())
             .and_then(|_| stream.flush())
@@ -1492,12 +1545,15 @@ mod server {
         let head = String::from_utf8_lossy(&buf[..head_len]).into_owned();
         let leftover = buf[head_len + term_len..].to_vec();
         let status = head.lines().next().unwrap_or("").trim().to_string();
-        let accepted = head.lines().skip(1).any(|line| {
-            line.split_once(':').is_some_and(|(name, value)| {
-                name.trim().eq_ignore_ascii_case("sec-websocket-accept")
-                    && value.trim() == accept_key(&key)
-            })
-        });
+        let answered: Vec<(String, String)> = head
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect();
+        let accepted = answered
+            .iter()
+            .any(|(name, value)| name == "sec-websocket-accept" && *value == accept_key(&key));
         if !status
             .split_whitespace()
             .nth(1)
@@ -1506,6 +1562,30 @@ mod server {
         {
             return Err(format!("{url} did not accept the websocket: {status}"));
         }
+        let extensions = offered(&answered, "sec-websocket-extensions");
+        let deflate = match extensions.as_slice() {
+            [] => false,
+            [answer] if answers_deflate(answer) => true,
+            _ => {
+                return Err(format!(
+                    "{url} answered with an extension it was not offered: {}",
+                    extensions.join(", ")
+                ));
+            }
+        };
+        let chosen = offered(&answered, "sec-websocket-protocol");
+        let protocol = match chosen.as_slice() {
+            [] => None,
+            [name] if protocols.as_ref().is_some_and(|names| names.contains(name)) => {
+                Some(name.clone())
+            }
+            _ => {
+                return Err(format!(
+                    "{url} chose a websocket protocol it was not offered: {}",
+                    chosen.join(", ")
+                ));
+            }
+        };
         stream.tcp().set_nonblocking(true).map_err(failed)?;
         stream.wait(None);
         let mut made = None;
@@ -1517,8 +1597,9 @@ mod server {
                 closed: AtomicBool::new(false),
                 channel,
                 timeout: REQUEST_TIMEOUT,
-                deflate: false,
+                deflate,
                 client: true,
+                protocol,
                 _ticket: Ticket::new(&Arc::default()),
             });
             made = Some(Arc::clone(&socket));
@@ -1534,6 +1615,7 @@ mod server {
             held: false,
         };
         open.reader.client = true;
+        open.reader.deflate = deflate;
         std::thread::Builder::new()
             .name("khipu-websocket".to_string())
             .spawn(move || {
@@ -1543,7 +1625,27 @@ mod server {
                         Ok(()) if open.socket.closed.load(Ordering::SeqCst) => return,
                         Ok(()) => {}
                     }
-                    if !crate::poll::readable(open.socket.fd, open.reader.timeout) {
+                    let silent = open.reader.since.elapsed();
+                    if silent >= ping_interval + ping_timeout {
+                        crate::task::fail(
+                            &open.channel,
+                            format!(
+                                "the websocket to {url} timed out: no answer to a ping within {} seconds",
+                                Value::Number(ping_timeout.as_secs_f64())
+                            ),
+                        );
+                        return open.socket.shut(code(1001).as_deref(), false);
+                    }
+                    if silent >= ping_interval && !open.reader.pinged {
+                        open.reader.pinged = true;
+                        let _ = open.socket.write(0x9, b"", false);
+                    }
+                    let wait = if open.reader.pinged {
+                        ping_interval + ping_timeout
+                    } else {
+                        ping_interval
+                    };
+                    if !crate::poll::readable(open.socket.fd, wait.saturating_sub(silent)) {
                         continue;
                     }
                     let cap = open.reader.max + 14;
@@ -1552,6 +1654,10 @@ mod server {
                         && open.reader.buf.len() == before
                     {
                         return open.socket.shut(None, true);
+                    }
+                    if open.reader.buf.len() > before {
+                        open.reader.since = Instant::now();
+                        open.reader.pinged = false;
                     }
                 }
             })
@@ -2709,6 +2815,7 @@ mod server {
                     timeout: Duration::from_secs(5),
                     deflate: false,
                     client: false,
+                    protocol: None,
                 });
                 made = Some(Arc::clone(&socket));
                 socket
