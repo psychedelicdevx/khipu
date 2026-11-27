@@ -16,6 +16,19 @@ use crate::value::{
 
 pub struct Channel {
     state: Mutex<ChannelState>,
+    port: Option<Arc<dyn Endpoint>>,
+}
+
+pub trait Endpoint: Send + Sync {
+    fn send(&self, value: &Value) -> Result<(), String>;
+    fn receive(&self) -> Value;
+}
+
+pub fn endpoint(port: Arc<dyn Endpoint>) -> Value {
+    Value::Channel(Arc::new(Channel {
+        state: Mutex::default(),
+        port: Some(port),
+    }))
 }
 
 #[derive(Default)]
@@ -637,10 +650,16 @@ pub fn channel(args: &[Value]) -> Result<Value, String> {
     }
     Ok(Value::Channel(Arc::new(Channel {
         state: Mutex::default(),
+        port: None,
     })))
 }
 
 pub fn send(args: &[Value]) -> Result<Value, String> {
+    if let [Value::Channel(channel), value] = args
+        && let Some(port) = &channel.port
+    {
+        return port.send(value).map(|_| Value::None);
+    }
     let [Value::Channel(channel), value] = args else {
         return match args {
             [other, _] => Err(format!("send needs a channel, got {}", other.type_name())),
@@ -679,6 +698,9 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
         .borrow()
         .iter()
         .map(|item| match item {
+            Value::Channel(channel) if channel.port.is_some() => {
+                Err("select cannot wait on a websocket".to_string())
+            }
             Value::Channel(channel) => Ok(Arc::clone(&channel)),
             other => Err(format!(
                 "select can only receive from a channel, got {}",
@@ -691,6 +713,11 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
 }
 
 pub fn receive(args: &[Value]) -> Result<Value, String> {
+    if let [Value::Channel(channel)] = args
+        && let Some(port) = &channel.port
+    {
+        return Ok(port.receive());
+    }
     match args {
         [Value::Channel(channel)] => wait_for(std::slice::from_ref(channel)).map(|(_, v)| v),
         [other] => Err(format!(

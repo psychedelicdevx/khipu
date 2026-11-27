@@ -446,6 +446,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "ring",
  "rustls",
  "serde_json",
  "signal-hook",

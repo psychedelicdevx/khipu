@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 9] = [
+pub static NATIVES: [Native; 10] = [
     Native {
         name: "serve#",
         function: serve,
@@ -32,6 +32,10 @@ pub static NATIVES: [Native; 9] = [
     Native {
         name: "respond#",
         function: respond,
+    },
+    Native {
+        name: "websocket_request#",
+        function: websocket_request,
     },
     Native {
         name: "json_parse#",
@@ -158,11 +162,13 @@ use unavailable as serve;
 use unavailable as emit_chunk;
 #[cfg(target_arch = "wasm32")]
 use unavailable as serve_tls;
+#[cfg(target_arch = "wasm32")]
+use unavailable as websocket_request;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::{
     accept, active_count, begin_shutdown, drain, emit_chunk, fetch, is_shutdown, listen,
-    reset_shutdown, respond, serve, serve_tls,
+    reset_shutdown, respond, serve, serve_tls, websocket_request,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -667,6 +673,7 @@ mod server {
 
     fn reason(status: u16) -> &'static str {
         match status {
+            101 => "Switching Protocols",
             200 => "OK",
             201 => "Created",
             204 => "No Content",
@@ -678,6 +685,7 @@ mod server {
             403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            426 => "Upgrade Required",
             500 => "Internal Server Error",
             _ => "",
         }
@@ -762,13 +770,13 @@ mod server {
         })
     }
 
-    fn is_stream(value: &Value) -> Option<Value> {
+    fn marker(value: &Value, name: &str) -> Option<Value> {
         let Value::Record(record) = value else {
             return None;
         };
         let record = record.borrow();
-        if record.iter().any(|(name, _)| &**name == "khipu_stream") {
-            record.get("khipu_stream")
+        if record.iter().any(|(field, _)| &**field == name) {
+            record.get(name)
         } else {
             None
         }
@@ -852,6 +860,306 @@ mod server {
         };
         let headers = field("headers").unwrap_or_else(|| Value::record(Vec::new()));
         Ok((status as u16, body.to_string(), headers))
+    }
+
+    const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+    fn upgrade_key(method: &str, found: &[(String, String)]) -> Option<String> {
+        let header = |name: &str| {
+            found
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.trim())
+        };
+        let key = header("sec-websocket-key")?;
+        let upgrade = method == "GET"
+            && header("upgrade")?.eq_ignore_ascii_case("websocket")
+            && header("connection")?
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            && header("sec-websocket-version")? == "13"
+            && key.len() == 24;
+        upgrade.then(|| key.to_string())
+    }
+
+    pub fn websocket_request(args: &[Value]) -> Result<Value, String> {
+        let method = text(&args[0], "Request.is_websocket")?;
+        Ok(Value::Bool(
+            upgrade_key(&method, &headers(&args[1])).is_some(),
+        ))
+    }
+
+    fn accept_key(key: &str) -> String {
+        let digest = ring::digest::digest(
+            &ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+            format!("{key}{WEBSOCKET_GUID}").as_bytes(),
+        );
+        crate::web::base64(digest.as_ref())
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Frame {
+        fin: bool,
+        opcode: u8,
+        payload: Vec<u8>,
+    }
+
+    fn parse_frame(buf: &[u8], max: usize) -> Result<Option<(Frame, usize)>, u16> {
+        let [first, second, ..] = *buf else {
+            return Ok(None);
+        };
+        let fin = first & 0x80 != 0;
+        let opcode = first & 0x0f;
+        if first & 0x70 != 0 || !matches!(opcode, 0x0..=0x2 | 0x8..=0xa) || second & 0x80 == 0 {
+            return Err(1002);
+        }
+        let (len, start) = match second & 0x7f {
+            126 => match buf.get(2..4) {
+                Some(bytes) => (u64::from(u16::from_be_bytes([bytes[0], bytes[1]])), 4),
+                None => return Ok(None),
+            },
+            127 => match buf.get(2..10) {
+                Some(bytes) => {
+                    let mut wide = [0u8; 8];
+                    wide.copy_from_slice(bytes);
+                    (u64::from_be_bytes(wide), 10)
+                }
+                None => return Ok(None),
+            },
+            short => (u64::from(short), 2),
+        };
+        if len >> 63 != 0 || (opcode >= 0x8 && (len > 125 || !fin)) {
+            return Err(1002);
+        }
+        if len > max as u64 {
+            return Err(1009);
+        }
+        let len = len as usize;
+        let Some(mask) = buf.get(start..start + 4) else {
+            return Ok(None);
+        };
+        let Some(masked) = buf.get(start + 4..start + 4 + len) else {
+            return Ok(None);
+        };
+        let payload = masked
+            .iter()
+            .zip(mask.iter().cycle())
+            .map(|(byte, key)| byte ^ key)
+            .collect();
+        Ok(Some((
+            Frame {
+                fin,
+                opcode,
+                payload,
+            },
+            start + 4 + len,
+        )))
+    }
+
+    fn frame_bytes(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x80 | opcode];
+        match payload.len() {
+            len @ 0..=125 => out.push(len as u8),
+            len @ 126..=0xffff => {
+                out.push(126);
+                out.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                out.push(127);
+                out.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn close_reply(payload: &[u8]) -> Result<Vec<u8>, u16> {
+        match payload {
+            [] => Ok(Vec::new()),
+            [_] => Err(1002),
+            [high, low, reason @ ..] => {
+                let code = u16::from_be_bytes([*high, *low]);
+                if !matches!(code, 1000..=1003 | 1007..=1011 | 3000..=4999) {
+                    return Err(1002);
+                }
+                if std::str::from_utf8(reason).is_err() {
+                    return Err(1007);
+                }
+                Ok(code.to_be_bytes().to_vec())
+            }
+        }
+    }
+
+    fn code(code: u16) -> Option<Vec<u8>> {
+        Some(code.to_be_bytes().to_vec())
+    }
+
+    struct Socket {
+        stream: SharedStream,
+        buf: Mutex<Vec<u8>>,
+        closed: std::sync::atomic::AtomicBool,
+        max: usize,
+        timeout: Duration,
+    }
+
+    impl Socket {
+        fn write(&self, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+            let mut stream = self.stream.lock().unwrap_or_else(|p| p.into_inner());
+            stream.write_all(&frame_bytes(opcode, payload))?;
+            stream.flush()
+        }
+
+        fn close(&self, payload: &[u8]) {
+            if !self.closed.swap(true, Ordering::SeqCst) {
+                let _ = self.write(0x8, payload);
+            }
+            let _ = self
+                .stream
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .shutdown(std::net::Shutdown::Both);
+        }
+
+        fn fill(&self, buf: &mut Vec<u8>, deadline: Instant) -> Result<(), Option<Vec<u8>>> {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(code(1001));
+            }
+            let mut stream = self.stream.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = stream.set_read_timeout(Some(left));
+            let mut scratch = [0u8; 16 * 1024];
+            match stream.read(&mut scratch) {
+                Ok(0) => Err(None),
+                Ok(read) => {
+                    buf.extend_from_slice(&scratch[..read]);
+                    Ok(())
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    Err(code(1001))
+                }
+                Err(_) => Err(None),
+            }
+        }
+
+        fn message(&self, buf: &mut Vec<u8>) -> Result<String, Option<Vec<u8>>> {
+            let mut partial: Option<(u8, Vec<u8>)> = None;
+            let mut deadline = Instant::now() + self.timeout;
+            loop {
+                let frame = match parse_frame(buf, self.max) {
+                    Err(error) => return Err(code(error)),
+                    Ok(None) => {
+                        self.fill(buf, deadline)?;
+                        continue;
+                    }
+                    Ok(Some((frame, used))) => {
+                        buf.drain(..used);
+                        deadline = Instant::now() + self.timeout;
+                        frame
+                    }
+                };
+                match frame.opcode {
+                    0x8 => return Err(Some(close_reply(&frame.payload).map_err(code)?)),
+                    0x9 => self.write(0xa, &frame.payload).map_err(|_| None)?,
+                    0xa => {}
+                    opcode => {
+                        let (kind, mut data) = match (opcode, partial.take()) {
+                            (0x0, Some(started)) => started,
+                            (0x1 | 0x2, None) => (opcode, Vec::new()),
+                            _ => return Err(code(1002)),
+                        };
+                        if data.len() + frame.payload.len() > self.max {
+                            return Err(code(1009));
+                        }
+                        data.extend_from_slice(&frame.payload);
+                        if !frame.fin {
+                            partial = Some((kind, data));
+                            continue;
+                        }
+                        return String::from_utf8(data)
+                            .map_err(|_| code(if kind == 0x1 { 1007 } else { 1003 }));
+                    }
+                }
+            }
+        }
+    }
+
+    impl crate::task::Endpoint for Socket {
+        fn send(&self, value: &Value) -> Result<(), String> {
+            let Value::Str(message) = value else {
+                return Err(format!(
+                    "a websocket can only send a string, got {}",
+                    value.type_name()
+                ));
+            };
+            if self.closed.load(Ordering::SeqCst) || self.write(0x1, message.as_bytes()).is_err() {
+                return Err("cannot send on a closed websocket".to_string());
+            }
+            Ok(())
+        }
+
+        fn receive(&self) -> Value {
+            if self.closed.load(Ordering::SeqCst) {
+                return Value::None;
+            }
+            let mut buf = self.buf.lock().unwrap_or_else(|p| p.into_inner());
+            match self.message(&mut buf) {
+                Ok(message) => Value::str(&message),
+                Err(Some(payload)) => {
+                    self.close(&payload);
+                    Value::None
+                }
+                Err(None) => {
+                    self.closed.store(true, Ordering::SeqCst);
+                    self.close(&[]);
+                    Value::None
+                }
+            }
+        }
+    }
+
+    fn websocket(
+        stream: SharedStream,
+        vm: &mut Vm,
+        handler: Value,
+        key: &str,
+        leftover: Vec<u8>,
+        limits: Limits,
+    ) {
+        let head = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+            accept_key(key)
+        );
+        {
+            let mut out = stream.lock().unwrap_or_else(|p| p.into_inner());
+            if out
+                .write_all(head.as_bytes())
+                .and_then(|_| out.flush())
+                .is_err()
+            {
+                return;
+            }
+        }
+        let socket = std::sync::Arc::new(Socket {
+            stream,
+            buf: Mutex::new(leftover),
+            closed: std::sync::atomic::AtomicBool::new(false),
+            max: limits.max_body,
+            timeout: limits.idle_timeout.saturating_mul(12),
+        });
+        let value = crate::task::endpoint(socket.clone());
+        let status: u16 = match vm.call(handler, vec![value]) {
+            Ok(_) => 1000,
+            Err(error) => {
+                eprintln!("{}", crate::task::render(&error));
+                1011
+            }
+        };
+        socket.close(&status.to_be_bytes());
     }
 
     const WORKER_STACK: usize = 16 * 1024 * 1024;
@@ -996,12 +1304,19 @@ mod server {
         }
     }
 
+    struct Upgrade {
+        key: String,
+        leftover: Vec<u8>,
+        limits: Limits,
+    }
+
     fn answer(
         vm: &mut Vm,
         handler: &Value,
         request: Value,
         stream: SharedStream,
         keep_alive: bool,
+        upgrade: Option<Upgrade>,
     ) {
         let returned = match vm.call(handler.clone(), vec![request]) {
             Ok(value) => value,
@@ -1018,7 +1333,29 @@ mod server {
                 return;
             }
         };
-        if let Some(producer) = is_stream(&returned) {
+        if let Some(socket_handler) = marker(&returned, "khipu_websocket") {
+            match upgrade {
+                Some(upgrade) => websocket(
+                    stream,
+                    vm,
+                    socket_handler,
+                    &upgrade.key,
+                    upgrade.leftover,
+                    upgrade.limits,
+                ),
+                None => {
+                    let _ = write_response(
+                        stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
+                        426,
+                        "this address only speaks websockets",
+                        &Value::record(vec![(Rc::from("sec-websocket-version"), Value::str("13"))]),
+                        keep_alive,
+                    );
+                }
+            }
+            return;
+        }
+        if let Some(producer) = marker(&returned, "khipu_stream") {
             stream_response(stream, vm, producer, keep_alive);
             return;
         }
@@ -1071,14 +1408,20 @@ mod server {
                     break;
                 }
                 ReadReq::Request((method, target, found, body), keep_alive) => {
+                    let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
+                        key,
+                        leftover: std::mem::take(&mut conn.buf),
+                        limits,
+                    });
                     let request = build_request(request_def, &method, &target, found, &body);
-                    let more = keep_alive && served + 1 < limits.max_requests;
+                    let more = keep_alive && upgrade.is_none() && served + 1 < limits.max_requests;
                     answer(
                         vm,
                         handler,
                         request,
                         std::sync::Arc::clone(&conn.stream),
                         more,
+                        upgrade,
                     );
                     served += 1;
                     if !more {

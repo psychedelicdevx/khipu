@@ -424,6 +424,10 @@ struct Response {
         return { khipu_stream: producer }
     }
 
+    fn websocket(handler: any) -> any {
+        return { khipu_websocket: handler }
+    }
+
     fn error(status: number, message: string) -> Response {
         return Response { status: status, body: message, headers: { "content-type": "text/plain; charset=utf-8" } }
     }
@@ -439,6 +443,10 @@ struct Request {
 
     fn json(self) -> any {
         return json_parse#(self.body)
+    }
+
+    fn is_websocket(self) -> bool {
+        return websocket_request#(self.method, self.headers)
     }
 }
 
