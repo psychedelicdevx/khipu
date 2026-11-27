@@ -501,7 +501,7 @@ impl Emitter<'_> {
                 self.results();
                 self.exit();
             }
-            Stmt::Whole(slots) => {
+            Stmt::Whole(slots, _) => {
                 i32_const(&mut self.out, 1);
                 for slot in slots {
                     local_get(&mut self.out, *slot);

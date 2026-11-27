@@ -98,6 +98,7 @@ Nothing about the program changes when native code applies, and nothing breaks w
 - Arguments or variables of another type fall back to the bytecode.
 - Too much recursion is still an error on the right line, `too much recursion: more than 10000 calls deep`.
 - A native loop with a fractional or infinite bound falls back, so `range needs whole numbers` is reported on the right line.
+- A list index out of range, or a bound like that, after native code has already written into a list does not fall back, since running the function again would write twice: the error comes from the native code, with the same message and line the bytecode would give.
 - Reassigning a global function throws the native code for it away.
 
 ## Tasks keep running bytecode

@@ -235,11 +235,20 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
     native
 }
 
-pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()> {
+pub struct Fault {
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Result<Option<()>, Fault> {
     let mut lists = Vec::new();
-    let mut raw = arguments(native, values, &mut lists)?;
+    let Some(mut raw) = arguments(native, values, &mut lists) else {
+        return Ok(None);
+    };
     let mut out = [0.0; 16];
-    run(native, &mut raw, Some(&mut out), depth)?;
+    if run(native, &mut raw, Some(&mut out), depth)?.is_none() {
+        return Ok(None);
+    }
     drop(lists);
     for (at, value) in values.iter_mut().enumerate() {
         *value = if native.bool_params & (1 << at) != 0 {
@@ -248,15 +257,25 @@ pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()>
             Value::Number(raw[at])
         };
     }
-    Some(())
+    Ok(Some(()))
 }
 
 #[inline]
-pub fn call(native: &Native, args: &[Value], globals: &GlobalStore, depth: u32) -> Option<Value> {
+pub fn call(
+    native: &Native,
+    args: &[Value],
+    globals: &GlobalStore,
+    depth: u32,
+) -> Result<Option<Value>, Fault> {
     let mut lists = Vec::new();
-    let mut raw = arguments(native, args, &mut lists)?;
-    raw[0] = run(native, &mut raw, None, depth)?;
-    result(native, &raw, args, globals)
+    let Some(mut raw) = arguments(native, args, &mut lists) else {
+        return Ok(None);
+    };
+    let Some(value) = run(native, &mut raw, None, depth)? else {
+        return Ok(None);
+    };
+    raw[0] = value;
+    Ok(result(native, &raw, args, globals))
 }
 
 #[inline]
@@ -394,9 +413,10 @@ fn result(
 mod backend {
     use std::cell::RefCell;
 
-    use super::Native;
+    use super::{Fault, Native};
     use crate::jit::{self, Context};
     use crate::kernel::Kernel;
+    use crate::value::Value;
 
     thread_local! {
         static CONTEXT: RefCell<Context> = RefCell::new(Context::default());
@@ -412,11 +432,13 @@ mod backend {
         raw: &mut [f64; 16],
         out: Option<&mut [f64; 16]>,
         depth: u32,
-    ) -> Option<f64> {
+    ) -> Result<Option<f64>, Fault> {
         CONTEXT.with(|context| {
             let mut context = context.borrow_mut();
-            context.error = 0;
-            context.depth = depth;
+            *context = Context {
+                depth,
+                ..Context::default()
+            };
             let raw = raw.as_mut_ptr();
             let out = out.map_or(raw, |out| out.as_mut_ptr());
             // SAFETY: `native.target` was produced by `jit::compile` for a kernel
@@ -425,13 +447,32 @@ mod backend {
             // arguments: the entry reads them all before it stores a result),
             // and the context lives for the whole call.
             let value = unsafe { (native.target)(&mut *context, raw, out) };
-            if context.error != 0 {
-                context.error = 0;
-                context.depth = 0;
-                return None;
+            if context.error == 0 {
+                return Ok(Some(value));
             }
-            Some(value)
+            let fault = (context.wrote != 0).then(|| fault(&context));
+            *context = Context::default();
+            fault.map_or(Ok(None), Err)
         })
+    }
+
+    fn fault(context: &Context) -> Fault {
+        let message = match context.error {
+            jit::NOT_WHOLE => "range needs whole numbers".to_string(),
+            jit::OUT_OF_RANGE => {
+                crate::vm::position(&Value::Number(context.index), context.length as usize)
+                    .err()
+                    .unwrap_or_default()
+            }
+            _ => format!(
+                "too much recursion: more than {} calls deep",
+                jit::MAX_DEPTH
+            ),
+        };
+        Fault {
+            line: (context.line != 0).then_some(context.line as usize),
+            message,
+        }
     }
 }
 
@@ -440,7 +481,7 @@ mod backend {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use super::Native;
+    use super::{Fault, Native};
     use crate::kernel::Kernel;
 
     #[link(wasm_import_module = "env")]
@@ -468,7 +509,7 @@ mod backend {
         raw: &mut [f64; 16],
         _out: Option<&mut [f64; 16]>,
         depth: u32,
-    ) -> Option<f64> {
+    ) -> Result<Option<f64>, Fault> {
         // SAFETY: both imports are provided by the page that instantiated this
         // module; `raw` holds 16 f64 slots at the given pointer.
         let (value, failed) = unsafe {
@@ -480,10 +521,7 @@ mod backend {
             );
             (value, native_failed())
         };
-        if failed != 0 {
-            return None;
-        }
-        Some(value)
+        Ok((failed == 0).then_some(value))
     }
 }
 

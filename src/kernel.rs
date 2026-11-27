@@ -41,7 +41,7 @@ pub enum Expr {
     Struct(u32, u32),
     GetField(u32, u32),
     ListLen(u32),
-    IndexList(u32, Box<Expr>),
+    IndexList(u32, Box<Expr>, u32),
     Neg(Box<Expr>),
     Not(Box<Expr>),
     Arith(Arith, Box<Expr>, Box<Expr>),
@@ -56,7 +56,7 @@ pub enum Stmt {
     Set(u32, Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
-    Whole(Vec<u32>),
+    Whole(Vec<u32>, u32),
     For {
         counter: u32,
         limit: u32,
@@ -69,7 +69,7 @@ pub enum Stmt {
     Discard(Expr),
     MakeStruct(u32, Vec<Expr>),
     SetField(u32, u32, Expr),
-    SetIndexList(u32, Box<Expr>, Expr),
+    SetIndexList(u32, Box<Expr>, Expr, u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,6 +401,7 @@ struct Lowering<'a> {
     layout_names: Vec<String>,
     kernel_structs: Vec<StructDef>,
     param_bases: Vec<u32>,
+    line: u32,
 }
 
 type Lowered<T> = Result<T, Rejected>;
@@ -431,6 +432,7 @@ pub fn lower(
         layout_names: Vec::new(),
         kernel_structs: Vec::new(),
         param_bases: Vec::new(),
+        line: 0,
     };
     for (index, (name, fields)) in structs.iter().enumerate() {
         lowering.struct_index.insert(name.clone(), index);
@@ -485,6 +487,7 @@ pub fn lower_loop(
         layout_names: Vec::new(),
         kernel_structs: Vec::new(),
         param_bases: Vec::new(),
+        line: source.line as u32,
     };
     for (index, (name, fields)) in structs.iter().enumerate() {
         lowering.struct_index.insert(name.clone(), index);
@@ -659,9 +662,11 @@ impl Lowering<'_> {
 
     fn block(&mut self, block: &Block) -> Lowered<Vec<Stmt>> {
         self.scopes.push(HashMap::new());
+        let outer = self.line;
         let mut out = Vec::new();
         let mut result = Ok(());
-        for (_, stmt) in block {
+        for (line, stmt) in block {
+            self.line = *line as u32;
             match self.statement(stmt) {
                 Ok(lowered) => out.extend(lowered),
                 Err(error) => {
@@ -671,6 +676,7 @@ impl Lowering<'_> {
             }
         }
         self.scopes.pop();
+        self.line = outer;
         result.map(|_| out)
     }
 
@@ -781,7 +787,7 @@ impl Lowering<'_> {
                 return Ok(vec![
                     Stmt::Set(counter, start),
                     Stmt::Set(limit, end),
-                    Stmt::Whole(vec![counter, limit]),
+                    Stmt::Whole(vec![counter, limit], self.line),
                     Stmt::For {
                         counter,
                         limit,
@@ -803,7 +809,7 @@ impl Lowering<'_> {
                     Kind::Num,
                     "writing something other than a number into a list",
                 )?;
-                Stmt::SetIndexList(base, Box::new(index), value)
+                Stmt::SetIndexList(base, Box::new(index), value, self.line)
             }
             AstStmt::SetField(target, field_name, value) => {
                 let Ast::Variable(var_name) = target else {
@@ -950,7 +956,7 @@ impl Lowering<'_> {
                     return unsupported("indexing something other than a list of numbers");
                 };
                 let index = self.operand(index, Kind::Num, "a list index that is not a number")?;
-                (Expr::IndexList(base, Box::new(index)), Kind::Num)
+                (Expr::IndexList(base, Box::new(index), self.line), Kind::Num)
             }
             Ast::Field(inner, name) => {
                 let Ast::Variable(var_name) = inner.as_ref() else {

@@ -1390,6 +1390,41 @@ ws.onmessage = (event) => {
         );
     }
 
+    fn run_in(interpreter: &mut Interpreter, source: &str) -> Result<Option<Value>, Error> {
+        let program = Parser::new(lex(source)?).parse_program()?;
+        interpreter.run(&program)
+    }
+
+    #[test]
+    fn a_kernel_that_fails_after_a_list_write_raises_without_writing_twice() {
+        let mut interpreter = Interpreter::new();
+        run_in(
+            &mut interpreter,
+            "let xs = [0, 0, 0]\nfn bump(xs: list<number>, at: number) -> number {\n    xs[0] = xs[0] + 1\n    return xs[at]\n}\nfor i in range(100) {\n    bump(xs, 1)\n}\nxs[0] = 0",
+        )
+        .unwrap();
+        let error = run_in(&mut interpreter, "bump(xs, 5)").unwrap_err();
+        assert_eq!(error.message, "index 5 is out of range, the length is 3");
+        assert_eq!(error.line, 4);
+        let error = run_in(&mut interpreter, "bump(xs, 0.5)").unwrap_err();
+        assert_eq!(error.message, "index must be a whole number, got 0.5");
+        match run_in(&mut interpreter, "xs[0]").unwrap() {
+            Some(Value::Number(n)) => assert_eq!(n, 2.0, "the write before the failure ran twice"),
+            other => panic!("expected a number, got {other:?}"),
+        }
+        let error = run_in(
+            &mut interpreter,
+            "fn fill(xs: list<number>, n: number) -> number {\n    xs[1] = xs[1] + 1\n    let total = 0\n    for i in range(n) {\n        total = total + i\n    }\n    return total\n}\nfor i in range(100) {\n    fill(xs, 1)\n}\nxs[1] = 0\nfill(xs, 1.5)",
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "range needs whole numbers");
+        assert_eq!(error.line, 4);
+        match run_in(&mut interpreter, "xs[1]").unwrap() {
+            Some(Value::Number(n)) => assert_eq!(n, 1.0, "the write before the failure ran twice"),
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
     #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;

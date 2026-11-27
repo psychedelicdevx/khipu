@@ -16,7 +16,15 @@ pub const MAX_DEPTH: u32 = 10_000;
 pub struct Context {
     pub depth: u32,
     pub error: u32,
+    pub line: u32,
+    pub wrote: u32,
+    pub index: f64,
+    pub length: f64,
 }
+
+pub const TOO_DEEP: u32 = 1;
+pub const NOT_WHOLE: u32 = 2;
+pub const OUT_OF_RANGE: u32 = 3;
 
 pub type Entry = unsafe extern "C" fn(*mut Context, *mut f64, *mut f64) -> f64;
 
@@ -455,13 +463,17 @@ impl Lowering<'_, '_> {
                 self.b
                     .def_var(self.locals[*base as usize + *offset as usize], value);
             }
-            Stmt::SetIndexList(base, index, value) => {
+            Stmt::SetIndexList(base, index, value, line) => {
                 let index = self.scalar(index);
                 let value = self.scalar(value);
-                let address = self.list_address(*base, index);
+                let address = self.list_address(*base, index, *line);
                 self.b
                     .ins()
                     .store(MemFlagsData::trusted(), value, address, 0);
+                let one = self.b.ins().iconst(types::I32, 1);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), one, self.state, 12);
             }
             Stmt::Discard(value) => {
                 self.expression(value);
@@ -520,7 +532,7 @@ impl Lowering<'_, '_> {
                 self.b.seal_block(after);
                 self.terminated = false;
             }
-            Stmt::Whole(slots) => {
+            Stmt::Whole(slots, line) => {
                 let mut fine = self.b.ins().iconst(types::I8, 1);
                 let infinity = self.b.ins().f64const(f64::INFINITY);
                 for slot in slots {
@@ -537,10 +549,7 @@ impl Lowering<'_, '_> {
                 self.b.ins().brif(fine, good, &[], bad, &[]);
                 self.b.switch_to_block(bad);
                 self.b.seal_block(bad);
-                let one = self.b.ins().iconst(types::I32, 1);
-                self.b
-                    .ins()
-                    .store(MemFlagsData::trusted(), one, self.state, 4);
+                self.fault(NOT_WHOLE, *line);
                 let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
                 self.b.ins().jump(self.propagate, &block_args(&failed));
                 self.b.switch_to_block(good);
@@ -598,7 +607,18 @@ impl Lowering<'_, '_> {
         }
     }
 
-    fn list_address(&mut self, base: u32, index: Value) -> Value {
+    fn fault(&mut self, kind: u32, line: u32) {
+        let kind = self.b.ins().iconst(types::I32, i64::from(kind));
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), kind, self.state, 4);
+        let line = self.b.ins().iconst(types::I32, i64::from(line));
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), line, self.state, 8);
+    }
+
+    fn list_address(&mut self, base: u32, index: Value, line: u32) -> Value {
         let len = self.b.use_var(self.locals[base as usize + 1]);
         let zero = self.b.ins().f64const(0.0);
         let truncated = self.b.ins().trunc(index);
@@ -612,10 +632,13 @@ impl Lowering<'_, '_> {
         self.b.ins().brif(fine, good, &[], bad, &[]);
         self.b.switch_to_block(bad);
         self.b.seal_block(bad);
-        let one = self.b.ins().iconst(types::I32, 1);
+        self.fault(OUT_OF_RANGE, line);
         self.b
             .ins()
-            .store(MemFlagsData::trusted(), one, self.state, 4);
+            .store(MemFlagsData::trusted(), index, self.state, 16);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), len, self.state, 24);
         let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
         self.b.ins().jump(self.propagate, &block_args(&failed));
         self.b.switch_to_block(good);
@@ -690,9 +713,9 @@ impl Lowering<'_, '_> {
                 .b
                 .use_var(self.locals[*base as usize + *offset as usize]),
             Expr::ListLen(base) => self.b.use_var(self.locals[*base as usize + 1]),
-            Expr::IndexList(base, index) => {
+            Expr::IndexList(base, index, line) => {
                 let index = self.scalar(index);
-                let address = self.list_address(*base, index);
+                let address = self.list_address(*base, index, *line);
                 self.b
                     .ins()
                     .load(types::F64, MemFlagsData::trusted(), address, 0)
@@ -873,7 +896,8 @@ mod tests {
             generation: 0,
         };
         let globals = crate::value::Globals::default().store();
-        crate::native::call(&native, &args, &globals, 0).map(|value| match value {
+        let called = crate::native::call(&native, &args, &globals, 0);
+        called.ok().flatten().map(|value| match value {
             Value::Number(n) => n,
             other => panic!("unexpected {other:?}"),
         })
@@ -994,7 +1018,7 @@ mod tests {
         for bad in [2.5, f64::NAN, f64::INFINITY] {
             let (result, context) = native(ranged, "total", &[bad]);
             assert!(
-                result.is_nan() && context.error == 1,
+                result.is_nan() && context.error == NOT_WHOLE && context.line == 3,
                 "range({bad}) must fail natively"
             );
         }
@@ -1020,7 +1044,7 @@ mod tests {
         let forever = "fn forever(n) {\n    return forever(n + 1)\n}";
         let (result, context) = native(forever, "forever", &[0.0]);
         assert!(result.is_nan());
-        assert_eq!(context.error, 1);
+        assert_eq!(context.error, TOO_DEEP);
         assert_eq!(context.depth, 0);
     }
 

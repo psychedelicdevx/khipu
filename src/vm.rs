@@ -222,6 +222,16 @@ impl Vm {
                 }};
             }
 
+            macro_rules! raise {
+                ($fault:expr) => {{
+                    let fault: crate::native::Fault = $fault;
+                    match fault.line {
+                        Some(line) => return Err(Error::new(line, fault.message)),
+                        None => fail!(fault.message),
+                    }
+                }};
+            }
+
             macro_rules! jump_unless {
                 ($op:expr, $fast:expr, $target:expr) => {{
                     let b = self.stack.pop().expect("operand");
@@ -256,15 +266,19 @@ impl Vm {
                         && let Some(native) = crate::native::entry(&function)
                     {
                         let args_at: usize = $base;
-                        if let Some(value) = crate::native::call(
+                        match crate::native::call(
                             &native,
                             &self.stack[args_at..args_at + $argc],
                             &closure.globals,
                             self.frames.len() as u32,
                         ) {
-                            self.stack.truncate($return_to);
-                            self.stack.push(value);
-                            continue;
+                            Ok(Some(value)) => {
+                                self.stack.truncate($return_to);
+                                self.stack.push(value);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(fault) => raise!(fault),
                         }
                     }
                     if self.frames.len() + 1 >= MAX_FRAMES {
@@ -1284,8 +1298,10 @@ impl Vm {
                             continue;
                         };
                         let depth = self.frames.len() as u32;
-                        if crate::native::run_loop(&native, &mut values, depth).is_none() {
-                            continue;
+                        match crate::native::run_loop(&native, &mut values, depth) {
+                            Ok(Some(())) => {}
+                            Ok(None) => continue,
+                            Err(fault) => raise!(fault),
                         }
                         let mut globals = closure.globals.borrow_mut();
                         for ((_, place), value) in source.vars.iter().zip(values) {
@@ -1483,7 +1499,7 @@ fn field_of(target: &Value, name: &str, cache: &FieldCache) -> Result<Value, Str
     }
 }
 
-fn position(index: &Value, len: usize) -> Result<usize, String> {
+pub fn position(index: &Value, len: usize) -> Result<usize, String> {
     match index {
         Value::Number(n) if n.fract() != 0.0 => {
             Err(format!("index must be a whole number, got {n}"))
