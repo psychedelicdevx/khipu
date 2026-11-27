@@ -1,0 +1,24 @@
+fn hello(request: Request, params: list<list<string>>) -> Response {
+    return Response.text("hello")
+}
+
+fn json_route(request: Request, params: list<list<string>>) -> Response {
+    return Response.from_json({ ok: true, path: request.path, query: request.query_params })
+}
+
+fn file_route(request: Request, params: list<list<string>>) -> Response {
+    return Response.file("benchmarks/http/served.txt")
+}
+
+fn not_found(request: Request) -> Response {
+    return Response.error(404, "not found")
+}
+
+let routes = [
+    Route { method: "GET", pattern: "/hello", handler: hello },
+    Route { method: "GET", pattern: "/json", handler: json_route },
+    Route { method: "GET", pattern: "/file", handler: file_route },
+]
+
+let port = 8080
+Http.serve(port, Http.router(routes, not_found))
