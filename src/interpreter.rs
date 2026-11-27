@@ -804,6 +804,122 @@ mod tests {
         );
     }
 
+    const ECHO_SERVER: &str = "fn chat(socket: channel) {\n    let message = receive(socket)\n    while message != none {\n        send(socket, \"echo: \" + message)\n        message = receive(socket)\n    }\n}\nfn handle(request: Request) -> Response {\n    if request.path == \"/refuse\" {\n        return Response.text(\"no sockets here\")\n    }\n    if request.is_websocket() || request.path == \"/only\" {\n        return Response.websocket(chat)\n    }\n    return Response.text(\"plain\")\n}";
+
+    const WEBSOCKET_CLIENT: &str = r#"
+const port = process.argv[1];
+const sent = ["hello", "a".repeat(300), "b".repeat(70000)];
+const got = [];
+const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+const fail = (why) => { console.log(why); process.exit(1); };
+setTimeout(() => fail("TIMEOUT"), 10000);
+ws.onerror = () => fail("ERROR");
+ws.onopen = async () => {
+  const plain = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  if (plain !== "plain") fail("PLAIN " + plain);
+  for (const message of sent) ws.send(message);
+};
+ws.onmessage = (event) => {
+  got.push(event.data);
+  if (got.length === sent.length) {
+    if (!got.every((message, i) => message === "echo: " + sent[i])) fail("WRONG");
+    ws.close(1000);
+  }
+};
+ws.onclose = (event) => {
+  if (event.code !== 1000 || !event.wasClean || got.length !== sent.length) fail("CLOSE " + event.code);
+  console.log("OK");
+  process.exit(0);
+};
+"#;
+
+    #[test]
+    fn a_websocket_echoes_messages_of_every_length_to_node() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("node is not installed, skipping the WebSocket check");
+            return;
+        }
+        let port = 20000 + std::process::id() % 20000 + 18;
+        start_server(port, ECHO_SERVER);
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(WEBSOCKET_CLIENT)
+            .arg(port.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "OK",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn upgrade(port: u32, path: &str) -> (std::net::TcpStream, String) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+            head.push(byte[0]);
+        }
+        (stream, String::from_utf8_lossy(&head).into_owned())
+    }
+
+    #[test]
+    fn plain_http_is_answered_while_a_websocket_is_open() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 19;
+        start_server(port, ECHO_SERVER);
+        let (mut socket, head) = upgrade(port, "/");
+        assert!(
+            head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains("sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"),
+            "{head}"
+        );
+
+        let plain = raw_get(port, "/");
+        assert!(plain.starts_with("HTTP/1.1 200 OK"), "{plain}");
+        assert!(plain.ends_with("plain"), "{plain}");
+
+        socket
+            .write_all(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i'])
+            .unwrap();
+        let mut echo = [0u8; 10];
+        socket.read_exact(&mut echo).unwrap();
+        assert_eq!(&echo, b"\x81\x08echo: hi");
+        socket
+            .write_all(&[0x88, 0x82, 0, 0, 0, 0, 0x03, 0xe8])
+            .unwrap();
+        let mut rest = Vec::new();
+        socket.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, [0x88, 0x02, 0x03, 0xe8]);
+
+        let only = raw_get(port, "/only");
+        assert!(only.starts_with("HTTP/1.1 426 Upgrade Required"), "{only}");
+
+        let (mut refused, head) = upgrade(port, "/refuse");
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("connection: close"), "{head}");
+        let mut body = Vec::new();
+        refused.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"no sockets here");
+    }
+
     #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;
