@@ -5,11 +5,15 @@ struct Point {
     y: number,
 }
 
-let point = Point { x: 3, y: 4 }
-let total = 0
-let i = 0
-while i < N {
-    total = total + point.x * point.y
-    i = i + 1
+fn work(n: number) -> number {
+    let point = Point { x: 3, y: 4 }
+    let total = 0
+    let i = 0
+    while i < n {
+        total = total + point.x * point.y
+        i = i + 1
+    }
+    return total
 }
-print(total)
+
+print(work(N))

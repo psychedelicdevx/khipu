@@ -220,6 +220,7 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         tier: Default::default(),
         loops: Vec::new(),
         caches: Vec::new(),
+        kernel_struct_layouts: Vec::new(),
         structs: packed
             .structs
             .iter()
