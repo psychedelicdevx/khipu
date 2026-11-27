@@ -48,14 +48,14 @@ fn emitted_webassembly_matches_the_interpreter() {
     }
     let block = Parser::new(lex(PROGRAM).unwrap()).parse_program().unwrap();
     let sources = top_level(&block);
-    let kernels = group_all(&sources, &[], true);
+    let kernels = group_all(&sources, &[], &[], true);
     let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
     assert!(names.contains(&"fib") && names.contains(&"forever"));
     assert!(
         !names.contains(&"shout"),
         "a string function must not qualify"
     );
-    let (bytes, exports) = module(&kernels);
+    let (bytes, exports) = module(&kernels).unwrap();
 
     let dir = std::env::temp_dir().join(format!("khipu-wasm-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -107,7 +107,10 @@ pub struct Export {
     pub arity: usize,
 }
 
-pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
+pub fn module(kernels: &[Kernel]) -> Result<(Vec<u8>, Vec<Export>), String> {
+    if kernels.iter().any(has_structs) {
+        return Err("flat structs are not supported by the WebAssembly backend".to_string());
+    }
     let mut types: Vec<Vec<u8>> = vec![functype(&[F64, F64], &[F64])];
     let mut type_of = |signature: Vec<u8>| -> u32 {
         if let Some(at) = types.iter().position(|t| *t == signature) {
@@ -188,7 +191,19 @@ pub fn module(kernels: &[Kernel]) -> (Vec<u8>, Vec<Export>) {
             arity: kernel.arity(),
         })
         .collect();
-    (out, exports)
+    Ok((out, exports))
+}
+
+fn has_structs(kernel: &Kernel) -> bool {
+    fn in_block(block: &[Stmt]) -> bool {
+        block.iter().any(|stmt| match stmt {
+            Stmt::MakeStruct(..) | Stmt::SetField(..) => true,
+            Stmt::If(_, then, otherwise) => in_block(then) || in_block(otherwise),
+            Stmt::While(_, body) | Stmt::For { body, .. } => in_block(body),
+            _ => false,
+        })
+    }
+    in_block(&kernel.body)
 }
 
 fn kernel_types(kernel: &Kernel) -> (Vec<u8>, Vec<u8>) {
@@ -560,6 +575,7 @@ impl Emitter<'_> {
                 self.out.push(BR);
                 leb(&mut self.out, self.labels - 1 - header);
             }
+            Stmt::MakeStruct(..) | Stmt::SetField(..) => unreachable!(),
         }
     }
 
@@ -643,6 +659,7 @@ impl Emitter<'_> {
                 self.labels -= 1;
                 self.out.push(END);
             }
+            Expr::GetField(..) => unreachable!(),
         }
     }
 }
