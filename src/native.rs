@@ -302,6 +302,7 @@ mod backend {
     use super::Native;
     use crate::kernel::Kernel;
 
+    #[link(wasm_import_module = "env")]
     unsafe extern "C" {
         fn native_call(index: u32, argc: u32, args: *mut f64, depth: u32) -> f64;
         fn native_failed() -> u32;

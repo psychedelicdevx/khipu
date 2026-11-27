@@ -492,6 +492,10 @@ struct Http {
         serve#(port, handler, options)
     }
 
+    fn serve_tls(port: number, cert_path: string, key_path: string, handler: fn(Request) -> Response) {
+        serve_tls#(port, cert_path, key_path, handler)
+    }
+
     fn router(routes: list<Route>, not_found: any) -> fn(Request) -> Response {
         return fn(request: Request) -> Response {
             for route in routes {

@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `███████░░░` 10 / 15 |
+| 9. HTTP without limits | `███████░░░` 11 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -156,7 +156,7 @@ Robustness
 - [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
 - [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
 - [x] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
-- [ ] HTTPS serving with a certificate and key from files, using the TLS the client already has
+- [x] HTTPS serving with a certificate and key from files, using the TLS the client already has
 - [x] Fuzzed: malformed requests, truncated bodies, invalid UTF-8 in headers and a client that sends one byte a second never crash or hang the server
 
 Interface

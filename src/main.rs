@@ -12,6 +12,7 @@ use khipu::{format, lexer, lsp, parser};
 
 const STACK_SIZE: usize = 256 * 1024 * 1024;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -21,6 +22,7 @@ fn main() {
             Some("fmt") => format_files(&args[2..]),
             Some("test") => test_files(&args[2..]),
             Some("lsp") => lsp::serve(),
+            #[cfg(not(target_arch = "wasm32"))]
             Some(word @ ("init" | "add" | "remove" | "install")) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let mut words = vec![word.to_string()];
@@ -30,6 +32,7 @@ fn main() {
                     process::exit(1);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Some("web") => {
                 let (path, output) = match &args[2..] {
                     [path] => (path, None),
@@ -51,6 +54,7 @@ fn main() {
                     }
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Some("run") => {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 match khipu::package::main_file(&cwd) {
@@ -233,3 +237,6 @@ fn repl() {
         source.clear();
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

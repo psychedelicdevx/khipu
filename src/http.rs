@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 8] = [
+pub static NATIVES: [Native; 9] = [
     Native {
         name: "serve#",
         function: serve,
@@ -12,6 +12,10 @@ pub static NATIVES: [Native; 8] = [
     Native {
         name: "emit#",
         function: emit_chunk,
+    },
+    Native {
+        name: "serve_tls#",
+        function: serve_tls,
     },
     Native {
         name: "fetch#",
@@ -152,11 +156,13 @@ use unavailable as respond;
 use unavailable as serve;
 #[cfg(target_arch = "wasm32")]
 use unavailable as emit_chunk;
+#[cfg(target_arch = "wasm32")]
+use unavailable as serve_tls;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::{
     accept, active_count, begin_shutdown, drain, emit_chunk, fetch, is_shutdown, listen,
-    reset_shutdown, respond, serve,
+    reset_shutdown, respond, serve, serve_tls,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -426,8 +432,31 @@ mod server {
     }
 
     struct Conn {
-        stream: TcpStream,
+        stream: SharedStream,
         buf: Vec<u8>,
+    }
+
+    trait Stream: Read + Write + Send {
+        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()>;
+        fn shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()>;
+    }
+
+    impl Stream for TcpStream {
+        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
+            TcpStream::set_read_timeout(self, dur)
+        }
+        fn shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()> {
+            TcpStream::shutdown(self, how)
+        }
+    }
+
+    impl Stream for rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
+        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
+            self.sock.set_read_timeout(dur)
+        }
+        fn shutdown(&self, _how: std::net::Shutdown) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     enum ReadReq {
@@ -437,7 +466,11 @@ mod server {
     }
 
     fn read_request_conn(conn: &mut Conn, limits: Limits) -> ReadReq {
-        let _ = conn.stream.set_read_timeout(Some(limits.read_timeout));
+        let _ = conn
+            .stream
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set_read_timeout(Some(limits.read_timeout));
         let deadline = Instant::now() + limits.request_timeout;
         let mut scratch = [0u8; 4096];
         let (head_len, term_len) = loop {
@@ -447,7 +480,12 @@ mod server {
             if conn.buf.len() > limits.max_request_head || Instant::now() > deadline {
                 return ReadReq::Bad;
             }
-            match conn.stream.read(&mut scratch) {
+            match conn
+                .stream
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .read(&mut scratch)
+            {
                 Ok(0) => {
                     return if conn.buf.is_empty() {
                         ReadReq::Closed
@@ -536,7 +574,12 @@ mod server {
             if Instant::now() > deadline {
                 return ReadReq::Bad;
             }
-            match conn.stream.read(&mut scratch) {
+            match conn
+                .stream
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .read(&mut scratch)
+            {
                 Ok(0) => return ReadReq::Bad,
                 Ok(read) => conn.buf.extend_from_slice(&scratch[..read]),
                 Err(_) => return ReadReq::Bad,
@@ -646,8 +689,8 @@ mod server {
         Ok(Value::None)
     }
 
-    fn write_response(
-        stream: &mut TcpStream,
+    fn write_response<S: Write + ?Sized>(
+        stream: &mut S,
         status: u16,
         body: &str,
         headers_value: &Value,
@@ -687,8 +730,10 @@ mod server {
 
     const INTERNAL_ERROR: &str = "internal server error";
 
+    type SharedStream = std::sync::Arc<std::sync::Mutex<Box<dyn Stream>>>;
+
     thread_local! {
-        static STREAM_OUT: std::cell::RefCell<Option<TcpStream>> = const { std::cell::RefCell::new(None) };
+        static STREAM_OUT: std::cell::RefCell<Option<SharedStream>> = const { std::cell::RefCell::new(None) };
     }
 
     pub fn emit_chunk(args: &[Value]) -> Result<Value, String> {
@@ -699,10 +744,7 @@ mod server {
         };
         STREAM_OUT.with(|out| {
             if let Some(stream) = out.borrow().as_ref() {
-                let mut stream = match stream.try_clone() {
-                    Ok(stream) => stream,
-                    Err(_) => return Ok(Value::None),
-                };
+                let mut stream = stream.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = stream.write_all(format!("{:x}\r\n{}\r\n", chunk.len(), chunk).as_bytes());
                 let _ = stream.flush();
             }
@@ -722,7 +764,7 @@ mod server {
         }
     }
 
-    fn stream_headers(stream: &mut TcpStream, keep_alive: bool) {
+    fn stream_headers(stream: &mut dyn Write, keep_alive: bool) {
         let mut head = "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ntransfer-encoding: chunked\r\n".to_string();
         head.push_str(&format!(
             "connection: {}\r\n\r\n",
@@ -732,21 +774,28 @@ mod server {
         let _ = stream.flush();
     }
 
-    fn stream_response(stream: &mut TcpStream, vm: &mut Vm, producer: Value, keep_alive: bool) {
-        stream_headers(stream, keep_alive);
-        if let Ok(clone) = stream.try_clone() {
-            STREAM_OUT.with(|out| *out.borrow_mut() = Some(clone));
-        }
+    fn stream_response(stream: SharedStream, vm: &mut Vm, producer: Value, keep_alive: bool) {
+        stream_headers(
+            &mut *stream.lock().unwrap_or_else(|p| p.into_inner()),
+            keep_alive,
+        );
+        STREAM_OUT.with(|out| *out.borrow_mut() = Some(std::sync::Arc::clone(&stream)));
         let result = vm.call(producer, vec![Value::Native(&EMIT_NATIVE)]);
         STREAM_OUT.with(|out| *out.borrow_mut() = None);
         match result {
             Ok(_) => {
-                let _ = stream.write_all(b"0\r\n\r\n");
-                let _ = stream.flush();
+                let _ = stream
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .write_all(b"0\r\n\r\n");
+                let _ = stream.lock().unwrap_or_else(|p| p.into_inner()).flush();
             }
             Err(error) => {
                 eprintln!("{}", crate::task::render(&error));
-                let _ = stream.shutdown(std::net::Shutdown::Both);
+                let _ = stream
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .shutdown(std::net::Shutdown::Both);
             }
         }
     }
@@ -938,7 +987,7 @@ mod server {
         vm: &mut Vm,
         handler: &Value,
         request: Value,
-        stream: &mut TcpStream,
+        stream: SharedStream,
         keep_alive: bool,
     ) {
         let returned = match vm.call(handler.clone(), vec![request]) {
@@ -946,7 +995,7 @@ mod server {
             Err(error) => {
                 eprintln!("{}", crate::task::render(&error));
                 write_response(
-                    stream,
+                    stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
                     500,
                     INTERNAL_ERROR,
                     &Value::record(Vec::new()),
@@ -968,7 +1017,7 @@ mod server {
             }
         };
         if write_response(
-            stream,
+            stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
             status,
             &response_body,
             &response_headers,
@@ -977,7 +1026,7 @@ mod server {
         .is_err()
         {
             let _ = write_response(
-                stream,
+                stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
                 500,
                 INTERNAL_ERROR,
                 &Value::record(Vec::new()),
@@ -987,14 +1036,14 @@ mod server {
     }
 
     fn serve_connection(
-        stream: TcpStream,
+        stream: Box<dyn Stream>,
         vm: &mut Vm,
         handler: &Value,
         request_def: Option<&Rc<StructDef>>,
         limits: Limits,
     ) {
         let mut conn = Conn {
-            stream,
+            stream: std::sync::Arc::new(std::sync::Mutex::new(stream)),
             buf: Vec::new(),
         };
         let mut served = 0usize;
@@ -1003,7 +1052,7 @@ mod server {
             match read_request_conn(&mut conn, limits) {
                 ReadReq::Closed => break,
                 ReadReq::Bad => {
-                    let _ = conn.stream.write_all(
+                    let _ = conn.stream.lock().unwrap_or_else(|p| p.into_inner()).write_all(
                         b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
                     );
                     break;
@@ -1011,7 +1060,13 @@ mod server {
                 ReadReq::Request((method, target, found, body), keep_alive) => {
                     let request = build_request(request_def, &method, &target, found, &body);
                     let more = keep_alive && served + 1 < limits.max_requests;
-                    answer(vm, handler, request, &mut conn.stream, more);
+                    answer(
+                        vm,
+                        handler,
+                        request,
+                        std::sync::Arc::clone(&conn.stream),
+                        more,
+                    );
                     served += 1;
                     if !more {
                         break;
@@ -1024,7 +1079,7 @@ mod server {
 
     fn http_worker(
         packed: crate::task::Graph,
-        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<TcpStream>>>,
+        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Box<dyn Stream>>>>,
         dir: std::path::PathBuf,
         limits: Limits,
     ) {
@@ -1070,18 +1125,79 @@ mod server {
         }
         let listener = TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
+        let limits = limits_from(args.get(2));
+        start_pool(listener, handler, limits, None, port, "http")
+    }
+
+    pub fn serve_tls(args: &[Value]) -> Result<Value, String> {
+        let port = match &args[0] {
+            Value::Number(n) if n.fract() == 0.0 && (1.0..=65535.0).contains(n) => *n as u16,
+            other => {
+                return Err(format!(
+                    "Http.serve_tls needs a port from 1 to 65535, got {other}"
+                ));
+            }
+        };
+        let cert_path = text(&args[1], "Http.serve_tls")?;
+        let key_path = text(&args[2], "Http.serve_tls")?;
+        let handler = args
+            .get(3)
+            .cloned()
+            .ok_or("Http.serve_tls needs a handler".to_string())?;
+        match &handler {
+            Value::Function(_) | Value::Native(_) => {}
+            _ => return Err("Http.serve_tls needs a function to handle requests".to_string()),
+        }
+        let certs = {
+            use rustls::pki_types::pem::PemObject;
+            rustls::pki_types::CertificateDer::pem_file_iter(&cert_path)
+                .map_err(|error| format!("cannot read certificate {cert_path}: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("cannot read certificate {cert_path}: {error}"))?
+        };
+        let key = {
+            use rustls::pki_types::pem::PemObject;
+            rustls::pki_types::PrivateKeyDer::from_pem_file(&key_path)
+                .map_err(|error| format!("cannot read key {key_path}: {error}"))?
+        };
+        let _ = rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::ring::default_provider(),
+        );
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|error| format!("cannot build TLS config: {error}"))?;
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
+        start_pool(
+            listener,
+            handler,
+            Limits::default(),
+            Some(std::sync::Arc::new(config)),
+            port,
+            "https",
+        )
+    }
+
+    fn start_pool(
+        listener: TcpListener,
+        handler: Value,
+        limits: Limits,
+        tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+        port: u16,
+        scheme: &str,
+    ) -> Result<Value, String> {
         let _ = listener.set_nonblocking(true);
         let flag = shutdown_flag();
         let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, flag.clone());
         let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, flag.clone());
-        println!("listening on http://localhost:{port}");
+        println!("listening on {scheme}://localhost:{port}");
         let dir = crate::task::program_dir();
         let workers = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .max(1);
         let bound = workers.saturating_mul(2).max(1);
-        let limits = limits_from(args.get(2));
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<TcpStream>(bound);
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<dyn Stream>>(bound);
         let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
         for _ in 0..workers {
             let packed = crate::task::pack(std::slice::from_ref(&handler));
@@ -1102,8 +1218,16 @@ mod server {
                     let _ = stream.set_nonblocking(false);
                     if flag.load(std::sync::atomic::Ordering::SeqCst) {
                         let _ = stream.shutdown(std::net::Shutdown::Both);
+                    } else if let Some(config) = &tls {
+                        match rustls::ServerConnection::new(std::sync::Arc::clone(config)) {
+                            Ok(conn) => {
+                                let _ =
+                                    sender.send(Box::new(rustls::StreamOwned::new(conn, stream)));
+                            }
+                            Err(error) => eprintln!("TLS handshake setup failed: {error}"),
+                        }
                     } else {
-                        let _ = sender.send(stream);
+                        let _ = sender.send(Box::new(stream));
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

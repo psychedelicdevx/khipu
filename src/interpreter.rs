@@ -784,6 +784,50 @@ mod tests {
     }
 
     #[test]
+    fn https_serving_with_a_checked_in_self_signed_cert() {
+        let port = 20000 + std::process::id() % 20000 + 17;
+        let source = format!(
+            "fn handle(request: Request) -> Response {{\n    return Response.text(\"secure\")\n}}\nHttp.serve_tls({port}, \"tests/khipu-cert.pem\", \"tests/khipu-key.pem\", handle)"
+        );
+        std::thread::spawn(move || {
+            let _ = run(&source);
+        });
+        let mut up = false;
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(format!("localhost:{port}")).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(up, "tls server never came up");
+
+        use rustls::pki_types::pem::PemObject;
+        let cert =
+            rustls::pki_types::CertificateDer::from_pem_file("tests/khipu-cert.pem").unwrap();
+        let _ = rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::ring::default_provider(),
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert).unwrap();
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost".to_string()).unwrap();
+        let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+        let sock = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        use std::io::{Read, Write};
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut out = Vec::new();
+        let _ = tls.read_to_end(&mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        assert!(text.ends_with("secure"), "{text}");
+    }
+
+    #[test]
     fn checks_contracts() {
         let divide = "fn divide(a: number, b: number) -> number\n    requires b != 0\n    ensures result * b == a\n    example divide(6, 3) == 2\n{\n    return a / b\n}\n";
         assert_eq!(number(&format!("{divide}divide(9, 3)")), 3.0);
