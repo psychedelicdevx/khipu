@@ -188,6 +188,7 @@ fn comparison(code: Code) -> Option<Op> {
 pub struct StructInfo {
     pub name: Rc<str>,
     pub fields: Rc<[Rc<str>]>,
+    pub optional: Rc<[Rc<str>]>,
     pub methods: Vec<Rc<str>>,
 }
 
@@ -875,6 +876,12 @@ impl Compiler<'_> {
                     fields: decl
                         .fields
                         .iter()
+                        .map(|(field, _)| Rc::from(field.as_str()))
+                        .collect(),
+                    optional: decl
+                        .fields
+                        .iter()
+                        .filter(|(_, ty)| matches!(ty, Type::Optional(_)))
                         .map(|(field, _)| Rc::from(field.as_str()))
                         .collect(),
                     methods: decl

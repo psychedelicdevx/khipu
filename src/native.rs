@@ -323,7 +323,7 @@ pub fn arguments<'a>(
                 if at + layout.len() > raw.len() {
                     return None;
                 }
-                let fields = instance.fields.borrow();
+                let fields = instance.fields();
                 if fields.len() != layout.len() {
                     return None;
                 }
@@ -401,10 +401,7 @@ fn result(
                     Kind::List => return None,
                 });
             }
-            Some(Value::instance(Instance {
-                def,
-                fields: RefCell::new(fields),
-            }))
+            Some(Value::instance(Instance::new(def, fields)))
         }
     }
 }

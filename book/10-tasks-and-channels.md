@@ -147,6 +147,36 @@ working on the report
 worker stopped
 ```
 
+## Closing a channel
+
+`close(ch)` says nothing more will be sent. `receive` still gives what was already queued, then `none` from then on, so a worker can loop until the channel runs dry instead of needing a second channel to be told to stop. `select` sees a closed channel the same way and runs its arm with `none`. Sending on a closed channel is an error that points at the `send`:
+
+```js
+let jobs = channel()
+let totals = channel()
+
+fn worker() {
+    let total = 0
+    let job = receive(jobs)
+    while job != none {
+        total = total + job
+        job = receive(jobs)
+    }
+    send(totals, total)
+}
+
+spawn(worker)
+for n in range(1, 5) {
+    send(jobs, n)
+}
+close(jobs)
+print(receive(totals), receive(jobs))
+```
+
+```text
+10 none
+```
+
 ## Deadlock detection
 
 If every task is waiting on a channel that nothing will ever send to, a JavaScript program just hangs. Khipu stops and points at the line that waits:

@@ -5,7 +5,7 @@ use crate::value::{Native, Value, equal};
 
 pub const PRELUDE: &str = include_str!("prelude.kp");
 
-pub static NATIVES: [Native; 45] = [
+pub static NATIVES: [Native; 47] = [
     native("upper#", upper),
     native("lower#", lower),
     native("trim#", trim),
@@ -42,6 +42,8 @@ pub static NATIVES: [Native; 45] = [
     native("bytes_text#", bytes_text),
     native("string_bytes#", string_bytes),
     native("write_file#", write_file),
+    native("write_bytes#", write_bytes),
+    native("bytes_from#", bytes_from),
     native("append_file#", append_file),
     native("file_exists#", file_exists),
     native("delete_file#", delete_file),
@@ -463,6 +465,40 @@ fn write_file(args: &[Value]) -> Result<Value, String> {
     std::fs::write(path.as_str(), contents.as_bytes())
         .map(|_| Value::None)
         .map_err(|error| failed("write", &path, error))
+}
+
+fn write_bytes(args: &[Value]) -> Result<Value, String> {
+    let path = text(&args[0], "File.write_bytes")?;
+    let Value::Bytes(contents) = &args[1] else {
+        return Err(format!(
+            "File.write_bytes needs bytes, got {}",
+            args[1].type_name()
+        ));
+    };
+    std::fs::write(path.as_str(), contents.as_slice())
+        .map(|_| Value::None)
+        .map_err(|error| failed("write", &path, error))
+}
+
+fn bytes_from(args: &[Value]) -> Result<Value, String> {
+    let Value::List(items) = &args[0] else {
+        return Err(format!(
+            "bytes needs a list of numbers, got {}",
+            args[0].type_name()
+        ));
+    };
+    items
+        .borrow()
+        .iter()
+        .enumerate()
+        .map(|(at, item)| match item {
+            Value::Number(n) if n.fract() == 0.0 && (0.0..=255.0).contains(&n) => Ok(n as u8),
+            other => Err(format!(
+                "bytes needs whole numbers from 0 to 255, got {other:?} at index {at}"
+            )),
+        })
+        .collect::<Result<Vec<u8>, String>>()
+        .map(|data| Value::Bytes(Rc::new(data)))
 }
 
 fn append_file(args: &[Value]) -> Result<Value, String> {

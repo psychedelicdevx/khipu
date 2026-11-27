@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `████████░░` 19 / 24 |
+| 9. HTTP without limits | `██████████` 23 / 24 |
 | 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
@@ -147,8 +147,8 @@ Today `Http.serve` answers one request at a time on one thread. A backend should
 Throughput
 - [x] Every request is a task: accepted connections are handed to the scheduler and handled on every core, with the handler's globals copied once per worker, not per request
 - [x] Keep-alive and pipelining, so a connection serves many requests without reconnecting
-- [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
-  (reassessed after `bytes`, still not reachable: `bytes` is an owned `Rc<Vec<u8>>` and `Value` is not `Send`, so the body could at best become one slice of a buffer moved to the worker, while method, path, query and every header stay `string` fields that are copied into `Rc<String>` when the `Request` is built; reaching the item needs lazy string values that point into a shared buffer, a change to the value model, not to the server)
+- [x] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
+  (the parser gives byte ranges into the read buffer, the buffer moves to the worker with the request, and each `Request` field is made from its range the first time the program reads it; a field read is one copy into an owned `string` or `bytes`, since those values own their data)
 - [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
 - [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in docs/benchmarks.md, for a hello route, a JSON route and a route that reads a file
 
@@ -172,9 +172,9 @@ Interface
 - [x] A WebSocket client: `Http.websocket(url)` returns a socket that works with `send` and `receive` like the server side, over TLS when the URL is `wss`
 - [x] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in docs/audit.md
-- [ ] The WebSocket client at parity with the server: pings and a timeout on a silent server so a socket to a dead peer does not wait forever, `permessage-deflate` when the server accepts it, and the protocol the server chose readable from the program
-- [ ] `bytes` as a full value: `data[i]` for one byte, `bytes([..])` from a list of numbers, `File.read_bytes` and `File.write_bytes`, and binary bodies from `Http.get` and `Http.request`
-- [ ] `close(channel)` on a plain channel: `receive` drains what is queued and then gives `none`, `select` sees it like a closed socket, and `send` after `close` is an error with its line
+- [x] The WebSocket client at parity with the server: pings and a timeout on a silent server so a socket to a dead peer does not wait forever, `permessage-deflate` when the server accepts it, and the protocol the server chose readable from the program
+- [x] `bytes` as a full value: `data[i]` for one byte, `bytes([..])` from a list of numbers, `File.read_bytes` and `File.write_bytes`, and binary bodies from `Http.get` and `Http.request`
+- [x] `close(channel)` on a plain channel: `receive` drains what is queued and then gives `none`, `select` sees it like a closed socket, and `send` after `close` is an error with its line
 
 ## Phase 10: Cleanup
 

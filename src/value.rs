@@ -234,12 +234,97 @@ pub struct Native {
 pub struct StructDef {
     pub name: Rc<str>,
     pub fields: Rc<[Rc<str>]>,
+    pub optional: Rc<[Rc<str>]>,
     pub methods: Vec<(Rc<str>, Value)>,
 }
 
 pub struct Instance {
     pub def: Rc<StructDef>,
-    pub fields: RefCell<Vec<Value>>,
+    fields: RefCell<Vec<Value>>,
+    lazy: Option<Box<Lazy>>,
+}
+
+pub type Make = Box<dyn Fn(&str) -> Value>;
+
+struct Lazy {
+    make: Make,
+    missing: std::cell::Cell<u64>,
+}
+
+impl Instance {
+    pub fn new(def: Rc<StructDef>, fields: Vec<Value>) -> Instance {
+        Instance {
+            def,
+            fields: RefCell::new(fields),
+            lazy: None,
+        }
+    }
+
+    pub fn lazy(def: Rc<StructDef>, make: Make) -> Instance {
+        let count = def.fields.len();
+        if count > 64 {
+            let fields = def.fields.iter().map(|name| make(name)).collect();
+            return Instance::new(def, fields);
+        }
+        Instance {
+            def,
+            fields: RefCell::new(vec![Value::None; count]),
+            lazy: Some(Box::new(Lazy {
+                make,
+                missing: std::cell::Cell::new(u64::MAX >> (64 - count.max(1))),
+            })),
+        }
+    }
+
+    fn fill(&self, at: usize) {
+        let Some(lazy) = &self.lazy else { return };
+        let bit = 1u64 << at;
+        if lazy.missing.get() & bit == 0 {
+            return;
+        }
+        lazy.missing.set(lazy.missing.get() & !bit);
+        let value = (lazy.make)(&self.def.fields[at]);
+        if let Some(slot) = self.fields.borrow_mut().get_mut(at) {
+            *slot = value;
+        }
+    }
+
+    fn fill_all(&self) {
+        if let Some(lazy) = &self.lazy
+            && lazy.missing.get() != 0
+        {
+            (0..self.def.fields.len()).for_each(|at| self.fill(at));
+        }
+    }
+
+    pub fn field(&self, at: usize) -> Option<Value> {
+        self.fill(at);
+        self.fields.borrow().get(at).cloned()
+    }
+
+    pub fn set(&self, at: usize, value: Value) {
+        if let Some(lazy) = &self.lazy {
+            lazy.missing.set(lazy.missing.get() & !(1u64 << at));
+        }
+        self.fields.borrow_mut()[at] = value;
+    }
+
+    pub fn fields(&self) -> std::cell::Ref<'_, Vec<Value>> {
+        self.fill_all();
+        self.fields.borrow()
+    }
+
+    pub fn fields_mut(&self) -> std::cell::RefMut<'_, Vec<Value>> {
+        self.fill_all();
+        if let Some(lazy) = &self.lazy {
+            lazy.missing.set(0);
+        }
+        self.fields.borrow_mut()
+    }
+
+    pub fn made_fields(&self) -> &RefCell<Vec<Value>> {
+        &self.fields
+    }
 }
 
 pub struct EnumDef {
@@ -468,7 +553,7 @@ impl fmt::Display for Value {
             Value::EnumDef(def) => write!(f, "<enum {}>", def.name),
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Instance(instance) => {
-                let values = instance.fields.borrow();
+                let values = instance.fields();
                 let fields: Vec<String> = instance
                     .def
                     .fields
@@ -557,7 +642,7 @@ pub fn equal(a: &Value, b: &Value) -> Option<bool> {
             if Rc::ptr_eq(x, y) {
                 return Some(true);
             }
-            let (xs, ys) = (x.fields.borrow(), y.fields.borrow());
+            let (xs, ys) = (x.fields(), y.fields());
             Some(
                 (Rc::ptr_eq(&x.def, &y.def) || x.def.name == y.def.name)
                     && xs

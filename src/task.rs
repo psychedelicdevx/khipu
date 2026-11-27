@@ -22,6 +22,16 @@ pub struct Channel {
 pub trait Endpoint: Send + Sync {
     fn send(&self, value: &Value) -> Result<(), String>;
     fn close(&self, code: u16, reason: &str);
+    fn protocol(&self) -> Option<String>;
+}
+
+pub fn protocol(channel: &Channel) -> Option<String> {
+    channel.port.as_ref()?.protocol()
+}
+
+pub fn fail(channel: &Channel, message: String) {
+    lock(&channel.state).failure.get_or_insert(message);
+    seal(channel);
 }
 
 pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Channel> {
@@ -32,7 +42,7 @@ pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Ch
 }
 
 pub fn deliver(channel: &Channel, message: Slot) {
-    push(
+    let _ = push(
         channel,
         Graph {
             nodes: Vec::new(),
@@ -70,6 +80,7 @@ struct ChannelState {
     queue: VecDeque<Graph>,
     waiters: VecDeque<Waiter>,
     closed: bool,
+    failure: Option<String>,
 }
 
 struct Waiter {
@@ -97,7 +108,7 @@ enum Node {
     Cell(Slot),
     Globals(Vec<String>, Vec<Option<Slot>>),
     Function(Arc<PortableProto>, Vec<usize>, usize),
-    StructDef(String, Vec<String>, Vec<(String, Slot)>),
+    StructDef(String, Vec<String>, Vec<String>, Vec<(String, Slot)>),
     Instance(usize, Vec<Slot>),
     EnumDef(PortableEnum),
     Enum(usize, usize, Vec<Slot>),
@@ -119,6 +130,8 @@ enum PortablePattern {
     Variant(u32, Option<String>, String, u32),
 }
 
+type PortableStruct = (String, Vec<String>, Vec<String>, Vec<String>);
+
 pub struct PortableProto {
     name: String,
     arity: u32,
@@ -128,7 +141,7 @@ pub struct PortableProto {
     protos: Vec<Arc<PortableProto>>,
     shapes: Vec<Vec<String>>,
     captures: Vec<Capture>,
-    structs: Vec<(String, Vec<String>, Vec<String>)>,
+    structs: Vec<PortableStruct>,
     enums: Vec<PortableEnum>,
     patterns: Vec<PortablePattern>,
     builtin: bool,
@@ -208,6 +221,7 @@ fn pack_proto(proto: &Rc<Proto>) -> Arc<PortableProto> {
                     info.name.to_string(),
                     strings(&info.fields),
                     strings(&info.methods),
+                    strings(&info.optional),
                 )
             })
             .collect(),
@@ -274,9 +288,10 @@ fn unpack_proto(packed: &Arc<PortableProto>) -> Rc<Proto> {
         structs: packed
             .structs
             .iter()
-            .map(|(name, fields, methods)| StructInfo {
+            .map(|(name, fields, methods, optional)| StructInfo {
                 name: Rc::from(name.as_str()),
                 fields: names(fields),
+                optional: names(optional),
                 methods: methods.iter().map(|m| Rc::from(m.as_str())).collect(),
             })
             .collect(),
@@ -387,19 +402,19 @@ impl Packer {
                     .iter()
                     .map(|(name, method)| (name.to_string(), packer.slot(method)))
                     .collect();
-                Node::StructDef(def.name.to_string(), strings(&def.fields), methods)
+                Node::StructDef(
+                    def.name.to_string(),
+                    strings(&def.fields),
+                    strings(&def.optional),
+                    methods,
+                )
             }),
             Value::Instance(instance) => self.node(address(instance), |packer| {
                 let Slot::Node(def) = packer.slot(&Value::StructDef(Rc::clone(&instance.def)))
                 else {
                     unreachable!()
                 };
-                let fields = instance
-                    .fields
-                    .borrow()
-                    .iter()
-                    .map(|v| packer.slot(v))
-                    .collect();
+                let fields = instance.fields().iter().map(|v| packer.slot(v)).collect();
                 Node::Instance(def, fields)
             }),
             Value::EnumDef(def) => self.node(address(def), |_| Node::EnumDef(pack_enum(def))),
@@ -500,7 +515,7 @@ impl Unpacker {
                 self.nodes[index] = Node::Function(proto, Vec::new(), 0);
                 value
             }
-            Node::StructDef(name, fields, methods) => {
+            Node::StructDef(name, fields, optional, methods) => {
                 let methods = methods
                     .iter()
                     .map(|(name, method)| (Rc::from(name.as_str()), self.value(method)))
@@ -508,6 +523,7 @@ impl Unpacker {
                 Value::struct_def(StructDef {
                     name: Rc::from(name),
                     fields: names(&fields),
+                    optional: names(&optional),
                     methods,
                 })
             }
@@ -516,10 +532,7 @@ impl Unpacker {
                     return;
                 };
                 self.nodes[index] = Node::Instance(def, fields);
-                Value::instance(Instance {
-                    def: def_value,
-                    fields: RefCell::new(Vec::new()),
-                })
+                Value::instance(Instance::new(def_value, Vec::new()))
             }
             Node::EnumDef(def) => Value::EnumDef(Rc::new(unpack_enum(&def))),
             Node::Enum(def, variant, values) => {
@@ -568,7 +581,7 @@ impl Unpacker {
             }
             (Node::Instance(_, fields), Some(Made::Value(Value::Instance(instance)))) => {
                 let fields = fields.iter().map(|v| self.value(v)).collect();
-                *instance.fields.borrow_mut() = fields;
+                *instance.fields_mut() = fields;
             }
             _ => {}
         }
@@ -617,19 +630,22 @@ fn take_or_wait(
     worker: Option<usize>,
     task: u64,
     counted: bool,
-) -> Option<(usize, Graph)> {
+) -> Option<(usize, Result<Graph, String>)> {
     for (index, channel) in channels.iter().enumerate() {
         let mut state = lock(&channel.state);
         if let Some(value) = state.queue.pop_front() {
-            return Some((index, value));
+            return Some((index, Ok(value)));
+        }
+        if let Some(failure) = &state.failure {
+            return Some((index, Err(failure.clone())));
         }
         if state.closed {
             return Some((
                 index,
-                Graph {
+                Ok(Graph {
                     nodes: Vec::new(),
                     roots: vec![Slot::None],
-                },
+                }),
             ));
         }
         state
@@ -645,8 +661,8 @@ fn take_or_wait(
     None
 }
 
-fn received(index: usize, graph: Graph) -> (usize, Value) {
-    (index, unpack(graph).remove(0))
+fn received(index: usize, graph: Result<Graph, String>) -> Result<(usize, Value), String> {
+    Ok((index, unpack(graph?).remove(0)))
 }
 
 pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
@@ -661,7 +677,7 @@ pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
                 world.blocked -= count;
             }
             drop(world);
-            return Ok(received(index, value));
+            return received(index, value);
         }
         if counted && world.blocked >= world.live {
             WAKE.notify_all();
@@ -679,7 +695,7 @@ pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
                 world.blocked -= count;
             }
             drop(world);
-            return Ok(received(index, value));
+            return received(index, value);
         }
         while armed.load(Ordering::Acquire) && (!counted || world.blocked < world.live) {
             world = WAKE
@@ -718,14 +734,18 @@ pub fn send(args: &[Value]) -> Result<Value, String> {
             _ => Err(format!("send expects 2 arguments, got {}", args.len())),
         };
     };
-    push(channel, pack(std::slice::from_ref(value)));
+    push(channel, pack(std::slice::from_ref(value)))
+        .map_err(|_| "cannot send on a closed channel".to_string())?;
     Ok(Value::None)
 }
 
-fn push(channel: &Channel, packed: Graph) {
+fn push(channel: &Channel, packed: Graph) -> Result<(), ()> {
     let mut world = world();
     let woken = {
         let mut state = lock(&channel.state);
+        if state.closed {
+            return Err(());
+        }
         state.queue.push_back(packed);
         loop {
             match state.waiters.pop_front() {
@@ -745,6 +765,7 @@ fn push(channel: &Channel, packed: Graph) {
             None => WAKE.notify_all(),
         }
     }
+    Ok(())
 }
 
 pub fn select(args: &[Value]) -> Result<Value, String> {
@@ -789,16 +810,23 @@ pub fn close(args: &[Value]) -> Result<Value, String> {
         }
         [other, ..] => {
             return Err(format!(
-                "close needs a websocket, got {}",
+                "close needs a channel or a websocket, got {}",
                 other.type_name()
             ));
         }
         [] => {
-            return Err("close expects a websocket, then an optional code and reason".to_string());
+            return Err(
+                "close expects a channel, or a websocket and an optional code and reason"
+                    .to_string(),
+            );
         }
     };
     let Some(port) = &channel.port else {
-        return Err("close needs a websocket, got a channel".to_string());
+        if args.len() > 1 {
+            return Err("close on a channel takes no code or reason".to_string());
+        }
+        seal(channel);
+        return Ok(Value::None);
     };
     if args.len() > 3 {
         return Err(format!(

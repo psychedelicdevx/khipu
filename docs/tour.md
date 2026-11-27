@@ -76,7 +76,7 @@ let reply = Http.get("http://localhost:8080/hello")
 print(reply.status, reply.json().message)
 ```
 
-`Http` also has `post`, `post_json` and `request` for any method and headers, over `http://` or `https://`. `Http.serve` answers on `localhost` with a handler running on every core, while idle connections and open WebSockets wait in one event loop and cost memory, not threads; see [`examples/web`](examples/web). Binary data is `bytes`: `"text".to_bytes()`, `len()`, `slice(start, end)` and `to_string()`, which gives `none` for invalid UTF-8; a request has its body as `body` and as `bytes`, a `Response` body can be either, and `Response.file` serves any file untouched. `Response.websocket(chat)` upgrades a request and runs `chat(socket)` as a task, where `socket` works like a channel with `send`, `receive` and `select`, and `close(socket, code, reason)` ends it; `request.protocol(list)` and `Response.websocket_with(chat, { protocol: name })` pick a subprotocol, and `permessage-deflate` is used whenever the client offers it. `Http.websocket(url)` connects to a `ws://` or `wss://` server and gives the same kind of socket. `Json.parse` and `Json.stringify` turn text into records, lists, numbers and back.
+`Http` also has `post`, `post_json` and `request` for any method and headers, over `http://` or `https://`. `Http.serve` answers on `localhost` with a handler running on every core, while idle connections and open WebSockets wait in one event loop and cost memory, not threads; see [`examples/web`](examples/web). Binary data is `bytes`: `"text".to_bytes()` or `bytes([104, 105])`, `data[i]` for one byte as a number, `len()`, `slice(start, end)` and `to_string()`, which gives `none` for invalid UTF-8; `File.read_bytes` and `File.write_bytes` move it to and from disk; a request has its body as `body` and as `bytes`, so does the `Response` from `Http.get` and `Http.request`, a `Response` body can be either, and `Response.file` serves any file untouched. A struct field typed with `?` may be left out of a literal and is `none`. `Response.websocket(chat)` upgrades a request and runs `chat(socket)` as a task, where `socket` works like a channel with `send`, `receive` and `select`, and `close(socket, code, reason)` ends it; `request.protocol(list)` and `Response.websocket_with(chat, { protocol: name })` pick a subprotocol, and `permessage-deflate` is used whenever the client offers it. `Http.websocket(url)` connects to a `ws://` or `wss://` server and gives the same kind of socket, with `permessage-deflate` when the server accepts it, `socket.protocol()` for the protocol the server chose, and a ping after 30 seconds of silence that turns into a timeout error on `receive` if the server does not answer within 30 more (`ping_interval` and `ping_timeout` in `Http.websocket_with` change both). `Json.parse` and `Json.stringify` turn text into records, lists, numbers and back.
 
 `File` also has `read`, `exists`, `list` and `delete`; `Process` has `args`, `env` and `exit`. A file that cannot be read stops the program with an error that says why, on the line that tried.
 
@@ -123,6 +123,8 @@ spawn(worker)
 send(jobs, "the report")
 send(quit, true)
 ```
+
+`close(jobs)` ends a channel: `receive` drains what is queued and then gives `none`, `select` sees it the same way, and a `send` after it is an error on its line.
 
 If every task ends up waiting on a channel that nothing will ever send to, Khipu stops with a deadlock error that points at the line, instead of hanging.
 

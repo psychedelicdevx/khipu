@@ -21,7 +21,7 @@ const SLICE: u32 = 10_000;
 
 pub type Modules = Rc<RefCell<HashMap<PathBuf, Rc<RefCell<Record>>>>>;
 pub type Loading = Rc<RefCell<Vec<PathBuf>>>;
-pub type Methods = Rc<[HashMap<String, Value>; 5]>;
+pub type Methods = Rc<[HashMap<String, Value>; 6]>;
 
 thread_local! {
     static TASK_METHODS: Methods = crate::interpreter::Interpreter::new().methods();
@@ -62,7 +62,7 @@ impl Vm {
     }
 
     pub fn load_methods(&mut self) {
-        let mut methods: [HashMap<String, Value>; 5] = Default::default();
+        let mut methods: [HashMap<String, Value>; 6] = Default::default();
         let globals = self.globals.borrow();
         for (name, value) in globals.names.iter().zip(&globals.values) {
             let (Some((kind, method)), Some(value)) = (name.split_once('#'), value) else {
@@ -74,6 +74,7 @@ impl Vm {
                 "number" => 2,
                 "bool" => 3,
                 "bytes" => 4,
+                "channel" => 5,
                 _ => continue,
             };
             methods[index].insert(method.to_string(), value.clone());
@@ -742,7 +743,7 @@ impl Vm {
                                 }
                                 let field = proto.caches[ip - 1]
                                     .position(&instance.def.fields, name)
-                                    .map(|at| instance.fields.borrow()[at].clone());
+                                    .and_then(|at| instance.field(at));
                                 match field {
                                     Some(value) => {
                                         self.stack[target_at] = value;
@@ -797,13 +798,15 @@ impl Vm {
                             | Value::Str(_)
                             | Value::Number(_)
                             | Value::Bool(_)
-                            | Value::Bytes(_) => {
+                            | Value::Bytes(_)
+                            | Value::Channel(_) => {
                                 let kind = match &target {
                                     Value::List(_) => 0,
                                     Value::Str(_) => 1,
                                     Value::Number(_) => 2,
                                     Value::Bool(_) => 3,
-                                    _ => 4,
+                                    Value::Bytes(_) => 4,
+                                    _ => 5,
                                 };
                                 let Some(method) = self.methods[kind].get(name.as_str()).cloned()
                                 else {
@@ -940,7 +943,7 @@ impl Vm {
                             }
                             Value::Instance(instance) => {
                                 match proto.caches[ip - 1].position(&instance.def.fields, name) {
-                                    Some(at) => instance.fields.borrow_mut()[at] = value,
+                                    Some(at) => instance.set(at, value),
                                     None => fail!(format!(
                                         "{} has no field '{name}'",
                                         instance.def.name
@@ -959,6 +962,7 @@ impl Vm {
                         let def = StructDef {
                             name: Rc::clone(&info.name),
                             fields: Rc::clone(&info.fields),
+                            optional: Rc::clone(&info.optional),
                             methods: info.methods.iter().cloned().zip(methods).collect(),
                         };
                         self.stack.push(Value::struct_def(def));
@@ -983,13 +987,11 @@ impl Vm {
                                 Some(at) => {
                                     fields.push(std::mem::replace(&mut given[at], Value::None))
                                 }
+                                None if def.optional.contains(field) => fields.push(Value::None),
                                 None => fail!(format!("{} is missing field '{field}'", def.name)),
                             }
                         }
-                        self.stack.push(Value::instance(Instance {
-                            def,
-                            fields: RefCell::new(fields),
-                        }));
+                        self.stack.push(Value::instance(Instance::new(def, fields)));
                     }
                     Code::Test(pattern, fail_at) => match &proto.patterns[pattern as usize] {
                         PatternTest::Value { slot, constant } => {
@@ -1446,6 +1448,9 @@ fn index_into(target: &Value, index: &Value, cache: &FieldCache) -> Result<Value
             let at = position(index, chars.len())?;
             Ok(Value::str(&chars[at].to_string()))
         }
+        Value::Bytes(bytes) => Ok(Value::Number(f64::from(
+            bytes[position(index, bytes.len())?],
+        ))),
         Value::Record(record) => match index {
             Value::Str(name) => get_field(record, name, cache),
             other => Err(format!(
@@ -1461,7 +1466,7 @@ fn field_of(target: &Value, name: &str, cache: &FieldCache) -> Result<Value, Str
     match target {
         Value::Record(record) => get_field(record, name, cache),
         Value::Instance(instance) => match cache.position(&instance.def.fields, name) {
-            Some(at) => Ok(instance.fields.borrow()[at].clone()),
+            Some(at) => Ok(instance.field(at).unwrap_or(Value::None)),
             None if instance.def.methods.iter().any(|(m, _)| &**m == name) => Err(format!(
                 "'{name}' is a method of {}, call it like value.{name}(...)",
                 instance.def.name

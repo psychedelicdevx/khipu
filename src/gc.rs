@@ -119,7 +119,7 @@ impl Live {
             }
             Live::Instance(instance) => {
                 visit(address(&instance.def));
-                if let Ok(fields) = instance.fields.try_borrow() {
+                if let Ok(fields) = instance.made_fields().try_borrow() {
                     visit_values(fields.iter(), visit);
                 }
             }
@@ -157,7 +157,7 @@ impl Live {
                 }
             }
             Live::Instance(instance) => {
-                if let Ok(mut fields) = instance.fields.try_borrow_mut() {
+                if let Ok(mut fields) = instance.made_fields().try_borrow_mut() {
                     fields.clear();
                 }
             }
