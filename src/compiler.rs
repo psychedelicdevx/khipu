@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::kernel::{LoopSource, Place, Source};
+use crate::kernel::{Kind, LoopSource, Place, Source};
 use crate::native::Tier;
 use crate::parser::{Arm, ArmBody, Block, Expr, Import, Op, Pattern, Stmt, Type};
 use crate::value::{EnumDef, FieldCache, Value};
@@ -228,6 +228,7 @@ pub struct Proto {
     pub tier: Cell<Tier>,
     pub loops: Vec<Rc<LoopSource>>,
     pub caches: Vec<FieldCache>,
+    pub kernel_struct_layouts: Vec<(String, Vec<(String, Kind)>)>,
 }
 
 impl Proto {
@@ -250,6 +251,7 @@ impl Proto {
             tier: Cell::new(Tier::default()),
             loops: Vec::new(),
             caches: Vec::new(),
+            kernel_struct_layouts: Vec::new(),
         }
     }
 
@@ -388,7 +390,18 @@ pub fn compile_script(
         .expect("the script function always exists");
     let mut proto = state.proto;
     proto.finish();
+    let layouts = crate::kernel::struct_layouts(program);
+    share_struct_layouts(&mut proto, &layouts);
     Ok((proto, ends_with_value))
+}
+
+fn share_struct_layouts(proto: &mut Proto, layouts: &[(String, Vec<(String, Kind)>)]) {
+    proto.kernel_struct_layouts = layouts.to_vec();
+    for inner in &mut proto.protos {
+        if let Some(inner) = Rc::get_mut(inner) {
+            share_struct_layouts(inner, layouts);
+        }
+    }
 }
 
 impl Compiler<'_> {

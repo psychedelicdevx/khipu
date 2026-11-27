@@ -152,7 +152,25 @@ fn attempt(closure: &Closure, generation: u32) -> Option<Native> {
         protos: RefCell::new(HashMap::new()),
     };
     let builtin = range_is_builtin(&lookup.globals);
-    let kernels = kernel::group(&root.name, &|name| lookup.find(name), builtin).ok()?;
+    let root_source = Rc::clone(root);
+    let root_proto = Rc::clone(&closure.proto);
+    lookup
+        .protos
+        .borrow_mut()
+        .insert(root.name.clone(), root_proto);
+    let kernels = kernel::group(
+        &root.name,
+        &|name| {
+            if name == root.name {
+                Some(Rc::clone(&root_source))
+            } else {
+                lookup.find(name)
+            }
+        },
+        &closure.proto.kernel_struct_layouts,
+        builtin,
+    )
+    .ok()?;
     let protos = lookup.protos.into_inner();
     install(&kernels, &protos, generation)?.into_iter().next()
 }
@@ -179,8 +197,14 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
             protos: RefCell::new(HashMap::new()),
         };
         let builtin = range_is_builtin(&lookup.globals);
-        let kernels =
-            kernel::group_loop(source, &kinds, &|name| lookup.find(name), builtin).ok()?;
+        let kernels = kernel::group_loop(
+            source,
+            &kinds,
+            &|name| lookup.find(name),
+            &closure.proto.kernel_struct_layouts,
+            builtin,
+        )
+        .ok()?;
         let protos = lookup.protos.into_inner();
         install(&kernels, &protos, generation)?.into_iter().next()
     });

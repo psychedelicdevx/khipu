@@ -365,6 +365,17 @@ impl Lowering<'_, '_> {
                 let value = self.expression(value);
                 self.b.def_var(self.locals[*slot as usize], value);
             }
+            Stmt::MakeStruct(base, fields) => {
+                for (at, field) in fields.iter().enumerate() {
+                    let value = self.expression(field);
+                    self.b.def_var(self.locals[*base as usize + at], value);
+                }
+            }
+            Stmt::SetField(base, offset, value) => {
+                let value = self.expression(value);
+                self.b
+                    .def_var(self.locals[*base as usize + *offset as usize], value);
+            }
             Stmt::Discard(value) => {
                 self.expression(value);
             }
@@ -544,6 +555,9 @@ impl Lowering<'_, '_> {
             Expr::Num(n) => self.b.ins().f64const(*n),
             Expr::Bool(flag) => self.b.ins().iconst(types::I8, i64::from(*flag)),
             Expr::Local(slot) => self.b.use_var(self.locals[*slot as usize]),
+            Expr::GetField(base, offset) => self
+                .b
+                .use_var(self.locals[*base as usize + *offset as usize]),
             Expr::Neg(inner) => {
                 let inner = self.expression(inner);
                 self.b.ins().fneg(inner)
@@ -671,10 +685,13 @@ mod tests {
     }
 
     fn native(program: &str, root: &str, args: &[f64]) -> (f64, Context) {
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
         let sources = sources(program);
         let kernels = group(
             root,
             &|name| sources.iter().find(|s| s.name == name).cloned(),
+            &structs,
             true,
         )
         .unwrap();
@@ -778,5 +795,35 @@ mod tests {
         assert!(result.is_nan());
         assert_eq!(context.error, 1);
         assert_eq!(context.depth, 0);
+    }
+
+    #[test]
+    fn flat_struct_field_reads_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn norm(n: number) -> number {\n    let p = Point { x: n, y: 2 }\n    return p.x * p.y + p.x - p.y\n}";
+        agree(program, "norm", &[3.0]);
+        agree(program, "norm", &[7.5]);
+    }
+
+    #[test]
+    fn flat_struct_writes_and_bool_fields_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nstruct Flags {\n    on: bool,\n    extra: bool,\n}\nfn bump(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    p.x = p.x + 10\n    p.y = p.y * 2\n    return p.x * p.y\n}\nfn pick(flag: bool) -> number {\n    let f = Flags { on: flag, extra: !flag }\n    if f.on && !f.extra {\n        return 1\n    }\n    return 0\n}";
+        agree(program, "bump", &[3.0]);
+        agree(program, "pick", &[1.0]);
+        agree(program, "pick", &[0.0]);
+    }
+
+    #[test]
+    fn flat_struct_kernels_reject_structs_that_escape() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn escape(n: number) -> Point {\n    return Point { x: n, y: 1 }\n}\nfn in_list(n: number) -> number {\n    let xs = [Point { x: n, y: 1 }]\n    return xs[0].x\n}\nfn wrong_field(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    return p.nope\n}";
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let find = |name: &str| sources.iter().find(|s| s.name == name).cloned();
+        for root in ["take", "escape", "in_list", "wrong_field"] {
+            assert!(
+                group(root, &find, &structs, true).is_err(),
+                "{root} must be rejected"
+            );
+        }
     }
 }

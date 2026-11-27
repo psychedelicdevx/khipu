@@ -104,7 +104,7 @@ The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselve
 
 ## Performance
 
-On sustained runs Khipu beats Python on 17 of 17 benchmarks and Node on 5 of 17, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on 17 of 17 benchmarks and Node on 6 of 17, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 4.8 ms · Python 16 ms · Node 28 ms · C 2.7 ms · Rust 3.1 ms. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Contributing, security, privacy
 
