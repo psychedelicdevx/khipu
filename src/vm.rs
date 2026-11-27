@@ -258,6 +258,7 @@ impl Vm {
                         if let Some(value) = crate::native::call(
                             &native,
                             &self.stack[args_at..args_at + $argc],
+                            &closure.globals,
                             self.frames.len() as u32,
                         ) {
                             self.stack.truncate($return_to);

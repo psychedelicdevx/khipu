@@ -10,6 +10,8 @@ use crate::parser::{Block, Expr as Ast, Op, Stmt as AstStmt, Type};
 pub enum Kind {
     Num,
     Bool,
+    Struct(u32),
+    List,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +38,10 @@ pub enum Expr {
     Num(f64),
     Bool(bool),
     Local(u32),
+    Struct(u32, u32),
     GetField(u32, u32),
+    ListLen(u32),
+    IndexList(u32, Box<Expr>),
     Neg(Box<Expr>),
     Not(Box<Expr>),
     Arith(Arith, Box<Expr>, Box<Expr>),
@@ -64,6 +69,7 @@ pub enum Stmt {
     Discard(Expr),
     MakeStruct(u32, Vec<Expr>),
     SetField(u32, u32, Expr),
+    SetIndexList(u32, Box<Expr>, Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +81,7 @@ pub struct Signature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
     pub base: u32,
+    pub layout: u32,
     pub fields: Vec<(String, Kind)>,
 }
 
@@ -86,6 +93,8 @@ pub struct Kernel {
     pub body: Vec<Stmt>,
     pub loop_vars: usize,
     pub structs: Vec<StructDef>,
+    pub layouts: Vec<(String, Vec<(String, Kind)>)>,
+    pub param_bases: Vec<u32>,
 }
 
 impl Kernel {
@@ -98,6 +107,46 @@ impl Kernel {
             .iter()
             .find(|s| s.base == base)
             .map(|s| s.fields.as_slice())
+    }
+
+    pub fn flat_params(&self) -> Vec<Kind> {
+        let mut out = Vec::new();
+        for kind in &self.signature.params {
+            match *kind {
+                Kind::Struct(index) => {
+                    out.extend(self.layouts[index as usize].1.iter().map(|(_, kind)| *kind))
+                }
+                Kind::List => out.extend([Kind::List, Kind::Num]),
+                kind => out.push(kind),
+            }
+        }
+        out
+    }
+
+    pub fn flat_returns(&self) -> Vec<Kind> {
+        match self.signature.returns {
+            Kind::Struct(index) => self.layouts[index as usize]
+                .1
+                .iter()
+                .map(|(_, kind)| *kind)
+                .collect(),
+            Kind::List => unreachable!("a list cannot be returned from a kernel"),
+            kind => vec![kind],
+        }
+    }
+
+    pub fn param_offsets(&self) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.signature.params.len());
+        let mut offset = 0;
+        for kind in &self.signature.params {
+            out.push(offset);
+            offset += match *kind {
+                Kind::Struct(index) => self.layouts[index as usize].1.len(),
+                Kind::List => 2,
+                _ => 1,
+            };
+        }
+        out
     }
 }
 
@@ -277,27 +326,66 @@ pub fn has_loop(block: &Block) -> bool {
     })
 }
 
-pub fn kind_of(ty: Option<&Type>) -> Result<Kind, Rejected> {
+pub fn kind_of(
+    ty: Option<&Type>,
+    structs: &[(String, Vec<(String, Kind)>)],
+) -> Result<Kind, Rejected> {
     match ty {
         None | Some(Type::Number) => Ok(Kind::Num),
         Some(Type::Bool) => Ok(Kind::Bool),
+        Some(Type::Named(name)) => structs
+            .iter()
+            .position(|(known, _)| known == name)
+            .map(|index| Kind::Struct(index as u32))
+            .ok_or(Rejected::Unsupported(
+                "a struct with a field that is not a number or bool",
+            )),
+        Some(Type::List(inner)) if matches!(inner.as_ref(), Type::Number) => Ok(Kind::List),
         Some(_) => Err(Rejected::Unsupported("a type other than number or bool")),
     }
 }
 
-pub fn assumed_signature(source: &Source) -> Result<Signature, Rejected> {
+pub fn assumed_signature(
+    source: &Source,
+    structs: &[(String, Vec<(String, Kind)>)],
+) -> Result<Signature, Rejected> {
     let params = source
         .param_types
         .iter()
-        .map(|ty| kind_of(ty.as_ref()))
+        .map(|ty| kind_of(ty.as_ref(), structs))
         .collect::<Result<Vec<_>, _>>()?;
-    if params.len() > 16 {
+    let signature = Signature {
+        params,
+        returns: kind_of(source.returns.as_ref(), structs)?,
+    };
+    valid_signature(&signature, structs)?;
+    Ok(signature)
+}
+
+fn valid_signature(
+    signature: &Signature,
+    structs: &[(String, Vec<(String, Kind)>)],
+) -> Result<(), Rejected> {
+    if signature.params.len() > 16 {
         return Err(Rejected::Unsupported("more than 16 parameters"));
     }
-    Ok(Signature {
-        params,
-        returns: kind_of(source.returns.as_ref())?,
-    })
+    let width = |kind: &Kind| match *kind {
+        Kind::Struct(index) => structs
+            .get(index as usize)
+            .map(|(_, fields)| fields.len())
+            .unwrap_or(usize::MAX),
+        Kind::List => 2,
+        _ => 1,
+    };
+    if signature.returns == Kind::List {
+        return Err(Rejected::Unsupported("returning a list from a kernel"));
+    }
+    let params: usize = signature.params.iter().map(width).sum();
+    let returns = width(&signature.returns);
+    if params.max(returns) > 16 {
+        return Err(Rejected::Unsupported("more than 16 flat values"));
+    }
+    Ok(())
 }
 
 struct Lowering<'a> {
@@ -307,9 +395,12 @@ struct Lowering<'a> {
     returns: Option<Kind>,
     loops: usize,
     range_is_builtin: bool,
+    len_is_builtin: bool,
     struct_index: HashMap<String, usize>,
     struct_layouts: Vec<(Vec<String>, Vec<Kind>)>,
+    layout_names: Vec<String>,
     kernel_structs: Vec<StructDef>,
+    param_bases: Vec<u32>,
 }
 
 type Lowered<T> = Result<T, Rejected>;
@@ -324,27 +415,38 @@ pub fn lower(
     callees: &dyn Fn(&str) -> Option<(u32, Signature)>,
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Lowered<Kernel> {
+    valid_signature(signature, structs)?;
     let mut lowering = Lowering {
         callees,
-        locals: signature.params.clone(),
+        locals: Vec::new(),
         scopes: vec![HashMap::new()],
         returns: Some(signature.returns),
         loops: 0,
         range_is_builtin,
+        len_is_builtin,
         struct_index: HashMap::new(),
         struct_layouts: Vec::new(),
+        layout_names: Vec::new(),
         kernel_structs: Vec::new(),
+        param_bases: Vec::new(),
     };
     for (index, (name, fields)) in structs.iter().enumerate() {
         lowering.struct_index.insert(name.clone(), index);
+        lowering.layout_names.push(name.clone());
         lowering.struct_layouts.push((
             fields.iter().map(|(field, _)| field.clone()).collect(),
             fields.iter().map(|(_, field)| *field).collect(),
         ));
     }
-    for (index, name) in source.params.iter().enumerate() {
-        lowering.scopes[0].insert(name.clone(), index as u32);
+    for (name, kind) in source.params.iter().zip(&signature.params) {
+        let base = match *kind {
+            Kind::Struct(index) => lowering.declare_struct(name, index as usize),
+            Kind::List => lowering.declare_list(name),
+            kind => lowering.declare(name, kind),
+        };
+        lowering.param_bases.push(base);
     }
     let body = lowering.block(&source.body)?;
     if !always_returns(&body) {
@@ -357,6 +459,8 @@ pub fn lower(
         body,
         loop_vars: 0,
         structs: lowering.kernel_structs,
+        layouts: structs.to_vec(),
+        param_bases: lowering.param_bases,
     })
 }
 
@@ -366,6 +470,7 @@ pub fn lower_loop(
     callees: &dyn Fn(&str) -> Option<(u32, Signature)>,
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Lowered<Kernel> {
     let mut lowering = Lowering {
         callees,
@@ -374,12 +479,16 @@ pub fn lower_loop(
         returns: None,
         loops: 0,
         range_is_builtin,
+        len_is_builtin,
         struct_index: HashMap::new(),
         struct_layouts: Vec::new(),
+        layout_names: Vec::new(),
         kernel_structs: Vec::new(),
+        param_bases: Vec::new(),
     };
     for (index, (name, fields)) in structs.iter().enumerate() {
         lowering.struct_index.insert(name.clone(), index);
+        lowering.layout_names.push(name.clone());
         lowering.struct_layouts.push((
             fields.iter().map(|(field, _)| field.clone()).collect(),
             fields.iter().map(|(_, field)| *field).collect(),
@@ -400,6 +509,8 @@ pub fn lower_loop(
         body,
         loop_vars: kinds.len(),
         structs: lowering.kernel_structs,
+        layouts: structs.to_vec(),
+        param_bases: Vec::new(),
     })
 }
 
@@ -451,26 +562,67 @@ impl Lowering<'_> {
         index
     }
 
-    fn declare_struct(&mut self, name: &str, layout_index: usize) -> u32 {
+    fn declare_anonymous_struct(&mut self, layout_index: usize) -> u32 {
         let base = self.locals.len() as u32;
         let (names, fields) = &self.struct_layouts[layout_index];
         for &field in fields {
             self.locals.push(field);
         }
-        let def = StructDef {
+        self.kernel_structs.push(StructDef {
             base,
+            layout: layout_index as u32,
             fields: names
                 .iter()
                 .zip(fields.iter())
                 .map(|(name, kind)| (name.clone(), *kind))
                 .collect(),
-        };
-        self.kernel_structs.push(def);
+        });
+        base
+    }
+
+    fn declare_struct(&mut self, name: &str, layout_index: usize) -> u32 {
+        let base = self.declare_anonymous_struct(layout_index);
         self.scopes
             .last_mut()
             .expect("a scope is always open")
             .insert(name.to_string(), base);
         base
+    }
+
+    fn declare_list(&mut self, name: &str) -> u32 {
+        let base = self.locals.len() as u32;
+        self.locals.push(Kind::List);
+        self.locals.push(Kind::Num);
+        self.scopes
+            .last_mut()
+            .expect("a scope is always open")
+            .insert(name.to_string(), base);
+        base
+    }
+
+    fn list_base(&self, name: &str) -> Option<u32> {
+        let slot = self.resolve_var(name)?;
+        match slot {
+            Var::Scalar(slot) if self.locals.get(slot as usize) == Some(&Kind::List) => Some(slot),
+            _ => None,
+        }
+    }
+
+    fn kernel_layouts(&self) -> Vec<(String, Vec<(String, Kind)>)> {
+        self.layout_names
+            .iter()
+            .zip(&self.struct_layouts)
+            .map(|(name, (fields, kinds))| {
+                (
+                    name.clone(),
+                    fields
+                        .iter()
+                        .zip(kinds)
+                        .map(|(field, kind)| (field.clone(), *kind))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     fn struct_field_offset(&self, base: u32, name: &str) -> Option<u32> {
@@ -480,6 +632,29 @@ impl Lowering<'_> {
             .iter()
             .position(|(field, _)| field == name)
             .map(|at| at as u32)
+    }
+
+    fn struct_literal(
+        &mut self,
+        name: &str,
+        field_exprs: &[(String, Ast)],
+    ) -> Lowered<(usize, Vec<Expr>)> {
+        let layout_index = match self.struct_index.get(name) {
+            Some(index) => *index,
+            None => return unsupported("unknown struct"),
+        };
+        let names = self.struct_layouts[layout_index].0.clone();
+        if field_exprs.len() != names.len() {
+            return unsupported("a struct literal with the wrong number of fields");
+        }
+        let mut lowered = Vec::with_capacity(names.len());
+        for field in &names {
+            let Some((_, expr)) = field_exprs.iter().find(|(given, _)| given == field) else {
+                return unsupported("a struct literal missing a field");
+            };
+            lowered.push(self.expression(expr)?.0);
+        }
+        Ok((layout_index, lowered))
     }
 
     fn block(&mut self, block: &Block) -> Lowered<Vec<Stmt>> {
@@ -506,35 +681,27 @@ impl Lowering<'_> {
                     if annotation.is_some() {
                         return unsupported("a struct variable with a type annotation");
                     }
-                    let layout_index = match self.struct_index.get(struct_name) {
-                        Some(index) => *index,
-                        None => return unsupported("unknown struct"),
-                    };
-                    let names = self.struct_layouts[layout_index].0.clone();
-                    if field_exprs.len() != names.len() {
-                        return unsupported("a struct literal with the wrong number of fields");
-                    }
-                    let mut lowered = Vec::with_capacity(names.len());
-                    for field in &names {
-                        let Some((_, expr)) = field_exprs.iter().find(|(given, _)| given == field)
-                        else {
-                            return unsupported("a struct literal missing a field");
-                        };
-                        lowered.push(self.expression(expr)?.0);
-                    }
+                    let (layout_index, lowered) = self.struct_literal(struct_name, field_exprs)?;
                     let base = self.declare_struct(name, layout_index);
                     return Ok(vec![Stmt::MakeStruct(base, lowered)]);
                 }
                 let (value, kind) = self.expression(value)?;
                 if let Some(annotation) = annotation
-                    && kind_of(Some(annotation))? != kind
+                    && kind_of(Some(annotation), &self.kernel_layouts())? != kind
                 {
                     return unsupported("a variable whose annotation disagrees with its value");
                 }
-                let slot = self.declare(name, kind);
+                let slot = match kind {
+                    Kind::Struct(index) => self.declare_struct(name, index as usize),
+                    Kind::List => self.declare_list(name),
+                    kind => self.declare(name, kind),
+                };
                 Stmt::Set(slot, value)
             }
             AstStmt::Assign(name, value) => {
+                if matches!(self.resolve_var(name), Some(Var::Struct(_))) {
+                    return unsupported("assigning a struct variable");
+                }
                 let Some(slot) = self.resolve(name) else {
                     return unsupported("writing a global variable");
                 };
@@ -563,6 +730,16 @@ impl Lowering<'_> {
             AstStmt::Break => Stmt::Break,
             AstStmt::Continue => Stmt::Continue,
             AstStmt::Return(Some(value)) => {
+                if let Ast::StructLit(struct_name, field_exprs) = value {
+                    let (layout_index, lowered) = self.struct_literal(struct_name, field_exprs)?;
+                    let base = self.declare_anonymous_struct(layout_index);
+                    if self.returns != Some(Kind::Struct(layout_index as u32)) {
+                        return unsupported("a return value of another type");
+                    }
+                    let mut out = vec![Stmt::MakeStruct(base, lowered)];
+                    out.push(Stmt::Return(Expr::Struct(base, layout_index as u32)));
+                    return Ok(out);
+                }
                 let (value, kind) = self.expression(value)?;
                 if self.returns != Some(kind) {
                     return unsupported("a return value of another type");
@@ -613,7 +790,21 @@ impl Lowering<'_> {
                     },
                 ]);
             }
-            AstStmt::SetIndex(..) => return unsupported("a list"),
+            AstStmt::SetIndex(target, index, value) => {
+                let Ast::Variable(name) = target else {
+                    return unsupported("assigning to the index of something other than a list");
+                };
+                let Some(base) = self.list_base(name) else {
+                    return unsupported("assigning to the index of something other than a list");
+                };
+                let index = self.operand(index, Kind::Num, "a list index that is not a number")?;
+                let value = self.operand(
+                    value,
+                    Kind::Num,
+                    "writing something other than a number into a list",
+                )?;
+                Stmt::SetIndexList(base, Box::new(index), value)
+            }
             AstStmt::SetField(target, field_name, value) => {
                 let Ast::Variable(var_name) = target else {
                     return unsupported("setting a field of something that is not a struct");
@@ -654,7 +845,14 @@ impl Lowering<'_> {
             Ast::Bool(b) => (Expr::Bool(*b), Kind::Bool),
             Ast::Variable(name) => match self.resolve_var(name) {
                 Some(Var::Scalar(slot)) => (Expr::Local(slot), self.locals[slot as usize]),
-                Some(Var::Struct(_)) => return unsupported("using a struct as a value"),
+                Some(Var::Struct(slot)) => {
+                    let def = self
+                        .kernel_structs
+                        .iter()
+                        .find(|def| def.base == slot)
+                        .expect("struct base was validated above");
+                    (Expr::Struct(slot, def.layout), Kind::Struct(def.layout))
+                }
                 None => return unsupported("reading a global variable"),
             },
             Ast::Negate(inner) => {
@@ -718,6 +916,18 @@ impl Lowering<'_> {
                 if self.resolve(name).is_some() {
                     return unsupported("calling a local variable");
                 }
+                if name == "len" && self.len_is_builtin && self.resolve("len").is_none() {
+                    if args.len() != 1 {
+                        return unsupported("a call to len with the wrong number of arguments");
+                    }
+                    let Expr::Local(base) = self.expression(&args[0])?.0 else {
+                        return unsupported("len of something other than a list variable");
+                    };
+                    if self.locals[base as usize] != Kind::List {
+                        return unsupported("len of something other than a list of numbers");
+                    }
+                    return Ok((Expr::ListLen(base), Kind::Num));
+                }
                 let Some((index, signature)) = (self.callees)(name) else {
                     return Err(Rejected::Needs(name.clone()));
                 };
@@ -731,7 +941,17 @@ impl Lowering<'_> {
                 (Expr::Call(index, lowered), signature.returns)
             }
             Ast::Str(_) | Ast::Template(_) => return unsupported("a string"),
-            Ast::List(_) | Ast::Index(..) => return unsupported("a list"),
+            Ast::List(_) => return unsupported("creating a list inside a kernel"),
+            Ast::Index(target, index) => {
+                let Ast::Variable(name) = target.as_ref() else {
+                    return unsupported("indexing something other than a list variable");
+                };
+                let Some(base) = self.list_base(name) else {
+                    return unsupported("indexing something other than a list of numbers");
+                };
+                let index = self.operand(index, Kind::Num, "a list index that is not a number")?;
+                (Expr::IndexList(base, Box::new(index)), Kind::Num)
+            }
             Ast::Field(inner, name) => {
                 let Ast::Variable(var_name) = inner.as_ref() else {
                     return unsupported("a record or struct");
@@ -781,6 +1001,7 @@ fn resolve_group(
     find: &dyn Fn(&str) -> Option<Rc<Source>>,
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Lowered<Vec<Kernel>> {
     let mut order: Vec<(String, Rc<Source>)> = Vec::new();
     let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
@@ -798,7 +1019,14 @@ fn resolve_group(
                 break;
             }
             let signature = signatures[name].1.clone();
-            match lower(source, &signature, &callees, structs, range_is_builtin) {
+            match lower(
+                source,
+                &signature,
+                &callees,
+                structs,
+                range_is_builtin,
+                len_is_builtin,
+            ) {
                 Ok(kernel) => kernels.push(kernel),
                 Err(Rejected::Needs(callee)) => {
                     missing = Some(callee);
@@ -824,7 +1052,7 @@ fn resolve_group(
         }
         signatures.insert(
             callee.clone(),
-            (order.len() as u32 + 1, assumed_signature(&source)?),
+            (order.len() as u32 + 1, assumed_signature(&source, structs)?),
         );
         order.push((callee, source));
     }
@@ -835,15 +1063,26 @@ pub fn group(
     find: &dyn Fn(&str) -> Option<Rc<Source>>,
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Lowered<Vec<Kernel>> {
     let source = find(root).ok_or(Rejected::Needs(root.to_string()))?;
-    let signature = assumed_signature(&source)?;
+    let signature = assumed_signature(&source, structs)?;
     resolve_group(
-        &|callees| lower(&source, &signature, callees, structs, range_is_builtin),
+        &|callees| {
+            lower(
+                &source,
+                &signature,
+                callees,
+                structs,
+                range_is_builtin,
+                len_is_builtin,
+            )
+        },
         Some((&source, signature.clone())),
         find,
         structs,
         range_is_builtin,
+        len_is_builtin,
     )
 }
 
@@ -853,13 +1092,24 @@ pub fn group_loop(
     find: &dyn Fn(&str) -> Option<Rc<Source>>,
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Lowered<Vec<Kernel>> {
     resolve_group(
-        &|callees| lower_loop(source, kinds, callees, structs, range_is_builtin),
+        &|callees| {
+            lower_loop(
+                source,
+                kinds,
+                callees,
+                structs,
+                range_is_builtin,
+                len_is_builtin,
+            )
+        },
         None,
         find,
         structs,
         range_is_builtin,
+        len_is_builtin,
     )
 }
 
@@ -868,12 +1118,13 @@ pub fn group_all(
     loops: &[Rc<LoopSource>],
     structs: &[(String, Vec<(String, Kind)>)],
     range_is_builtin: bool,
+    len_is_builtin: bool,
 ) -> Vec<Kernel> {
     let mut candidates: Vec<Rc<Source>> = functions.to_vec();
     let mut kernels = loop {
         let mut signatures: HashMap<String, (u32, Signature)> = HashMap::new();
         for (index, source) in candidates.iter().enumerate() {
-            if let Ok(signature) = assumed_signature(source) {
+            if let Ok(signature) = assumed_signature(source, structs) {
                 signatures.insert(source.name.clone(), (index as u32, signature));
             }
         }
@@ -882,7 +1133,15 @@ pub fn group_all(
         let mut failed = Vec::new();
         for source in &candidates {
             let lowered = signatures.get(&source.name).and_then(|(_, signature)| {
-                lower(source, signature, &callees, structs, range_is_builtin).ok()
+                lower(
+                    source,
+                    signature,
+                    &callees,
+                    structs,
+                    range_is_builtin,
+                    len_is_builtin,
+                )
+                .ok()
             });
             match lowered {
                 Some(kernel) => kernels.push(kernel),
@@ -907,7 +1166,14 @@ pub fn group_all(
     let callees = |callee: &str| signatures.get(callee).cloned();
     for source in loops {
         let kinds = vec![Kind::Num; source.vars.len()];
-        if let Ok(kernel) = lower_loop(source, &kinds, &callees, structs, range_is_builtin) {
+        if let Ok(kernel) = lower_loop(
+            source,
+            &kinds,
+            &callees,
+            structs,
+            range_is_builtin,
+            len_is_builtin,
+        ) {
             kernels.push(kernel);
         }
     }
@@ -947,6 +1213,12 @@ pub fn defines_range(program: &Block) -> bool {
         .any(|(_, stmt)| matches!(stmt, AstStmt::Let(name, _, _) if name == "range"))
 }
 
+pub fn defines_len(program: &Block) -> bool {
+    program
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, AstStmt::Let(name, _, _) if name == "len"))
+}
+
 pub fn struct_layouts(program: &Block) -> Vec<(String, Vec<(String, Kind)>)> {
     let mut out = Vec::new();
     for (_, stmt) in program {
@@ -954,7 +1226,11 @@ pub fn struct_layouts(program: &Block) -> Vec<(String, Vec<(String, Kind)>)> {
             let mut fields = Vec::new();
             let mut flat = true;
             for (name, ty) in &decl.fields {
-                match kind_of(Some(ty)) {
+                if matches!(ty, Type::List(_)) {
+                    flat = false;
+                    continue;
+                }
+                match kind_of(Some(ty), &[]) {
                     Ok(kind) => fields.push((name.clone(), kind)),
                     Err(_) => flat = false,
                 }

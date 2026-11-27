@@ -84,6 +84,7 @@ fn valtype(kind: Kind) -> u8 {
     match kind {
         Kind::Num => F64,
         Kind::Bool => I32,
+        Kind::Struct(_) | Kind::List => unreachable!("typed kernels are rejected before emission"),
     }
 }
 
@@ -108,8 +109,11 @@ pub struct Export {
 }
 
 pub fn module(kernels: &[Kernel]) -> Result<(Vec<u8>, Vec<Export>), String> {
-    if kernels.iter().any(has_structs) {
-        return Err("flat structs are not supported by the WebAssembly backend".to_string());
+    if kernels.iter().any(unsupported_kernel) {
+        return Err(
+            "flat structs and number lists are not supported by the WebAssembly backend"
+                .to_string(),
+        );
     }
     let mut types: Vec<Vec<u8>> = vec![functype(&[F64, F64], &[F64])];
     let mut type_of = |signature: Vec<u8>| -> u32 {
@@ -194,16 +198,33 @@ pub fn module(kernels: &[Kernel]) -> Result<(Vec<u8>, Vec<Export>), String> {
     Ok((out, exports))
 }
 
-fn has_structs(kernel: &Kernel) -> bool {
-    fn in_block(block: &[Stmt]) -> bool {
+fn unsupported_kernel(kernel: &Kernel) -> bool {
+    fn in_block(kernel: &Kernel, block: &[Stmt]) -> bool {
         block.iter().any(|stmt| match stmt {
-            Stmt::MakeStruct(..) | Stmt::SetField(..) => true,
-            Stmt::If(_, then, otherwise) => in_block(then) || in_block(otherwise),
-            Stmt::While(_, body) | Stmt::For { body, .. } => in_block(body),
+            Stmt::MakeStruct(..) | Stmt::SetField(..) | Stmt::SetIndexList(..) => true,
+            Stmt::Set(slot, _) => {
+                matches!(
+                    kernel.locals.get(*slot as usize),
+                    Some(Kind::Struct(_) | Kind::List)
+                )
+            }
+            Stmt::If(_, then, otherwise) => in_block(kernel, then) || in_block(kernel, otherwise),
+            Stmt::While(_, body) | Stmt::For { body, .. } => in_block(kernel, body),
             _ => false,
         })
     }
-    in_block(&kernel.body)
+    let typed = kernel.flat_returns().len() > 1
+        || kernel.signature.returns == Kind::List
+        || kernel
+            .signature
+            .params
+            .iter()
+            .any(|kind| matches!(kind, Kind::Struct(_) | Kind::List))
+        || kernel
+            .locals
+            .iter()
+            .any(|kind| matches!(kind, Kind::Struct(_) | Kind::List));
+    typed || in_block(kernel, &kernel.body)
 }
 
 fn kernel_types(kernel: &Kernel) -> (Vec<u8>, Vec<u8>) {
@@ -435,6 +456,9 @@ impl Emitter<'_> {
         match self.kernel.signature.returns {
             Kind::Num => f64_const(&mut self.out, f64::NAN),
             Kind::Bool => i32_const(&mut self.out, 0),
+            Kind::Struct(_) | Kind::List => {
+                unreachable!("typed kernels are rejected before emission")
+            }
         }
     }
 
@@ -575,7 +599,7 @@ impl Emitter<'_> {
                 self.out.push(BR);
                 leb(&mut self.out, self.labels - 1 - header);
             }
-            Stmt::MakeStruct(..) | Stmt::SetField(..) => unreachable!(),
+            Stmt::MakeStruct(..) | Stmt::SetField(..) | Stmt::SetIndexList(..) => unreachable!(),
         }
     }
 
@@ -622,6 +646,9 @@ impl Emitter<'_> {
                     (Kind::Bool, Cmp::Le) => I32_LE_U,
                     (Kind::Bool, Cmp::Gt) => I32_GT_U,
                     (Kind::Bool, Cmp::Ge) => I32_GE_U,
+                    (Kind::Struct(_) | Kind::List, _) => {
+                        unreachable!("typed kernels are rejected before emission")
+                    }
                 });
             }
             Expr::And(left, right) => {
@@ -659,7 +686,9 @@ impl Emitter<'_> {
                 self.labels -= 1;
                 self.out.push(END);
             }
-            Expr::GetField(..) => unreachable!(),
+            Expr::Struct(..) | Expr::GetField(..) | Expr::ListLen(..) | Expr::IndexList(..) => {
+                unreachable!()
+            }
         }
     }
 }
