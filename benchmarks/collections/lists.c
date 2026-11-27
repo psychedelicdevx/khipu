@@ -1,18 +1,23 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #define N 300000
 
-long long total(long long *values, size_t length, long long rounds) {
-    long long acc = 0;
-    for (long long at = 0; at < rounds; at++) {
-        acc += values[at % (long long)length];
-    }
-    values[0] = values[0] + 1;
-    return acc + values[length - 1] + values[0];
-}
-
 int main(void) {
-    long long items[] = {3, 4, 5, 6, 7, 8, 9, 10};
-    printf("%lld\n", total(items, sizeof items / sizeof *items, N));
+    size_t capacity = 8, length = 0;
+    long long *items = malloc(capacity * sizeof *items);
+    for (long long i = 0; i < N; i++) {
+        if (length == capacity) {
+            capacity *= 2;
+            items = realloc(items, capacity * sizeof *items);
+        }
+        items[length++] = i * 2;
+    }
+    long long total = 0;
+    for (size_t i = 0; i < length; i++) {
+        total += items[i];
+    }
+    printf("%lld\n", total + items[length - 1]);
+    free(items);
     return 0;
 }

@@ -1,17 +1,10 @@
 const N = 300000
-
-const items = [3, 4, 5, 6, 7, 8, 9, 10]
-
-function total(values, rounds) {
-    let acc = 0
-    let at = 0
-    const n = values.length
-    while (at < rounds) {
-        acc = acc + values[at % n]
-        at = at + 1
-    }
-    values[0] = values[0] + 1
-    return acc + values[values.length - 1] + values[0]
+const items = []
+for (let i = 0; i < N; i++) {
+    items.push(i * 2)
 }
-
-console.log(total(items, N))
+let total = 0
+for (const item of items) {
+    total = total + item
+}
+console.log(total + items[items.length - 1])

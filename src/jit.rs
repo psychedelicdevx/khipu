@@ -868,6 +868,8 @@ mod tests {
             kernel: Box::leak(Box::new(kernels[0].clone())),
             arity: kernels[0].arity() as u8,
             bool_params: 0,
+            plain: false,
+            returns: kernels[0].signature.returns,
             generation: 0,
         };
         let globals = crate::value::Globals::default().store();

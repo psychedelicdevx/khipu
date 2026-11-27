@@ -189,3 +189,11 @@ Khipu `lists` sustained: **17 ms** on the branch against **97 ms** on main for t
   - Proposed answer: no. The native boundary accepts only `List::Numbers`, the representation the kernel's pointer and bounds check address directly; anything else fails the call and the interpreter reruns it. Assignment by index also stays rejected for anything that would have to widen the list representation. Taken.
 - `len` can be redefined by a program. How does the kernel know the built-in is still the one in scope?
   - Proposed answer: mirror `range`: the lowering only recognises `len(...)` as a length read when the global slot still holds the native `len` and no local shadows it; otherwise it goes through ordinary call resolution and is rejected if it is not a group function. Taken.
+
+## Review notes
+
+Added after the agent's report, by the reviewer.
+
+- The native call boundary allocated a `Vec` of parameter kinds and zeroed and copied a 16-slot result array on every call, which made `calls` about 1.65× slower than main. The kinds are now borrowed, kernels with only number and bool parameters take the old inline path, and the result buffer aliases the argument buffer for plain calls. `calls` is now within about 1.25× of main; the rest is the larger `Native` record and is left as is, since it only affects calls from interpreted code into native code and not native-to-native calls.
+- The `lists` and `struct_access` benchmarks were restored to the programs on main, in all five languages. The indexed-read program that measured step 2 is kept as a new benchmark, `list_index`, so the suite gains a measurement instead of losing one. The step 1 program that passes a struct through a call is not in the suite; its numbers are the control runs above.
+- Known hazard, not yet observable: a kernel that writes to a list and then fails a bounds check makes the interpreter rerun the whole function, so the write happens twice. Today every error ends the program, so nothing can observe it. Once a handler can survive an error (Phase 9), a bounds failure must raise from the recorded site instead of rerunning, or list writes must leave kernels. Fix before Phase 9 and this branch meet in a release.

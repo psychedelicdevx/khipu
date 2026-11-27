@@ -14,6 +14,8 @@ pub struct Native {
     pub kernel: &'static Kernel,
     pub arity: u8,
     pub bool_params: u16,
+    pub plain: bool,
+    pub returns: Kind,
     pub generation: u32,
 }
 
@@ -142,6 +144,10 @@ fn install(
             bool_params: kinds.iter().enumerate().fold(0, |mask, (at, kind)| {
                 mask | (u16::from(*kind == Kind::Bool) << at)
             }),
+            plain: kinds
+                .iter()
+                .all(|kind| matches!(kind, Kind::Num | Kind::Bool)),
+            returns: kernel.signature.returns,
             generation,
         };
         if let Some(proto) = protos.get(&kernel.name)
@@ -232,7 +238,8 @@ pub fn loop_entry(closure: &Closure, source: &LoopSource, values: &[Value]) -> O
 pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()> {
     let mut lists = Vec::new();
     let mut raw = arguments(native, values, &mut lists)?;
-    let _ = run(native, &mut raw, depth)?;
+    let mut out = [0.0; 16];
+    run(native, &mut raw, Some(&mut out), depth)?;
     drop(lists);
     for (at, value) in values.iter_mut().enumerate() {
         *value = if native.bool_params & (1 << at) != 0 {
@@ -244,13 +251,15 @@ pub fn run_loop(native: &Native, values: &mut [Value], depth: u32) -> Option<()>
     Some(())
 }
 
+#[inline]
 pub fn call(native: &Native, args: &[Value], globals: &GlobalStore, depth: u32) -> Option<Value> {
     let mut lists = Vec::new();
     let mut raw = arguments(native, args, &mut lists)?;
-    let out = run(native, &mut raw, depth)?;
-    result(native, &out, args, globals)
+    raw[0] = run(native, &mut raw, None, depth)?;
+    result(native, &raw, args, globals)
 }
 
+#[inline]
 pub fn arguments<'a>(
     native: &Native,
     args: &'a [Value],
@@ -260,13 +269,24 @@ pub fn arguments<'a>(
         return None;
     }
     let mut raw = [0.0; 16];
+    if native.plain {
+        for (at, arg) in args.iter().enumerate() {
+            let wants_bool = native.bool_params & (1 << at) != 0;
+            raw[at] = match (arg, wants_bool) {
+                (Value::Number(n), false) => *n,
+                (Value::Bool(b), true) => f64::from(*b),
+                _ => return None,
+            };
+        }
+        return Some(raw);
+    }
     let mut at = 0;
-    let kinds: Vec<Kind> = if native.kernel.loop_vars > 0 {
-        native.kernel.locals[..native.kernel.loop_vars].to_vec()
+    let kinds: &[Kind] = if native.kernel.loop_vars > 0 {
+        &native.kernel.locals[..native.kernel.loop_vars]
     } else {
-        native.kernel.signature.params.clone()
+        &native.kernel.signature.params
     };
-    for (arg, kind) in args.iter().zip(&kinds) {
+    for (arg, kind) in args.iter().zip(kinds) {
         match (arg, kind) {
             (Value::Number(n), Kind::Num) => {
                 raw[at] = *n;
@@ -331,7 +351,7 @@ fn result(
     args: &[Value],
     globals: &GlobalStore,
 ) -> Option<Value> {
-    match native.kernel.signature.returns {
+    match native.returns {
         Kind::Num => Some(Value::Number(raw[0])),
         Kind::Bool => Some(Value::Bool(raw[0] != 0.0)),
         Kind::List => unreachable!("a list cannot be returned from a kernel"),
@@ -387,24 +407,30 @@ mod backend {
         Some(compiled.into_iter().map(|c| c.entry).collect())
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<[f64; 16]> {
+    pub fn run(
+        native: &Native,
+        raw: &mut [f64; 16],
+        out: Option<&mut [f64; 16]>,
+        depth: u32,
+    ) -> Option<f64> {
         CONTEXT.with(|context| {
             let mut context = context.borrow_mut();
             context.error = 0;
             context.depth = depth;
-            let mut out = [0.0; 16];
+            let raw = raw.as_mut_ptr();
+            let out = out.map_or(raw, |out| out.as_mut_ptr());
             // SAFETY: `native.target` was produced by `jit::compile` for a kernel
-            // with `native.arity` values, `raw` and `out` hold 16 f64 slots, and
-            // the context lives for the whole call.
-            let value =
-                unsafe { (native.target)(&mut *context, raw.as_mut_ptr(), out.as_mut_ptr()) };
-            out[0] = value;
+            // with `native.arity` values, `raw` and `out` each point at 16 f64
+            // slots (the same slots when the caller no longer needs the
+            // arguments: the entry reads them all before it stores a result),
+            // and the context lives for the whole call.
+            let value = unsafe { (native.target)(&mut *context, raw, out) };
             if context.error != 0 {
                 context.error = 0;
                 context.depth = 0;
                 return None;
             }
-            Some(out)
+            Some(value)
         })
     }
 }
@@ -436,7 +462,12 @@ mod backend {
         })
     }
 
-    pub fn run(native: &Native, raw: &mut [f64; 16], depth: u32) -> Option<[f64; 16]> {
+    pub fn run(
+        native: &Native,
+        raw: &mut [f64; 16],
+        _out: Option<&mut [f64; 16]>,
+        depth: u32,
+    ) -> Option<f64> {
         // SAFETY: both imports are provided by the page that instantiated this
         // module; `raw` holds 16 f64 slots at the given pointer.
         let (value, failed) = unsafe {
@@ -451,9 +482,7 @@ mod backend {
         if failed != 0 {
             return None;
         }
-        let mut out = [0.0; 16];
-        out[0] = value;
-        Some(out)
+        Some(value)
     }
 }
 
