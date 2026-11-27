@@ -510,15 +510,19 @@ impl Lowering<'_> {
                         Some(index) => *index,
                         None => return unsupported("unknown struct"),
                     };
-                    let layout = &self.struct_layouts[layout_index];
-                    if field_exprs.len() != layout.0.len() {
+                    let names = self.struct_layouts[layout_index].0.clone();
+                    if field_exprs.len() != names.len() {
                         return unsupported("a struct literal with the wrong number of fields");
                     }
-                    let base = self.declare_struct(name, layout_index);
-                    let mut lowered = Vec::with_capacity(field_exprs.len());
-                    for (_, expr) in field_exprs {
+                    let mut lowered = Vec::with_capacity(names.len());
+                    for field in &names {
+                        let Some((_, expr)) = field_exprs.iter().find(|(given, _)| given == field)
+                        else {
+                            return unsupported("a struct literal missing a field");
+                        };
                         lowered.push(self.expression(expr)?.0);
                     }
+                    let base = self.declare_struct(name, layout_index);
                     return Ok(vec![Stmt::MakeStruct(base, lowered)]);
                 }
                 let (value, kind) = self.expression(value)?;

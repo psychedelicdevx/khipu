@@ -813,6 +813,13 @@ mod tests {
     }
 
     #[test]
+    fn flat_struct_literals_out_of_declaration_order_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn swapped(n: number) -> number {\n    let p = Point { y: 100, x: n }\n    return p.x - p.y\n}";
+        agree(program, "swapped", &[1.0]);
+        agree(program, "swapped", &[250.0]);
+    }
+
+    #[test]
     fn flat_struct_kernels_reject_structs_that_escape() {
         let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn escape(n: number) -> Point {\n    return Point { x: n, y: 1 }\n}\nfn in_list(n: number) -> number {\n    let xs = [Point { x: n, y: 1 }]\n    return xs[0].x\n}\nfn wrong_field(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    return p.nope\n}";
         let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
