@@ -163,6 +163,16 @@ mod tests {
         run(source).unwrap_err()
     }
 
+    fn error_within(source: &'static str, seconds: u64) -> Error {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(run(source).unwrap_err());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(seconds))
+            .expect("the program did not fail in time: a task from another test may still be live")
+    }
+
     #[test]
     fn respects_precedence_and_parentheses() {
         assert_eq!(number("2 + 3 * 4"), 14.0);
@@ -1366,7 +1376,7 @@ ws.onmessage = (event) => {
         });
         ready(port);
         let client = format!(
-            "let ws = Http.websocket_with(\"wss://localhost:{port}/\", {{ certificate: \"tests/khipu-cert.pem\", protocols: [\"chat.v1\"] }})\nsend(ws, \"secret\")\nreceive(ws)"
+            "let ws = Http.websocket_with(\"wss://localhost:{port}/\", {{ certificate: \"tests/khipu-cert.pem\", protocols: [\"chat.v1\"] }})\nsend(ws, \"secret\")\nlet got = receive(ws)\nclose(ws)\ngot"
         );
         assert_eq!(string(&client), "echo: secret");
         let untrusted = error(&format!("Http.websocket(\"wss://localhost:{port}/\")")).message;
@@ -1519,8 +1529,9 @@ ws.onmessage = (event) => {
         let picks = "let a = channel()\nlet b = channel()\nsend(b, 7)\nlet got = 0\nselect {\n    x = receive(a) => {\n        got = x\n    }\n    y = receive(b) => {\n        got = y * 2\n    }\n}\ngot";
         assert_eq!(number(picks), 14.0);
 
-        let stuck = error(
+        let stuck = error_within(
             "let nobody = channel()\nfn wait() {\n    receive(channel())\n}\nspawn(wait)\nreceive(nobody)",
+            30,
         );
         assert_eq!(stuck.line, 6);
         assert_eq!(
