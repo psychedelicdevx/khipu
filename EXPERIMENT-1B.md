@@ -192,8 +192,8 @@ Khipu `lists` sustained: **17 ms** on the branch against **97 ms** on main for t
 
 ## Review notes
 
-Added after the agent's report, by the reviewer.
+Added in review, after the report above.
 
 - The native call boundary allocated a `Vec` of parameter kinds and zeroed and copied a 16-slot result array on every call, which made `calls` about 1.65× slower than main. The kinds are now borrowed, kernels with only number and bool parameters take the old inline path, and the result buffer aliases the argument buffer for plain calls. `calls` is now within about 1.25× of main; the rest is the larger `Native` record and is left as is, since it only affects calls from interpreted code into native code and not native-to-native calls.
 - The `lists` and `struct_access` benchmarks were restored to the programs on main, in all five languages. The indexed-read program that measured step 2 is kept as a new benchmark, `list_index`, so the suite gains a measurement instead of losing one. The step 1 program that passes a struct through a call is not in the suite; its numbers are the control runs above.
-- Known hazard, not yet observable: a kernel that writes to a list and then fails a bounds check makes the interpreter rerun the whole function, so the write happens twice. (Fixed in Phase 9: a kernel that has written raises the error from the recorded site instead, see AUDIT.md.) Today every error ends the program, so nothing can observe it. Once a handler can survive an error (Phase 9), a bounds failure must raise from the recorded site instead of rerunning, or list writes must leave kernels. Fix before Phase 9 and this branch meet in a release.
+- Known hazard at the time, since fixed in Phase 9: a kernel that wrote to a list and then failed a bounds check made the interpreter rerun the whole function, so the write happened twice. Nothing could observe it while every error ended the program; once a handler could survive an error, it would have. A kernel that has written now raises the error from the recorded site instead of being rerun, see the Phase 9 review in AUDIT.md.
