@@ -170,7 +170,7 @@ Http.serve(8080, handle)
 
 ### WebSockets
 
-A handler that sees `request.is_websocket()` can return `Response.websocket(chat)`. The server answers the upgrade and runs `chat(socket)` as a task of its own, where `socket` is a channel: `send` writes a message, a string as text or `bytes` as binary, and `receive` waits for the next one and gives `none` once the other side has gone. `select` waits on sockets and channels together, and `close(socket, code, reason)` ends the conversation with a code and reason of the program's choosing (`close(socket)` sends 1000, a normal close). Returning from `chat` closes with 1000 too, and an error closes with 1011:
+A handler that sees `request.is_websocket()` can return `Response.websocket(chat)`. The server answers the upgrade and runs `chat(socket)` as a task of its own, where `socket` is a channel: `send` writes a message, a string as text or `bytes` as binary, and `receive` waits for the next one and gives `none` once the other side has gone. `select` waits on sockets and channels together, and `close(socket, code, reason)` ends the conversation with a code and reason of the program's choosing (`close(socket)` sends 1000, a normal close). Returning from `chat` closes with 1000 too, and an error closes with 1011. On a plain channel `close(ch)` takes no code: it ends the channel the way chapter 10 describes, and `receive` gives `none` once the queue is empty, just as it does for a socket whose peer has gone:
 
 ```js
 let news = channel()

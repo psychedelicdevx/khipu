@@ -124,6 +124,8 @@ send(jobs, "the report")
 send(quit, true)
 ```
 
+`close(jobs)` ends a channel: `receive` drains what is queued and then gives `none`, `select` sees it the same way, and a `send` after it is an error on its line.
+
 If every task ends up waiting on a channel that nothing will ever send to, Khipu stops with a deadlock error that points at the line, instead of hanging.
 
 ## Strict where JavaScript is loose

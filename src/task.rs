@@ -32,7 +32,7 @@ pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Ch
 }
 
 pub fn deliver(channel: &Channel, message: Slot) {
-    push(
+    let _ = push(
         channel,
         Graph {
             nodes: Vec::new(),
@@ -718,14 +718,18 @@ pub fn send(args: &[Value]) -> Result<Value, String> {
             _ => Err(format!("send expects 2 arguments, got {}", args.len())),
         };
     };
-    push(channel, pack(std::slice::from_ref(value)));
+    push(channel, pack(std::slice::from_ref(value)))
+        .map_err(|_| "cannot send on a closed channel".to_string())?;
     Ok(Value::None)
 }
 
-fn push(channel: &Channel, packed: Graph) {
+fn push(channel: &Channel, packed: Graph) -> Result<(), ()> {
     let mut world = world();
     let woken = {
         let mut state = lock(&channel.state);
+        if state.closed {
+            return Err(());
+        }
         state.queue.push_back(packed);
         loop {
             match state.waiters.pop_front() {
@@ -745,6 +749,7 @@ fn push(channel: &Channel, packed: Graph) {
             None => WAKE.notify_all(),
         }
     }
+    Ok(())
 }
 
 pub fn select(args: &[Value]) -> Result<Value, String> {
@@ -789,16 +794,23 @@ pub fn close(args: &[Value]) -> Result<Value, String> {
         }
         [other, ..] => {
             return Err(format!(
-                "close needs a websocket, got {}",
+                "close needs a channel or a websocket, got {}",
                 other.type_name()
             ));
         }
         [] => {
-            return Err("close expects a websocket, then an optional code and reason".to_string());
+            return Err(
+                "close expects a channel, or a websocket and an optional code and reason"
+                    .to_string(),
+            );
         }
     };
     let Some(port) = &channel.port else {
-        return Err("close needs a websocket, got a channel".to_string());
+        if args.len() > 1 {
+            return Err("close on a channel takes no code or reason".to_string());
+        }
+        seal(channel);
+        return Ok(Value::None);
     };
     if args.len() > 3 {
         return Err(format!(

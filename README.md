@@ -95,7 +95,7 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `████████░░` 19 / 24 |
+| 9. HTTP without limits | `████████░░` 20 / 24 |
 | 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 

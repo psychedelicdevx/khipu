@@ -283,7 +283,7 @@ fn read_rest(stream: &mut TcpStream) -> Vec<u8> {
 fn websocket_errors_name_the_problem_and_the_line() {
     let port: u16 = 21000 + (std::process::id() % 20000) as u16 + 2;
     let source = format!(
-        "fn chat(socket: channel) {{\n    let first = receive(socket)\n    if first == \"number\" {{\n        send(socket, 42)\n    }}\n    if first == \"code\" {{\n        close(socket, 5000, \"no\")\n    }}\n    if first == \"plain\" {{\n        close(channel())\n    }}\n    if first == \"late\" {{\n        receive(socket)\n        send(socket, \"too late\")\n    }}\n}}\nfn handle(request: Request) -> Response {{\n    return Response.websocket(chat)\n}}\nHttp.serve({port}, handle)\n"
+        "fn chat(socket: channel) {{\n    let first = receive(socket)\n    if first == \"number\" {{\n        send(socket, 42)\n    }}\n    if first == \"code\" {{\n        close(socket, 5000, \"no\")\n    }}\n    if first == \"plain\" {{\n        close(channel(), 1000)\n    }}\n    if first == \"late\" {{\n        receive(socket)\n        send(socket, \"too late\")\n    }}\n}}\nfn handle(request: Request) -> Response {{\n    return Response.websocket(chat)\n}}\nHttp.serve({port}, handle)\n"
     );
     let stderr = khipu_errors(&source, port, || {
         for word in ["number", "code", "plain"] {
@@ -306,6 +306,6 @@ fn websocket_errors_name_the_problem_and_the_line() {
         "a close code must be 1000 to 1003, 1007 to 1011 or 3000 to 4999, got 5000",
         7,
     );
-    points_at(&stderr, "close needs a websocket, got a channel", 10);
+    points_at(&stderr, "close on a channel takes no code or reason", 10);
     points_at(&stderr, "cannot send on a closed websocket", 14);
 }

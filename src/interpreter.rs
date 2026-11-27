@@ -1116,12 +1116,42 @@ ws.onmessage = (event) => {
         socket.read_to_end(&mut rest).unwrap();
         assert_eq!(rest, b"\x88\x09\x0f\xa0see you");
         assert_eq!(
-            error("close(channel())").message,
-            "close needs a websocket, got a channel"
+            error("close(channel(), 1000)").message,
+            "close on a channel takes no code or reason"
         );
         assert_eq!(
             error("close(1)").message,
-            "close needs a websocket, got number"
+            "close needs a channel or a websocket, got number"
+        );
+    }
+
+    #[test]
+    fn a_closed_channel_drains_then_gives_none() {
+        assert_eq!(
+            string(
+                "let c = channel()\nsend(c, 1)\nsend(c, 2)\nclose(c)\nclose(c)\n\"${receive(c)} ${receive(c)} ${receive(c)} ${receive(c)}\""
+            ),
+            "1 2 none none"
+        );
+        let workers = "let jobs = channel()\nlet done = channel()\nfn worker() {\n    let total = 0\n    let item = receive(jobs)\n    while item != none {\n        total = total + item\n        item = receive(jobs)\n    }\n    send(done, total)\n}\nspawn(worker)\nspawn(worker)\nfor n in range(1, 11) {\n    send(jobs, n)\n}\nclose(jobs)\nreceive(done) + receive(done)";
+        assert_eq!(number(workers), 55.0);
+        let picked = "let open = channel()\nlet shut = channel()\nclose(shut)\nlet got = 0\nselect {\n    x = receive(open) => got = 1\n    y = receive(shut) => got = y ?? 2\n}\ngot";
+        assert_eq!(number(picked), 2.0);
+        let late = error("let c = channel()\nclose(c)\n\nsend(c, 1)");
+        assert_eq!(
+            (late.line, late.message.as_str()),
+            (4, "cannot send on a closed channel")
+        );
+        let stuck = error_within(
+            "let jobs = channel()\nfn worker() {\n    while receive(jobs) != none {\n    }\n}\nspawn(worker)\nclose(jobs)\nreceive(jobs)\nreceive(jobs)\nreceive(channel())",
+            30,
+        );
+        assert_eq!(
+            (stuck.line, stuck.message.as_str()),
+            (
+                10,
+                "deadlock: every task is waiting on a channel that will never get a value"
+            )
         );
     }
 
