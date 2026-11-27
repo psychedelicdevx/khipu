@@ -14,7 +14,8 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. HTTP without limits | `██████░░░░` 13 / 21 |
-| 10. Documentation | `██░░░░░░░░` 1 / 5 |
+| 10. Cleanup | `░░░░░░░░░░` 0 / 9 |
+| 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
 
@@ -172,9 +173,25 @@ Interface
 - [ ] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md
 
-## Phase 10: Documentation
+## Phase 10: Cleanup
 
-The last regular phase, written once the language has settled.
+Before the documentation is written, the code it describes is made small. Every item here removes something or merges two things into one; none adds a feature.
+
+- [ ] Dead code: every function, variant and `pub` item in `src/` has a caller or a test, and the rest is gone
+- [ ] One of each: duplicated helpers merged so each job has one function (encoding in `src/web.rs` and `src/http.rs`, number formatting, error construction, request parsing)
+- [ ] Files by concern: `src/interpreter.rs` and `src/http.rs` split so a file is one thing, with tests beside the code they test
+- [ ] Dependencies: every crate in `Cargo.toml` justified in a line in CONTRIBUTING.md, `cargo audit` clean, and nothing kept for one call that a few lines could do
+- [ ] Error messages in one voice and shape across the parser, checker, VM and HTTP, each one tested
+- [ ] Every `unsafe` block in `src/jit.rs`, `src/native.rs` and `src/wasm.rs` states the invariant it relies on, and the ones that can go are gone
+- [ ] Clippy at `pedantic` reviewed: fixed, or allowed in one place with the reason next to it
+- [ ] `src/prelude.kp` without dead or duplicated functions, every function with an `example`
+- [ ] The pre-commit hook and the test suite timed and written down in CONTRIBUTING.md, with the slow tests named
+
+---
+
+## Phase 11: Documentation
+
+The last regular phase, written once the language has settled and the code is clean.
 
 - [x] The Khipu Book: teaches the language
 - [ ] Khipu Language Reference: exactly how everything behaves
