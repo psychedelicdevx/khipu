@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `████████░░` 12 / 15 |
+| 9. HTTP without limits | `█████████░` 13 / 15 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
@@ -163,7 +163,7 @@ Robustness
 Interface
 - [x] `Request` gives method, path, query parameters, headers and body; `Response` sets status, headers and body, with `from_json`, `text`, `html` and `file` helpers
 - [x] Routing in the standard library: match on method and path with parameters, written in Khipu in `src/prelude.kp`
-- [ ] WebSockets: upgrade a request, then `send` and `receive` on it like a channel
+- [x] WebSockets: upgrade a request, then `send` and `receive` on it like a channel
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md
 
 ## Phase 10: Documentation
