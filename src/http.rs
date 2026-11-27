@@ -1607,11 +1607,17 @@ mod server {
         use std::net::{Shutdown, TcpListener, TcpStream};
         use std::rc::Rc;
 
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
         use super::Incoming;
         use super::read_request;
         use super::{
-            CONNECTIONS, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS, MAX_REQUEST_HEAD, respond, store,
+            CONNECTIONS, Frame, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS, MAX_REQUEST_HEAD, Socket,
+            Stream, accept_key, frame_bytes, parse_frame, respond, store, upgrade_key,
         };
+        use crate::task::Endpoint;
         use crate::value::Value;
 
         fn pair() -> (TcpStream, TcpStream) {
@@ -1852,6 +1858,278 @@ mod server {
             assert!(!text.contains("text/plain"), "{text}");
             assert!(respond_once(99.0, "", vec![]).is_err());
             assert!(respond_once(600.0, "", vec![]).is_err());
+        }
+
+        fn masked(first: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![first];
+            match payload.len() {
+                len @ 0..=125 => out.push(0x80 | len as u8),
+                len @ 126..=0xffff => {
+                    out.push(0x80 | 126);
+                    out.extend_from_slice(&(len as u16).to_be_bytes());
+                }
+                len => {
+                    out.push(0x80 | 127);
+                    out.extend_from_slice(&(len as u64).to_be_bytes());
+                }
+            }
+            let key = [0x37, 0xfa, 0x21, 0x3d];
+            out.extend_from_slice(&key);
+            out.extend(payload.iter().zip(key.iter().cycle()).map(|(b, k)| b ^ k));
+            out
+        }
+
+        fn text_frame(payload: &[u8]) -> Vec<u8> {
+            masked(0x81, payload)
+        }
+
+        fn parsed(bytes: &[u8]) -> Frame {
+            let (frame, used) = parse_frame(bytes, MAX_BODY).unwrap().unwrap();
+            assert_eq!(used, bytes.len());
+            frame
+        }
+
+        #[test]
+        fn the_accept_key_matches_rfc_6455() {
+            assert_eq!(
+                accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+                "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+            );
+        }
+
+        #[test]
+        fn an_upgrade_needs_every_websocket_header() {
+            let headers = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+                pairs
+                    .iter()
+                    .map(|(n, v)| (n.to_string(), v.to_string()))
+                    .collect()
+            };
+            let good = [
+                ("upgrade", "WebSocket"),
+                ("connection", "keep-alive, Upgrade"),
+                ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ("sec-websocket-version", "13"),
+            ];
+            assert_eq!(
+                upgrade_key("GET", &headers(&good)).as_deref(),
+                Some("dGhlIHNhbXBsZSBub25jZQ==")
+            );
+            assert!(upgrade_key("POST", &headers(&good)).is_none());
+            for missing in 0..good.len() {
+                let mut partial = good.to_vec();
+                partial.remove(missing);
+                assert!(upgrade_key("GET", &headers(&partial)).is_none());
+            }
+            let mut old = good.to_vec();
+            old[3] = ("sec-websocket-version", "8");
+            assert!(upgrade_key("GET", &headers(&old)).is_none());
+            let mut short = good.to_vec();
+            short[2] = ("sec-websocket-key", "abc");
+            assert!(upgrade_key("GET", &headers(&short)).is_none());
+            let mut plain = good.to_vec();
+            plain[1] = ("connection", "keep-alive");
+            assert!(upgrade_key("GET", &headers(&plain)).is_none());
+        }
+
+        #[test]
+        fn a_masked_frame_is_unmasked() {
+            let rfc = [
+                0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58,
+            ];
+            assert_eq!(
+                parsed(&rfc),
+                Frame {
+                    fin: true,
+                    opcode: 0x1,
+                    payload: b"Hello".to_vec()
+                }
+            );
+            assert_eq!(
+                parse_frame(&[0x81, 0x05, b'H', b'e', b'l', b'l', b'o'], MAX_BODY),
+                Err(1002)
+            );
+        }
+
+        #[test]
+        fn every_length_form_is_read_and_partial_frames_wait() {
+            for len in [0, 125, 126, 300, 0xffff, 0x10000, 70000] {
+                let payload = vec![b'x'; len];
+                let bytes = text_frame(&payload);
+                let header = match len {
+                    0..=125 => 6,
+                    126..=0xffff => 8,
+                    _ => 14,
+                };
+                assert_eq!(bytes.len(), header + len);
+                assert_eq!(parsed(&bytes).payload, payload);
+                for cut in [0, 1, 2, 3, header - 1, header, bytes.len() - 1] {
+                    if cut < bytes.len() {
+                        assert_eq!(
+                            parse_frame(&bytes[..cut], MAX_BODY),
+                            Ok(None),
+                            "{len} {cut}"
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn server_frames_are_unmasked_with_the_shortest_length() {
+            for (len, header) in [(5, 2), (126, 4), (0xffff, 4), (0x10000, 10)] {
+                let bytes = frame_bytes(0x1, &vec![b'y'; len]);
+                assert_eq!(bytes[0], 0x81);
+                assert_eq!(bytes[1] & 0x80, 0);
+                assert_eq!(bytes.len(), header + len);
+            }
+        }
+
+        #[test]
+        fn frames_the_parser_does_not_understand_are_refused_with_the_right_code() {
+            assert_eq!(parse_frame(&masked(0xc1, b"x"), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0x91, b"x"), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0x83, b"x"), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0x8b, b"x"), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0x09, b"x"), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0x89, &[0; 126]), MAX_BODY), Err(1002));
+            let mut huge = vec![0x81, 0x80 | 127];
+            huge.extend_from_slice(&(1u64 << 63).to_be_bytes());
+            assert_eq!(parse_frame(&huge, MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&text_frame(&[0; 11]), 10), Err(1009));
+        }
+
+        fn socket(frames: &[u8], max: usize, timeout: Duration) -> (Arc<Socket>, TcpStream) {
+            let (mut client, server) = pair();
+            client.write_all(frames).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let socket = Arc::new(Socket {
+                stream: Arc::new(Mutex::new(Box::new(server) as Box<dyn Stream>)),
+                buf: Mutex::new(Vec::new()),
+                closed: AtomicBool::new(false),
+                max,
+                timeout,
+            });
+            (socket, client)
+        }
+
+        fn server_frame(client: &mut TcpStream) -> (u8, Vec<u8>) {
+            let mut head = [0u8; 2];
+            client.read_exact(&mut head).unwrap();
+            assert_eq!(head[1] & 0x80, 0, "server frames are not masked");
+            let mut payload = vec![0u8; usize::from(head[1] & 0x7f)];
+            client.read_exact(&mut payload).unwrap();
+            (head[0], payload)
+        }
+
+        fn closes_with(frames: &[u8], max: usize, code: u16) {
+            let (socket, mut client) = socket(frames, max, Duration::from_secs(5));
+            assert!(matches!(socket.receive(), Value::None));
+            assert_eq!(
+                server_frame(&mut client),
+                (0x88, code.to_be_bytes().to_vec())
+            );
+            assert!(matches!(socket.receive(), Value::None));
+        }
+
+        fn received(value: Value) -> String {
+            match value {
+                Value::Str(text) => text.to_string(),
+                other => panic!("expected a string, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn fragments_are_reassembled_around_a_ping_that_gets_its_pong() {
+            let mut frames = masked(0x01, b"Hel");
+            frames.extend(masked(0x89, b"are you there"));
+            frames.extend(masked(0x8a, b"unsolicited"));
+            frames.extend(masked(0x00, b"lo, "));
+            frames.extend(masked(0x80, b"world"));
+            frames.extend(masked(0x82, b"binary text"));
+            let (socket, mut client) = socket(&frames, MAX_BODY, Duration::from_secs(5));
+            assert_eq!(received(socket.receive()), "Hello, world");
+            assert_eq!(server_frame(&mut client), (0x8a, b"are you there".to_vec()));
+            assert_eq!(received(socket.receive()), "binary text");
+            socket.send(&Value::str("back")).unwrap();
+            assert_eq!(server_frame(&mut client), (0x81, b"back".to_vec()));
+        }
+
+        #[test]
+        fn each_protocol_error_closes_with_its_code() {
+            closes_with(&masked(0x81, &[0xff, 0xfe]), MAX_BODY, 1007);
+            closes_with(&masked(0x82, &[0xff, 0xfe]), MAX_BODY, 1003);
+            closes_with(&[0x81, 0x01, b'x'], MAX_BODY, 1002);
+            closes_with(&masked(0xc1, b"x"), MAX_BODY, 1002);
+            closes_with(&masked(0x83, b"x"), MAX_BODY, 1002);
+            closes_with(&masked(0x80, b"x"), MAX_BODY, 1002);
+            let mut twice = masked(0x01, b"a");
+            twice.extend(masked(0x81, b"b"));
+            closes_with(&twice, MAX_BODY, 1002);
+            closes_with(&text_frame(&[b'x'; 11]), 10, 1009);
+            let mut growing = masked(0x01, &[b'x'; 6]);
+            growing.extend(masked(0x80, &[b'x'; 6]));
+            closes_with(&growing, 10, 1009);
+            closes_with(&masked(0x88, &[0x03]), MAX_BODY, 1002);
+            closes_with(&masked(0x88, &999u16.to_be_bytes()), MAX_BODY, 1002);
+            let mut bad_reason = 1000u16.to_be_bytes().to_vec();
+            bad_reason.push(0xff);
+            closes_with(&masked(0x88, &bad_reason), MAX_BODY, 1007);
+        }
+
+        #[test]
+        fn a_close_from_the_peer_is_echoed_and_receive_returns_none() {
+            let mut frames = text_frame(b"last");
+            frames.extend(masked(0x88, &[0x03, 0xe8, b'b', b'y', b'e']));
+            let (socket, mut client) = socket(&frames, MAX_BODY, Duration::from_secs(5));
+            assert_eq!(received(socket.receive()), "last");
+            assert!(matches!(socket.receive(), Value::None));
+            assert_eq!(server_frame(&mut client), (0x88, vec![0x03, 0xe8]));
+            let mut rest = Vec::new();
+            client.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                socket.send(&Value::str("late")).unwrap_err(),
+                "cannot send on a closed websocket"
+            );
+            assert_eq!(
+                socket.send(&Value::Number(1.0)).unwrap_err(),
+                "a websocket can only send a string, got number"
+            );
+        }
+
+        #[test]
+        fn a_silent_peer_is_closed_with_1001_once_the_timeout_passes() {
+            let (socket, mut client) = socket(&[], MAX_BODY, Duration::from_millis(100));
+            let start = std::time::Instant::now();
+            assert!(matches!(socket.receive(), Value::None));
+            assert!(start.elapsed() >= Duration::from_millis(100));
+            assert_eq!(
+                server_frame(&mut client),
+                (0x88, 1001u16.to_be_bytes().to_vec())
+            );
+        }
+
+        #[test]
+        fn a_frame_trickling_in_still_times_out() {
+            let (socket, mut client) = socket(&[0x81, 0x85], MAX_BODY, Duration::from_millis(200));
+            let writer = {
+                let mut client = client.try_clone().unwrap();
+                std::thread::spawn(move || {
+                    for byte in [0x37, 0xfa, 0x21, 0x3d, 0x7f] {
+                        std::thread::sleep(Duration::from_millis(80));
+                        let _ = client.write_all(&[byte]);
+                    }
+                })
+            };
+            assert!(matches!(socket.receive(), Value::None));
+            assert_eq!(
+                server_frame(&mut client),
+                (0x88, 1001u16.to_be_bytes().to_vec())
+            );
+            let _ = writer.join();
         }
     }
 }
