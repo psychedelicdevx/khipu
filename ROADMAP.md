@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `███████░░░` 15 / 21 |
+| 9. HTTP without limits | `████████░░` 16 / 21 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
@@ -169,7 +169,7 @@ Interface
 - [x] A `bytes` value: binary request bodies, `Response.file` for non-text files, and binary WebSocket frames in both directions, without going through a string
 - [ ] WebSocket subprotocols and compression: `Sec-WebSocket-Protocol` negotiated from a list the program gives, and `permessage-deflate` when the client offers it
 - [ ] A WebSocket client: `Http.websocket(url)` returns a socket that works with `send` and `receive` like the server side, over TLS when the URL is `wss`
-- [ ] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
+- [x] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
 - [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md
 
 ## Phase 10: Documentation

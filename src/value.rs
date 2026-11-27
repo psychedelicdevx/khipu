@@ -642,7 +642,7 @@ pub fn symbol(op: Op) -> &'static str {
     }
 }
 
-pub static NATIVES: [Native; 12] = [
+pub static NATIVES: [Native; 13] = [
     Native {
         name: "print",
         function: print,
@@ -690,6 +690,10 @@ pub static NATIVES: [Native; 12] = [
     Native {
         name: "select#",
         function: task::select,
+    },
+    Native {
+        name: "close",
+        function: task::close,
     },
 ];
 

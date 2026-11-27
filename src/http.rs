@@ -518,7 +518,7 @@ mod server {
             &self.tcp
         }
         fn close(&mut self) {
-            let _ = self.tcp.shutdown(std::net::Shutdown::Both);
+            let _ = self.tcp.shutdown(std::net::Shutdown::Write);
         }
         fn impatient(&mut self) {
             self.wait = None;
@@ -1015,7 +1015,7 @@ mod server {
             }
             lock(&self.stream).close();
             if let Some(channel) = self.channel.upgrade() {
-                crate::task::close(&channel);
+                crate::task::seal(&channel);
             }
         }
     }
@@ -1036,6 +1036,12 @@ mod server {
                 return Err("cannot send on a closed websocket".to_string());
             }
             Ok(())
+        }
+
+        fn close(&self, code: u16, reason: &str) {
+            let mut payload = code.to_be_bytes().to_vec();
+            payload.extend_from_slice(reason.as_bytes());
+            self.shut(Some(&payload), true);
         }
     }
 

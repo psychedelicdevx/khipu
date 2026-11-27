@@ -167,6 +167,42 @@ fn handle(request: Request) -> Response {
 
 Http.serve(8080, handle)
 ```
+### WebSockets
+
+A handler that sees `request.is_websocket()` can return `Response.websocket(chat)`. The server answers the upgrade and runs `chat(socket)` as a task of its own, where `socket` is a channel: `send` writes a message, a string as text or `bytes` as binary, and `receive` waits for the next one and gives `none` once the other side has gone. `select` waits on sockets and channels together, and `close(socket, code, reason)` ends the conversation with a code and reason of the program's choosing (`close(socket)` sends 1000, a normal close). Returning from `chat` closes with 1000 too, and an error closes with 1011:
+
+```js
+let news = channel()
+
+fn chat(socket: channel) {
+    while true {
+        select {
+            message = receive(socket) => {
+                if message == none {
+                    return
+                }
+                if message == "bye" {
+                    close(socket, 4000, "see you")
+                    return
+                }
+                send(socket, "heard ${message}")
+            }
+            item = receive(news) => send(socket, "news: ${item}")
+        }
+    }
+}
+
+fn handle(request: Request) -> Response {
+    if request.is_websocket() {
+        return Response.websocket(chat)
+    }
+    return Response.text("connect with a WebSocket")
+}
+
+Http.serve(8080, handle)
+```
+
+A socket waiting for a message costs memory, not a thread, so a server can hold thousands of them.
 
 ## Exercises
 

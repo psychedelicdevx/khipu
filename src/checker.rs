@@ -54,6 +54,7 @@ impl Checker {
             ("assert".to_string(), Type::Any),
             ("spawn".to_string(), Type::Any),
             ("select#".to_string(), Type::Any),
+            ("close".to_string(), Type::Any),
             (
                 "channel".to_string(),
                 Type::Function(Vec::new(), Box::new(Type::Channel)),

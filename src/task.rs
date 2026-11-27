@@ -21,6 +21,7 @@ pub struct Channel {
 
 pub trait Endpoint: Send + Sync {
     fn send(&self, value: &Value) -> Result<(), String>;
+    fn close(&self, code: u16, reason: &str);
 }
 
 pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Channel> {
@@ -40,7 +41,7 @@ pub fn deliver(channel: &Channel, message: Slot) {
     );
 }
 
-pub fn close(channel: &Channel) {
+pub fn seal(channel: &Channel) {
     let mut world = world();
     let woken: Vec<Waiter> = {
         let mut state = lock(&channel.state);
@@ -750,9 +751,6 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
         .borrow()
         .iter()
         .map(|item| match item {
-            Value::Channel(channel) if channel.port.is_some() => {
-                Err("select cannot wait on a websocket".to_string())
-            }
             Value::Channel(channel) => Ok(Arc::clone(&channel)),
             other => Err(format!(
                 "select can only receive from a channel, got {}",
@@ -762,6 +760,61 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
         .collect::<Result<Vec<_>, String>>()?;
     let (index, value) = wait_for(&channels)?;
     Ok(Value::list(vec![Value::Number(index as f64), value]))
+}
+
+pub fn close(args: &[Value]) -> Result<Value, String> {
+    let (channel, code, reason) = match args {
+        [Value::Channel(channel)] => (channel, 1000.0, ""),
+        [Value::Channel(channel), Value::Number(code)] => (channel, *code, ""),
+        [
+            Value::Channel(channel),
+            Value::Number(code),
+            Value::Str(reason),
+        ] => (channel, *code, reason.as_str()),
+        [Value::Channel(_), Value::Number(_), other] => {
+            return Err(format!(
+                "a close reason must be a string, got {}",
+                other.type_name()
+            ));
+        }
+        [Value::Channel(_), other, ..] => {
+            return Err(format!(
+                "a close code must be a number, got {}",
+                other.type_name()
+            ));
+        }
+        [other, ..] => {
+            return Err(format!(
+                "close needs a websocket, got {}",
+                other.type_name()
+            ));
+        }
+        [] => {
+            return Err("close expects a websocket, then an optional code and reason".to_string());
+        }
+    };
+    let Some(port) = &channel.port else {
+        return Err("close needs a websocket, got a channel".to_string());
+    };
+    if args.len() > 3 {
+        return Err(format!(
+            "close expects at most 3 arguments, got {}",
+            args.len()
+        ));
+    }
+    if code.fract() != 0.0 || !matches!(code as u32, 1000..=1003 | 1007..=1011 | 3000..=4999) {
+        return Err(format!(
+            "a close code must be 1000 to 1003, 1007 to 1011 or 3000 to 4999, got {code}"
+        ));
+    }
+    if reason.len() > 123 {
+        return Err(format!(
+            "a close reason can be at most 123 bytes, got {}",
+            reason.len()
+        ));
+    }
+    port.close(code as u16, reason);
+    Ok(Value::None)
 }
 
 pub fn receive(args: &[Value]) -> Result<Value, String> {

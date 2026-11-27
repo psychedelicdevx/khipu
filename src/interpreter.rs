@@ -1084,6 +1084,77 @@ ws.onmessage = (event) => {
         );
     }
 
+    const SELECT_SERVER: &str = "let news = channel()\nfn chat(socket: channel) {\n    while true {\n        select {\n            message = receive(socket) => {\n                if message == none {\n                    return\n                }\n                if message == \"bye\" {\n                    close(socket, 4000, \"see you\")\n                    return\n                }\n                send(socket, \"heard \" + message)\n            }\n            item = receive(news) => send(socket, \"news \" + item)\n        }\n    }\n}\nfn handle(request: Request) -> Response {\n    return Response.websocket(chat)\n}";
+
+    #[test]
+    fn select_waits_on_sockets_and_close_sends_the_program_code() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 24;
+        start_server(port, SELECT_SERVER);
+        let (mut socket, head) = upgrade(port, "/");
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        socket
+            .write_all(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i'])
+            .unwrap();
+        let mut heard = [0u8; 10];
+        socket.read_exact(&mut heard).unwrap();
+        assert_eq!(&heard, b"\x81\x08heard hi");
+        socket
+            .write_all(&[0x81, 0x83, 0, 0, 0, 0, b'b', b'y', b'e'])
+            .unwrap();
+        let mut rest = Vec::new();
+        socket.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"\x88\x09\x0f\xa0see you");
+        assert_eq!(
+            error("close(channel())").message,
+            "close needs a websocket, got a channel"
+        );
+        assert_eq!(
+            error("close(1)").message,
+            "close needs a websocket, got number"
+        );
+    }
+
+    const CLOSE_CLIENT: &str = r#"
+const port = process.argv[1];
+const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+const fail = (why) => { console.log(why); process.exit(1); };
+setTimeout(() => fail("TIMEOUT"), 10000);
+ws.onerror = () => fail("ERROR");
+ws.onopen = () => ws.send("bye");
+ws.onclose = (event) => {
+  if (event.code !== 4000 || event.reason !== "see you" || !event.wasClean) fail("CLOSE " + event.code + " " + event.reason + " " + event.wasClean);
+  console.log("OK");
+  process.exit(0);
+};
+"#;
+
+    #[test]
+    fn a_close_from_the_program_reaches_node_with_its_code_and_reason() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("node is not installed, skipping the WebSocket check");
+            return;
+        }
+        let port = 20000 + std::process::id() % 20000 + 25;
+        start_server(port, SELECT_SERVER);
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(CLOSE_CLIENT)
+            .arg(port.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "OK",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;

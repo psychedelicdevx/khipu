@@ -283,10 +283,10 @@ fn read_rest(stream: &mut TcpStream) -> Vec<u8> {
 fn websocket_errors_name_the_problem_and_the_line() {
     let port: u16 = 21000 + (std::process::id() % 20000) as u16 + 2;
     let source = format!(
-        "fn chat(socket: channel) {{\n    let first = receive(socket)\n    if first == \"number\" {{\n        send(socket, 42)\n    }}\n    if first == \"select\" {{\n        select {{\n            receive(socket) => print(\"never\")\n        }}\n    }}\n    if first == \"late\" {{\n        receive(socket)\n        send(socket, \"too late\")\n    }}\n}}\nfn handle(request: Request) -> Response {{\n    return Response.websocket(chat)\n}}\nHttp.serve({port}, handle)\n"
+        "fn chat(socket: channel) {{\n    let first = receive(socket)\n    if first == \"number\" {{\n        send(socket, 42)\n    }}\n    if first == \"code\" {{\n        close(socket, 5000, \"no\")\n    }}\n    if first == \"plain\" {{\n        close(channel())\n    }}\n    if first == \"late\" {{\n        receive(socket)\n        send(socket, \"too late\")\n    }}\n}}\nfn handle(request: Request) -> Response {{\n    return Response.websocket(chat)\n}}\nHttp.serve({port}, handle)\n"
     );
     let stderr = khipu_errors(&source, port, || {
-        for word in ["number", "select"] {
+        for word in ["number", "code", "plain"] {
             let mut stream = upgraded(port);
             stream.write_all(&masked(0x81, word.as_bytes())).unwrap();
             assert_eq!(read_rest(&mut stream), [0x88, 0x02, 0x03, 0xf3]);
@@ -301,6 +301,11 @@ fn websocket_errors_name_the_problem_and_the_line() {
         "a websocket can only send a string or bytes, got number",
         4,
     );
-    points_at(&stderr, "select cannot wait on a websocket", 7);
-    points_at(&stderr, "cannot send on a closed websocket", 13);
+    points_at(
+        &stderr,
+        "a close code must be 1000 to 1003, 1007 to 1011 or 3000 to 4999, got 5000",
+        7,
+    );
+    points_at(&stderr, "close needs a websocket, got a channel", 10);
+    points_at(&stderr, "cannot send on a closed websocket", 14);
 }
