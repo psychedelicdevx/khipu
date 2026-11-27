@@ -76,7 +76,7 @@ rm -f "$RESULTS.measure"
 
 python3 - "$RESULTS" <<'PY'
 import sys
-path = "BENCHMARKS.md"
+path = "docs/benchmarks.md"
 section = open(sys.argv[1]).read()
 text = open(path).read()
 marker = "\n## HTTP\n"

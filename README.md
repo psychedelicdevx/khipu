@@ -78,9 +78,9 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 - [The Khipu Book](book/README.md): the language, chapter by chapter, with examples that run
 - [A tour of Khipu](docs/tour.md): the short reference: contracts, the standard library, tasks, packages, and where Khipu is strict
 - [Tooling](docs/tooling.md): editor support, native code, `khipu web` and the playground
-- [BENCHMARKS.md](BENCHMARKS.md): every measurement and how it was taken
+- [docs/benchmarks.md](docs/benchmarks.md): every measurement and how it was taken
 - [ROADMAP.md](ROADMAP.md): what is done, what is next, and the experiments
-- [AUDIT.md](AUDIT.md): the Phase 8 audit and independent review
+- [docs/audit.md](docs/audit.md): the Phase 8 audit and independent review
 
 ## Roadmap
 
@@ -96,20 +96,20 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. HTTP without limits | `████████░░` 19 / 24 |
-| 10. Cleanup | `░░░░░░░░░░` 0 / 9 |
+| 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see docs/audit.md)
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
 ## Performance
 
-On sustained runs Khipu beats Python on 18 of 18 benchmarks and Node on 7 of 18, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on 18 of 18 benchmarks and Node on 7 of 18, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms. The tables, spreads, memory use and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Contributing, security, privacy
 
-[CONTRIBUTING.md](CONTRIBUTING.md) explains how to work on the language and how to run or propose an experiment, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) is short: argue with code, be kind to people. [SECURITY.md](SECURITY.md) says how to report a vulnerability privately and what counts as one. [PRIVACY.md](PRIVACY.md) is short: Khipu collects nothing.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to work on the language and how to run or propose an experiment, and [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) is short: argue with code, be kind to people. [SECURITY.md](.github/SECURITY.md) says how to report a vulnerability privately and what counts as one. [PRIVACY.md](.github/PRIVACY.md) is short: Khipu collects nothing.
 
 ## Licence
 

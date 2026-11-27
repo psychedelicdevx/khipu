@@ -14,10 +14,10 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
 | 9. HTTP without limits | `████████░░` 19 / 24 |
-| 10. Cleanup | `░░░░░░░░░░` 0 / 9 |
+| 10. Cleanup | `█░░░░░░░░░` 1 / 10 |
 | 11. Documentation | `██░░░░░░░░` 1 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see docs/audit.md)
 
 The bets that may never land are in the [Experimental](#experimental) section at the end. They are not counted above.
 
@@ -80,7 +80,7 @@ The bets that may never land are in the [Experimental](#experimental) section at
 - [x] Microbenchmarks: calls, local and global variables, record and struct access
 - [x] C and Rust reference versions of every benchmark
 - [x] Interleaved runs with raw results saved in `benchmarks/results`
-- [x] BENCHMARKS.md: methodology, and every result, including where Khipu loses
+- [x] docs/benchmarks.md: methodology, and every result, including where Khipu loses
 
 ## Phase 5: Tooling ✅
 
@@ -124,7 +124,7 @@ Speed
 - [x] Beat Python on every sustained benchmark
 - [x] Native compilation (Cranelift)
 - [x] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
-- [ ] Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
+- [ ] Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see docs/audit.md)
 - [x] Start-up stays under 5 ms
 - [x] Work stealing, so a busy core hands tasks to idle ones
 - [x] Tasks also take turns inside deep recursion, not only in loops
@@ -136,7 +136,7 @@ Robustness
 
 Final audit
 - [x] Every roadmap item re-checked against the code and tests
-- [x] Full benchmark rerun, with README and BENCHMARKS.md matching the new results
+- [x] Full benchmark rerun, with README and docs/benchmarks.md matching the new results
 - [x] Every example and doc snippet runs as written
 - [x] Independent review of the whole repo, with every finding fixed or written down
 
@@ -150,7 +150,7 @@ Throughput
 - [ ] Zero-copy request parsing: headers and body are slices of the read buffer until the program asks for a string
   (reassessed after `bytes`, still not reachable: `bytes` is an owned `Rc<Vec<u8>>` and `Value` is not `Send`, so the body could at best become one slice of a buffer moved to the worker, while method, path, query and every header stay `string` fields that are copied into `Rc<String>` when the `Request` is built; reaching the item needs lazy string values that point into a shared buffer, a change to the value model, not to the server)
 - [x] Responses written in one syscall, with bodies that stream (`Response.stream`) when they do not fit in memory
-- [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in BENCHMARKS.md, for a hello route, a JSON route and a route that reads a file
+- [x] Throughput benchmark with `wrk` against Node, Go and Rust on the same box, in docs/benchmarks.md, for a hello route, a JSON route and a route that reads a file
 
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
@@ -171,7 +171,7 @@ Interface
 - [x] WebSocket subprotocols and compression: `Sec-WebSocket-Protocol` negotiated from a list the program gives, and `permessage-deflate` when the client offers it
 - [x] A WebSocket client: `Http.websocket(url)` returns a socket that works with `send` and `receive` like the server side, over TLS when the URL is `wss`
 - [x] `close(socket)` closes a WebSocket with a code and reason from the program, and `select` can wait on sockets alongside channels
-- [ ] A 24-hour soak test under load with memory flat at the end, written down in AUDIT.md
+- [ ] A 24-hour soak test under load with memory flat at the end, written down in docs/audit.md
 - [ ] The WebSocket client at parity with the server: pings and a timeout on a silent server so a socket to a dead peer does not wait forever, `permessage-deflate` when the server accepts it, and the protocol the server chose readable from the program
 - [ ] `bytes` as a full value: `data[i]` for one byte, `bytes([..])` from a list of numbers, `File.read_bytes` and `File.write_bytes`, and binary bodies from `Http.get` and `Http.request`
 - [ ] `close(channel)` on a plain channel: `receive` drains what is queued and then gives `none`, `select` sees it like a closed socket, and `send` after `close` is an error with its line
@@ -180,6 +180,7 @@ Interface
 
 Before the documentation is written, the code it describes is made small. Every item here removes something or merges two things into one; none adds a feature.
 
+- [x] One home per kind of file: experiments under `experiments/`, the audit and the benchmark report under `docs/`, the community files under `.github/`, and nothing at the root but the README, the roadmap, the contributing guide, the licence and the Cargo files
 - [ ] Dead code: every function, variant and `pub` item in `src/` has a caller or a test, and the rest is gone
 - [ ] One of each: duplicated helpers merged so each job has one function (encoding in `src/web.rs` and `src/http.rs`, number formatting, error construction, request parsing)
 - [ ] Files by concern: `src/interpreter.rs` and `src/http.rs` split so a file is one thing, with tests beside the code they test

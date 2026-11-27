@@ -36,7 +36,7 @@ Every user-facing error message has a test that checks its wording and the line 
 - The code explains itself. Comments are for `unsafe` blocks and for the rare place where the reason cannot be seen from the code.
 - Add a test for every new user-facing error message, checking its wording and the line it points at.
 - Every snippet in the README, `docs/` and `book/` is run by `scripts/check-docs.py`, so an example that stops working fails the commit. Write examples as complete programs.
-- Benchmarks are rerun with `python3 scripts/bench.py`, which rewrites the tables in the README and BENCHMARKS.md. Do not edit those tables by hand.
+- Benchmarks are rerun with `python3 scripts/bench.py`, which rewrites the tables in the README and docs/benchmarks.md. Do not edit those tables by hand.
 
 ## Project layout
 
@@ -71,7 +71,9 @@ Every user-facing error message has a test that checks its wording and the line 
 | `editors/tree-sitter-khipu/` | Tree-sitter grammar and highlight queries |
 | `playground/` | The browser playground |
 | `scripts/` | Repository tooling: the roadmap sync, the benchmark runner, the doc checker |
-| `AUDIT.md` | The Phase 8 audit: every roadmap item, the benchmark rerun and the independent review |
+| `docs/` | The tour, tooling, the audit (`docs/audit.md`) and the benchmark report (`docs/benchmarks.md`), the last written by `scripts/bench.py` |
+| `experiments/` | One write-up per experiment from the roadmap's Experimental section: context, what was built, the numbers, what was left |
+| `.github/` | CI, templates, the code of conduct, the security policy and the privacy note |
 
 ## Pull requests
 

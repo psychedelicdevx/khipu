@@ -110,7 +110,7 @@ Spawned tasks do not run native code. They keep running bytecode so they can tak
 - Put hot arithmetic in small functions that take and return numbers. Keep strings, lists and printing outside of them.
 - `range` counts on demand, and a list of nothing but numbers or bools is stored compactly, so large numeric lists are cheaper than they look.
 - In the browser, the same functions are compiled to WebAssembly when the page is built.
-- Measure before you worry. A sustained run on the benchmark suite beats Python on all 17 benchmarks and Node on 5 of 17; strings, records and closures are where it is still slower than Node. The numbers and method are in `BENCHMARKS.md`.
+- Measure before you worry. A sustained run on the benchmark suite beats Python on all 17 benchmarks and Node on 5 of 17; strings, records and closures are where it is still slower than Node. The numbers and method are in `docs/benchmarks.md`.
 
 ## Exercises
 

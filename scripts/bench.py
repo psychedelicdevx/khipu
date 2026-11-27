@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BENCHMARKS = ROOT / "benchmarks"
 RESULTS = BENCHMARKS / "results"
 README = ROOT / "README.md"
-REPORT = ROOT / "BENCHMARKS.md"
+REPORT = ROOT / "docs" / "benchmarks.md"
 KHIPU = ROOT / "target" / "release" / "khipu"
 
 LANGUAGES = ["Khipu", "Python", "Node", "C", "Rust"]
@@ -184,7 +184,7 @@ def readme_section(results, meta, runs):
     node_wins = wins(results, "sustained", "Node")
     return f"""## Performance
 
-On sustained runs Khipu beats Python on {python_wins[0]} of {python_wins[1]} benchmarks and Node on {node_wins[0]} of {node_wins[1]}, and uses less memory than both on every one. Start-up, an empty program (median of {runs['cold']} runs): {startup_line(results)}. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on {python_wins[0]} of {python_wins[1]} benchmarks and Node on {node_wins[0]} of {node_wins[1]}, and uses less memory than both on every one. Start-up, an empty program (median of {runs['cold']} runs): {startup_line(results)}. The tables, spreads, memory use and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 """
 
@@ -224,7 +224,7 @@ Highest resident memory of any sustained run (cold run for start-up).
 
 {table({name: {"memory": modes.get("sustained", modes.get("cold"))} for name, modes in results.items()}, "memory", memory)}
 
-Raw samples for every run are in [`benchmarks/results/latest.json`](benchmarks/results/latest.json).
+Raw samples for every run are in [`benchmarks/results/latest.json`](../benchmarks/results/latest.json).
 """
 
 
@@ -243,7 +243,7 @@ def main():
     parser.add_argument("--quick", action="store_true", help="fewer runs, for a fast check")
     parser.add_argument("--only", help="comma-separated benchmark names")
     parser.add_argument("--cold-only", action="store_true", help="skip the sustained runs")
-    parser.add_argument("--no-write", action="store_true", help="do not update README, BENCHMARKS.md or results")
+    parser.add_argument("--no-write", action="store_true", help="do not update README, docs/benchmarks.md or results")
     args = parser.parse_args()
 
     runs = {"cold": 5, "sustained": 3} if args.quick else {"cold": 21, "sustained": 5}

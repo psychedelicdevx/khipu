@@ -133,7 +133,7 @@ Highest resident memory of any sustained run (cold run for start-up).
 | parallel | 15.2 MiB | 22.4 MiB | 129.9 MiB | 1.8 MiB | 1.9 MiB |
 | empty | 4.5 MiB | 12.8 MiB | 48.2 MiB | 1.6 MiB | 1.8 MiB |
 
-Raw samples for every run are in [`benchmarks/results/latest.json`](benchmarks/results/latest.json).
+Raw samples for every run are in [`benchmarks/results/latest.json`](../benchmarks/results/latest.json).
 
 ## HTTP
 
