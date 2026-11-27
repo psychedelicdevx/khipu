@@ -20,5 +20,5 @@ let routes = [
     Route { method: "GET", pattern: "/file", handler: file_route },
 ]
 
-let port = 8080
+let port = (Process.env("PORT") ?? "8080").to_number() ?? 8080
 Http.serve(port, Http.router(routes, not_found))

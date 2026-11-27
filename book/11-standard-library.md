@@ -127,7 +127,7 @@ fn handle(request: Request) -> Response {
 Http.serve(8080, handle)
 ```
 
-`Http.serve` answers one request at a time and never returns, so a program that serves is stopped with Ctrl-C. The calls on the other side are `Http.get(url)`, `Http.post(url, body)`, `Http.post_json(url, value)` and `Http.request(method, url, body, headers)`, over `http://` or `https://`. Each gives a `Response` with `status`, `body`, `headers`, an `ok()` that is true for 2xx statuses, and `json()`:
+`Http.serve` never returns, so a program that serves is stopped with Ctrl-C, which lets requests already being answered finish. Handlers run on every core at once; a connection that is waiting for its next request, or a WebSocket waiting for its next message, waits in one event loop instead of holding a thread, so ten thousand idle connections cost memory, not workers. The calls on the other side are `Http.get(url)`, `Http.post(url, body)`, `Http.post_json(url, value)` and `Http.request(method, url, body, headers)`, over `http://` or `https://`. Each gives a `Response` with `status`, `body`, `headers`, an `ok()` that is true for 2xx statuses, and `json()`:
 
 ```js
 let reply = Http.get("http://localhost:8080/hello")

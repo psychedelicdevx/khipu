@@ -13,6 +13,8 @@ pub mod lsp;
 pub mod native;
 pub mod package;
 pub mod parser;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod poll;
 pub mod stdlib;
 pub mod task;
 pub mod value;

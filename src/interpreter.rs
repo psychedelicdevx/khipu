@@ -921,6 +921,33 @@ ws.onclose = (event) => {
     }
 
     #[test]
+    fn open_sockets_and_idle_connections_hold_no_worker() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 20;
+        start_server(port, ECHO_SERVER);
+        let idle: Vec<_> = (0..2000)
+            .filter_map(|_| std::net::TcpStream::connect(format!("localhost:{port}")).ok())
+            .collect();
+        assert!(idle.len() > 1900, "{}", idle.len());
+        let mut sockets: Vec<_> = (0..200).map(|_| upgrade(port, "/").0).collect();
+        let started = std::time::Instant::now();
+        let plain = raw_get(port, "/");
+        assert!(plain.ends_with("plain"), "{plain}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        for socket in &mut sockets {
+            socket
+                .write_all(&[0x81, 0x82, 0, 0, 0, 0, b'h', b'i'])
+                .unwrap();
+        }
+        for socket in &mut sockets {
+            let mut echo = [0u8; 10];
+            socket.read_exact(&mut echo).unwrap();
+            assert_eq!(&echo, b"\x81\x08echo: hi");
+        }
+        drop(idle);
+    }
+
+    #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;
         let source = format!(

@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PORT=${PORT:-8080}
+export PORT
 URL=${URL:-http://127.0.0.1:$PORT}
 DURATION=${DURATION:-1h}
 THREADS=${THREADS:-4}

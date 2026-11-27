@@ -177,12 +177,15 @@ mod server {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::os::fd::{AsRawFd, RawFd};
     use std::rc::Rc;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc::{Receiver, SyncSender};
+    use std::sync::{Arc, Mutex, Weak};
     use std::time::{Duration, Instant};
 
     use super::{headers, record, text};
+    use crate::task::Channel;
     use crate::value::{GlobalStore, Instance, Native, StructDef, Value};
     use crate::vm::Vm;
 
@@ -354,6 +357,9 @@ mod server {
 
     type Incoming = (String, String, Vec<(String, String)>, String);
 
+    const BAD_REQUEST: &[u8] =
+        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+
     fn find_head_end(received: &[u8]) -> Option<(usize, usize)> {
         let find = |needle: &[u8]| received.windows(needle.len()).position(|w| w == needle);
         find(b"\r\n\r\n")
@@ -361,186 +367,36 @@ mod server {
             .or_else(|| find(b"\n\n").map(|at| (at, 2)))
     }
 
-    fn read_request(mut stream: &TcpStream) -> Option<Incoming> {
-        stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
-        let mut buf = [0u8; 4096];
-        let mut received = Vec::new();
-        let (head_len, term_len) = loop {
-            if let Some(found) = find_head_end(&received) {
-                break found;
-            }
-            if received.len() > MAX_REQUEST_HEAD || Instant::now() > deadline {
-                return None;
-            }
-            let read = stream.read(&mut buf).ok()?;
-            if read == 0 {
-                return None;
-            }
-            received.extend_from_slice(&buf[..read]);
-        };
-        let head = std::str::from_utf8(&received[..head_len]).ok()?;
-        let mut body = received[head_len + term_len..].to_vec();
-        let mut lines = head.split('\n');
-        let raw_request_line = lines.next()?;
-        let request_line = raw_request_line
-            .strip_suffix('\r')
-            .unwrap_or(raw_request_line);
-        let mut parts = request_line.split_whitespace();
-        let method = parts.next()?.to_string();
-        let target = parts.next()?.to_string();
-        let mut found = Vec::new();
-        let mut length = 0usize;
-        let mut seen_length = false;
-        let mut count = 0usize;
-        for raw in lines {
-            let line = raw.strip_suffix('\r').unwrap_or(raw);
-            if line.is_empty() {
-                continue;
-            }
-            count += 1;
-            if count > MAX_HEADERS || line.len() > MAX_HEADER_LINE {
-                return None;
-            }
-            let (name, value) = line.split_once(':')?;
-            let name = name.trim().to_lowercase();
-            let value = value.trim();
-            if name.is_empty() || !valid_header_name(&name) {
-                return None;
-            }
-            if name == "transfer-encoding" && !value.eq_ignore_ascii_case("identity") {
-                return None;
-            }
-            if name == "content-length" {
-                if seen_length || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                seen_length = true;
-                length = value.parse().ok()?;
-                if length > MAX_BODY {
-                    return None;
-                }
-            }
-            found.push((name, value.to_string()));
-        }
-        while body.len() < length {
-            if Instant::now() > deadline {
-                return None;
-            }
-            let read = stream.read(&mut buf).ok()?;
-            if read == 0 {
-                return None;
-            }
-            body.extend_from_slice(&buf[..read]);
-        }
-        body.truncate(length);
-        Some((
-            method,
-            target,
-            found,
-            String::from_utf8_lossy(&body).into_owned(),
-        ))
-    }
-
-    struct Conn {
-        stream: SharedStream,
-        buf: Vec<u8>,
-    }
-
-    trait Stream: Read + Write + Send {
-        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()>;
-        fn shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()>;
-    }
-
-    impl Stream for TcpStream {
-        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
-            TcpStream::set_read_timeout(self, dur)
-        }
-        fn shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()> {
-            TcpStream::shutdown(self, how)
-        }
-    }
-
-    impl Stream for rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
-        fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
-            self.sock.set_read_timeout(dur)
-        }
-        fn shutdown(&self, _how: std::net::Shutdown) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    enum ReadReq {
-        Request(Incoming, bool),
-        Closed,
+    enum Parsed {
+        Incomplete,
         Bad,
+        Request(Incoming, bool, usize),
     }
 
-    fn read_request_conn(conn: &mut Conn, limits: Limits, first: bool) -> ReadReq {
-        let timeout = if first {
-            limits.read_timeout
-        } else {
-            limits.idle_timeout
+    fn parse_request(buf: &[u8], limits: &Limits) -> Parsed {
+        let Some((head_len, term_len)) = find_head_end(buf) else {
+            return if buf.len() > limits.max_request_head {
+                Parsed::Bad
+            } else {
+                Parsed::Incomplete
+            };
         };
-        let _ = conn
-            .stream
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .set_read_timeout(Some(timeout));
-        let deadline = Instant::now() + limits.request_timeout;
-        let mut scratch = [0u8; 4096];
-        let (head_len, term_len) = loop {
-            if let Some(found) = find_head_end(&conn.buf) {
-                break found;
-            }
-            if conn.buf.len() > limits.max_request_head || Instant::now() > deadline {
-                return ReadReq::Bad;
-            }
-            match conn
-                .stream
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .read(&mut scratch)
-            {
-                Ok(0) => {
-                    return if conn.buf.is_empty() {
-                        ReadReq::Closed
-                    } else {
-                        ReadReq::Bad
-                    };
-                }
-                Ok(read) => conn.buf.extend_from_slice(&scratch[..read]),
-                Err(_) => {
-                    return if conn.buf.is_empty() {
-                        ReadReq::Closed
-                    } else {
-                        ReadReq::Bad
-                    };
-                }
-            }
-        };
-        let head = match std::str::from_utf8(&conn.buf[..head_len]) {
-            Ok(head) => head.to_string(),
-            Err(_) => return ReadReq::Bad,
+        if head_len > limits.max_request_head {
+            return Parsed::Bad;
+        }
+        let Ok(head) = std::str::from_utf8(&buf[..head_len]) else {
+            return Parsed::Bad;
         };
         let mut lines = head.split('\n');
-        let raw_request_line = match lines.next() {
-            Some(line) => line,
-            None => return ReadReq::Bad,
-        };
+        let raw_request_line = lines.next().unwrap_or("");
         let request_line = raw_request_line
             .strip_suffix('\r')
             .unwrap_or(raw_request_line);
         let mut parts = request_line.split_whitespace();
-        let method = match parts.next() {
-            Some(method) => method.to_string(),
-            None => return ReadReq::Bad,
+        let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+            return Parsed::Bad;
         };
-        let target = match parts.next() {
-            Some(target) => target.to_string(),
-            None => return ReadReq::Bad,
-        };
-        let version = parts.next().unwrap_or("HTTP/1.1").to_string();
+        let version = parts.next().unwrap_or("HTTP/1.1");
         let mut found = Vec::new();
         let mut length = 0usize;
         let mut seen_length = false;
@@ -553,31 +409,28 @@ mod server {
             }
             count += 1;
             if count > limits.max_headers || line.len() > limits.max_header_line {
-                return ReadReq::Bad;
+                return Parsed::Bad;
             }
             let Some((name, value)) = line.split_once(':') else {
-                return ReadReq::Bad;
+                return Parsed::Bad;
             };
             let name = name.trim().to_lowercase();
             let value = value.trim();
-            if name.is_empty() || !valid_header_name(&name) {
-                return ReadReq::Bad;
+            if !valid_header_name(&name) {
+                return Parsed::Bad;
             }
             if name == "transfer-encoding" && !value.eq_ignore_ascii_case("identity") {
-                return ReadReq::Bad;
+                return Parsed::Bad;
             }
             if name == "content-length" {
                 if seen_length || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return ReadReq::Bad;
+                    return Parsed::Bad;
                 }
                 seen_length = true;
                 length = match value.parse() {
-                    Ok(length) => length,
-                    Err(_) => return ReadReq::Bad,
+                    Ok(length) if length <= limits.max_body => length,
+                    _ => return Parsed::Bad,
                 };
-                if length > limits.max_body {
-                    return ReadReq::Bad;
-                }
             }
             if name == "connection" {
                 connection = value.to_lowercase();
@@ -586,39 +439,174 @@ mod server {
         }
         let body_start = head_len + term_len;
         let total = body_start + length;
-        while conn.buf.len() < total {
-            if Instant::now() > deadline {
-                return ReadReq::Bad;
+        if buf.len() < total {
+            return Parsed::Incomplete;
+        }
+        let has = |token: &str| connection.split(',').any(|c| c.trim() == token);
+        let keep_alive = if has("close") {
+            false
+        } else {
+            has("keep-alive") || version != "HTTP/1.0"
+        };
+        let body = String::from_utf8_lossy(&buf[body_start..total]).into_owned();
+        Parsed::Request(
+            (method.to_string(), target.to_string(), found, body),
+            keep_alive,
+            total,
+        )
+    }
+
+    fn read_request(mut stream: &TcpStream) -> Option<Incoming> {
+        stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let limits = Limits::default();
+        let mut buf = [0u8; 4096];
+        let mut received = Vec::new();
+        loop {
+            match parse_request(&received, &limits) {
+                Parsed::Request(incoming, _, _) => return Some(incoming),
+                Parsed::Bad => return None,
+                Parsed::Incomplete if Instant::now() > deadline => return None,
+                Parsed::Incomplete => {}
             }
-            match conn
-                .stream
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .read(&mut scratch)
-            {
-                Ok(0) => return ReadReq::Bad,
-                Ok(read) => conn.buf.extend_from_slice(&scratch[..read]),
-                Err(_) => return ReadReq::Bad,
+            let read = stream.read(&mut buf).ok()?;
+            if read == 0 {
+                return None;
+            }
+            received.extend_from_slice(&buf[..read]);
+        }
+    }
+
+    trait Stream: Read + Write + Send {
+        fn tcp(&self) -> &TcpStream;
+        fn close(&mut self);
+        fn impatient(&mut self);
+    }
+
+    struct Patient {
+        tcp: TcpStream,
+        wait: Option<Duration>,
+    }
+
+    impl Read for Patient {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.tcp.read(buf)
+        }
+    }
+
+    impl Write for Patient {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            loop {
+                match (self.tcp.write(buf), self.wait) {
+                    (Err(error), Some(wait)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if !crate::poll::writable(self.tcp.as_raw_fd(), wait) {
+                            return Err(std::io::ErrorKind::TimedOut.into());
+                        }
+                    }
+                    (result, _) => return result,
+                }
             }
         }
-        let body = conn.buf[body_start..total].to_vec();
-        conn.buf.drain(..total);
-        let keep_alive = if connection.split(',').any(|c| c.trim() == "close") {
-            false
-        } else if connection.split(',').any(|c| c.trim() == "keep-alive") {
-            true
-        } else {
-            version != "HTTP/1.0"
-        };
-        ReadReq::Request(
-            (
-                method,
-                target,
-                found,
-                String::from_utf8_lossy(&body).into_owned(),
-            ),
-            keep_alive,
-        )
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Stream for Patient {
+        fn tcp(&self) -> &TcpStream {
+            &self.tcp
+        }
+        fn close(&mut self) {
+            let _ = self.tcp.shutdown(std::net::Shutdown::Both);
+        }
+        fn impatient(&mut self) {
+            self.wait = None;
+        }
+    }
+
+    impl Stream for rustls::StreamOwned<rustls::ServerConnection, Patient> {
+        fn tcp(&self) -> &TcpStream {
+            &self.sock.tcp
+        }
+        fn close(&mut self) {
+            self.conn.send_close_notify();
+            let _ = self.conn.write_tls(&mut self.sock);
+            self.sock.close();
+        }
+        fn impatient(&mut self) {
+            self.sock.impatient();
+        }
+    }
+
+    fn lock<T: ?Sized>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn send_all(stream: &SharedStream, bytes: &[u8], timeout: Duration) -> std::io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        let mut sent = 0;
+        loop {
+            let (result, fd) = {
+                let mut stream = lock(stream);
+                let result = if sent < bytes.len() {
+                    stream.write(&bytes[sent..]).map(Some)
+                } else {
+                    stream.flush().map(|_| None)
+                };
+                (result, stream.tcp().as_raw_fd())
+            };
+            match result {
+                Ok(Some(0)) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(Some(wrote)) => sent += wrote,
+                Ok(None) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() || !crate::poll::writable(fd, left) {
+                        return Err(std::io::ErrorKind::TimedOut.into());
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn read_into(stream: &SharedStream, buf: &mut Vec<u8>, cap: usize) -> bool {
+        let mut scratch = [0u8; 16 * 1024];
+        while buf.len() < cap {
+            match lock(stream).read(&mut scratch) {
+                Ok(0) => return false,
+                Ok(read) => {
+                    buf.extend_from_slice(&scratch[..read]);
+                    if read < scratch.len() {
+                        return true;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
+        }
+        true
+    }
+
+    struct Conn {
+        stream: SharedStream,
+        fd: RawFd,
+        buf: Vec<u8>,
+        served: usize,
+        since: Instant,
+        started: Option<Instant>,
+    }
+
+    impl Conn {
+        fn reject(self) {
+            let mut stream = lock(&self.stream);
+            let _ = stream.write_all(BAD_REQUEST);
+            let _ = stream.flush();
+            stream.close();
+        }
     }
 
     pub fn accept(args: &[Value]) -> Result<Value, String> {
@@ -649,9 +637,7 @@ mod server {
                 }
                 None => {
                     let mut stream = stream;
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                    );
+                    let _ = stream.write_all(BAD_REQUEST);
                 }
             }
         };
@@ -810,10 +796,7 @@ mod server {
             }
             Err(error) => {
                 eprintln!("{}", crate::task::render(&error));
-                let _ = stream
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .shutdown(std::net::Shutdown::Both);
+                lock(&stream).close();
             }
         }
     }
@@ -994,96 +977,39 @@ mod server {
         Some(code.to_be_bytes().to_vec())
     }
 
+    const BUSY: Duration = Duration::from_millis(100);
+
     struct Socket {
         stream: SharedStream,
-        buf: Mutex<Vec<u8>>,
-        closed: std::sync::atomic::AtomicBool,
-        max: usize,
+        fd: RawFd,
+        writing: Mutex<()>,
+        closed: AtomicBool,
+        channel: Weak<Channel>,
         timeout: Duration,
     }
 
     impl Socket {
-        fn write(&self, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
-            let mut stream = self.stream.lock().unwrap_or_else(|p| p.into_inner());
-            stream.write_all(&frame_bytes(opcode, payload))?;
-            stream.flush()
-        }
-
-        fn close(&self, payload: &[u8]) {
-            if !self.closed.swap(true, Ordering::SeqCst) {
-                let _ = self.write(0x8, payload);
+        fn write(&self, opcode: u8, payload: &[u8], patient: bool) -> std::io::Result<()> {
+            let frame = frame_bytes(opcode, payload);
+            if patient {
+                let _turn = lock(&self.writing);
+                return send_all(&self.stream, &frame, self.timeout);
             }
-            let _ = self
-                .stream
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .shutdown(std::net::Shutdown::Both);
-        }
-
-        fn fill(&self, buf: &mut Vec<u8>, deadline: Instant) -> Result<(), Option<Vec<u8>>> {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(code(1001));
-            }
-            let mut stream = self.stream.lock().unwrap_or_else(|p| p.into_inner());
-            let _ = stream.set_read_timeout(Some(left));
-            let mut scratch = [0u8; 16 * 1024];
-            match stream.read(&mut scratch) {
-                Ok(0) => Err(None),
-                Ok(read) => {
-                    buf.extend_from_slice(&scratch[..read]);
-                    Ok(())
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    Err(code(1001))
-                }
-                Err(_) => Err(None),
+            match self.writing.try_lock() {
+                Ok(_turn) => send_all(&self.stream, &frame, BUSY),
+                Err(_) => Err(std::io::ErrorKind::WouldBlock.into()),
             }
         }
 
-        fn message(&self, buf: &mut Vec<u8>) -> Result<String, Option<Vec<u8>>> {
-            let mut partial: Option<(u8, Vec<u8>)> = None;
-            let mut deadline = Instant::now() + self.timeout;
-            loop {
-                let frame = match parse_frame(buf, self.max) {
-                    Err(error) => return Err(code(error)),
-                    Ok(None) => {
-                        self.fill(buf, deadline)?;
-                        continue;
-                    }
-                    Ok(Some((frame, used))) => {
-                        buf.drain(..used);
-                        deadline = Instant::now() + self.timeout;
-                        frame
-                    }
-                };
-                match frame.opcode {
-                    0x8 => return Err(Some(close_reply(&frame.payload).map_err(code)?)),
-                    0x9 => self.write(0xa, &frame.payload).map_err(|_| None)?,
-                    0xa => {}
-                    opcode => {
-                        let (kind, mut data) = match (opcode, partial.take()) {
-                            (0x0, Some(started)) => started,
-                            (0x1 | 0x2, None) => (opcode, Vec::new()),
-                            _ => return Err(code(1002)),
-                        };
-                        if data.len() + frame.payload.len() > self.max {
-                            return Err(code(1009));
-                        }
-                        data.extend_from_slice(&frame.payload);
-                        if !frame.fin {
-                            partial = Some((kind, data));
-                            continue;
-                        }
-                        return String::from_utf8(data)
-                            .map_err(|_| code(if kind == 0x1 { 1007 } else { 1003 }));
-                    }
-                }
+        fn shut(&self, farewell: Option<&[u8]>, patient: bool) {
+            if !self.closed.swap(true, Ordering::SeqCst)
+                && let Some(payload) = farewell
+            {
+                let _ = self.write(0x8, payload, patient);
+            }
+            lock(&self.stream).close();
+            if let Some(channel) = self.channel.upgrade() {
+                crate::task::close(&channel);
             }
         }
     }
@@ -1096,46 +1022,95 @@ mod server {
                     value.type_name()
                 ));
             };
-            if self.closed.load(Ordering::SeqCst) || self.write(0x1, message.as_bytes()).is_err() {
+            if self.closed.load(Ordering::SeqCst)
+                || self.write(0x1, message.as_bytes(), true).is_err()
+            {
                 return Err("cannot send on a closed websocket".to_string());
             }
             Ok(())
         }
+    }
 
-        fn receive(&self) -> Value {
-            if self.closed.load(Ordering::SeqCst) {
-                return Value::None;
+    struct Reader {
+        buf: Vec<u8>,
+        partial: Option<(u8, Vec<u8>)>,
+        max: usize,
+        timeout: Duration,
+        since: Instant,
+        pinged: bool,
+    }
+
+    impl Reader {
+        fn new(buf: Vec<u8>, limits: &Limits) -> Reader {
+            Reader {
+                buf,
+                partial: None,
+                max: limits.max_body,
+                timeout: limits.idle_timeout.saturating_mul(12),
+                since: Instant::now(),
+                pinged: false,
             }
-            let mut buf = self.buf.lock().unwrap_or_else(|p| p.into_inner());
-            match self.message(&mut buf) {
-                Ok(message) => Value::str(&message),
-                Err(Some(payload)) => {
-                    self.close(&payload);
-                    Value::None
-                }
-                Err(None) => {
-                    self.closed.store(true, Ordering::SeqCst);
-                    self.close(&[]);
-                    Value::None
+        }
+
+        fn take(&mut self, socket: &Socket, channel: &Channel) -> Result<(), Option<Vec<u8>>> {
+            loop {
+                let (frame, used) = match parse_frame(&self.buf, self.max) {
+                    Err(error) => return Err(code(error)),
+                    Ok(None) => return Ok(()),
+                    Ok(Some(found)) => found,
+                };
+                self.buf.drain(..used);
+                match frame.opcode {
+                    0x8 => return Err(Some(close_reply(&frame.payload).map_err(code)?)),
+                    0x9 => socket.write(0xa, &frame.payload, false).map_err(|_| None)?,
+                    0xa => {}
+                    opcode => {
+                        let (kind, mut data) = match (opcode, self.partial.take()) {
+                            (0x0, Some(started)) => started,
+                            (0x1 | 0x2, None) => (opcode, Vec::new()),
+                            _ => return Err(code(1002)),
+                        };
+                        if data.len() + frame.payload.len() > self.max {
+                            return Err(code(1009));
+                        }
+                        data.extend_from_slice(&frame.payload);
+                        if !frame.fin {
+                            self.partial = Some((kind, data));
+                            continue;
+                        }
+                        let text = String::from_utf8(data)
+                            .map_err(|_| code(if kind == 0x1 { 1007 } else { 1003 }))?;
+                        crate::task::deliver(channel, text);
+                    }
                 }
             }
         }
     }
 
-    fn websocket(
-        stream: SharedStream,
-        vm: &mut Vm,
-        handler: Value,
-        key: &str,
-        leftover: Vec<u8>,
-        limits: Limits,
-    ) {
+    struct Open {
+        socket: Arc<Socket>,
+        channel: Arc<Channel>,
+        reader: Reader,
+    }
+
+    impl Open {
+        fn heard(mut self, hub: &Hub, open: bool) {
+            match self.reader.take(&self.socket, &self.channel) {
+                Err(farewell) => self.socket.shut(farewell.as_deref(), false),
+                Ok(()) if !open => self.socket.shut(None, false),
+                Ok(()) if self.socket.closed.load(Ordering::SeqCst) => {}
+                Ok(()) => hub.park(Entry::Socket(self)),
+            }
+        }
+    }
+
+    fn websocket(stream: SharedStream, fd: RawFd, handler: Value, upgrade: Upgrade, hub: &Hub) {
         let head = format!(
             "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
-            accept_key(key)
+            accept_key(&upgrade.key)
         );
         {
-            let mut out = stream.lock().unwrap_or_else(|p| p.into_inner());
+            let mut out = lock(&stream);
             if out
                 .write_all(head.as_bytes())
                 .and_then(|_| out.flush())
@@ -1143,29 +1118,43 @@ mod server {
             {
                 return;
             }
+            out.impatient();
         }
-        let socket = std::sync::Arc::new(Socket {
-            stream,
-            buf: Mutex::new(leftover),
-            closed: std::sync::atomic::AtomicBool::new(false),
-            max: limits.max_body,
-            timeout: limits.idle_timeout.saturating_mul(12),
+        let mut made = None;
+        let channel = crate::task::endpoint(|channel| {
+            let socket = Arc::new(Socket {
+                stream,
+                fd,
+                writing: Mutex::new(()),
+                closed: AtomicBool::new(false),
+                channel,
+                timeout: hub.limits.request_timeout,
+            });
+            made = Some(Arc::clone(&socket));
+            socket
         });
-        let value = crate::task::endpoint(socket.clone());
-        let status: u16 = match vm.call(handler, vec![value]) {
-            Ok(_) => 1000,
-            Err(error) => {
-                eprintln!("{}", crate::task::render(&error));
-                1011
-            }
+        let Some(socket) = made else { return };
+        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        let open = Open {
+            socket: Arc::clone(&socket),
+            channel: Arc::clone(&channel),
+            reader: Reader::new(upgrade.leftover, &hub.limits),
         };
-        socket.close(&status.to_be_bytes());
+        open.heard(hub, true);
+        crate::task::spawn_with(
+            &[handler, Value::Channel(channel)],
+            Box::new(move |ok| {
+                let status: u16 = if ok { 1000 } else { 1011 };
+                socket.shut(Some(&status.to_be_bytes()), true);
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            }),
+        );
     }
 
     const WORKER_STACK: usize = 16 * 1024 * 1024;
-    const WORKERS_PER_CORE: usize = 8;
-    const MIN_WORKERS: usize = 16;
-    const MAX_WORKERS: usize = 128;
+    const WORKERS_PER_CORE: usize = 2;
+    const MIN_WORKERS: usize = 4;
+    const MAX_WORKERS: usize = 64;
     const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
     static SHUTDOWN_ARC: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
@@ -1307,23 +1296,24 @@ mod server {
     struct Upgrade {
         key: String,
         leftover: Vec<u8>,
-        limits: Limits,
     }
 
     fn answer(
         vm: &mut Vm,
         handler: &Value,
         request: Value,
-        stream: SharedStream,
+        conn: &Conn,
         keep_alive: bool,
         upgrade: Option<Upgrade>,
+        hub: &Hub,
     ) {
+        let stream = Arc::clone(&conn.stream);
         let returned = match vm.call(handler.clone(), vec![request]) {
             Ok(value) => value,
             Err(error) => {
                 eprintln!("{}", crate::task::render(&error));
                 write_response(
-                    stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
+                    lock(&stream).as_mut(),
                     500,
                     INTERNAL_ERROR,
                     &Value::record(Vec::new()),
@@ -1335,17 +1325,10 @@ mod server {
         };
         if let Some(socket_handler) = marker(&returned, "khipu_websocket") {
             match upgrade {
-                Some(upgrade) => websocket(
-                    stream,
-                    vm,
-                    socket_handler,
-                    &upgrade.key,
-                    upgrade.leftover,
-                    upgrade.limits,
-                ),
+                Some(upgrade) => websocket(stream, conn.fd, socket_handler, upgrade, hub),
                 None => {
                     let _ = write_response(
-                        stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
+                        lock(&stream).as_mut(),
                         426,
                         "this address only speaks websockets",
                         &Value::record(vec![(Rc::from("sec-websocket-version"), Value::str("13"))]),
@@ -1367,7 +1350,7 @@ mod server {
             }
         };
         if write_response(
-            stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
+            lock(&stream).as_mut(),
             status,
             &response_body,
             &response_headers,
@@ -1376,7 +1359,7 @@ mod server {
         .is_err()
         {
             let _ = write_response(
-                stream.lock().unwrap_or_else(|p| p.into_inner()).as_mut(),
+                lock(&stream).as_mut(),
                 500,
                 INTERNAL_ERROR,
                 &Value::record(Vec::new()),
@@ -1385,66 +1368,79 @@ mod server {
         }
     }
 
-    fn serve_connection(
-        stream: Box<dyn Stream>,
+    const NEXT_REQUEST: Duration = Duration::from_millis(1);
+
+    struct Job {
+        conn: Conn,
+        incoming: Incoming,
+        keep_alive: bool,
+    }
+
+    fn handle(
+        job: Job,
         vm: &mut Vm,
         handler: &Value,
         request_def: Option<&Rc<StructDef>>,
-        limits: Limits,
+        hub: &Hub,
     ) {
-        let mut conn = Conn {
-            stream: std::sync::Arc::new(std::sync::Mutex::new(stream)),
-            buf: Vec::new(),
-        };
-        let mut served = 0usize;
-        ACTIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let Job {
+            mut conn,
+            mut incoming,
+            mut keep_alive,
+        } = job;
+        let limits = hub.limits;
+        ACTIVE.fetch_add(1, Ordering::SeqCst);
         loop {
-            match read_request_conn(&mut conn, limits, served == 0) {
-                ReadReq::Closed => break,
-                ReadReq::Bad => {
-                    let _ = conn.stream.lock().unwrap_or_else(|p| p.into_inner()).write_all(
-                        b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                    );
+            let (method, target, found, body) = incoming;
+            let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
+                key,
+                leftover: std::mem::take(&mut conn.buf),
+            });
+            let request = build_request(request_def, &method, &target, found, &body);
+            let more = keep_alive
+                && upgrade.is_none()
+                && conn.served + 1 < limits.max_requests
+                && !is_shutdown();
+            answer(vm, handler, request, &conn, more, upgrade, hub);
+            conn.served += 1;
+            if !more {
+                break;
+            }
+            if conn.buf.is_empty()
+                && hub.queued.load(Ordering::SeqCst) == 0
+                && crate::poll::readable(conn.fd, NEXT_REQUEST)
+            {
+                let cap = limits.max_request_head + limits.max_body + 4;
+                read_into(&conn.stream, &mut conn.buf, cap);
+            }
+            match parse_request(&conn.buf, &limits) {
+                Parsed::Request(next, alive, used) => {
+                    conn.buf.drain(..used);
+                    incoming = next;
+                    keep_alive = alive;
+                }
+                Parsed::Bad => {
+                    conn.reject();
                     break;
                 }
-                ReadReq::Request((method, target, found, body), keep_alive) => {
-                    let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
-                        key,
-                        leftover: std::mem::take(&mut conn.buf),
-                        limits,
-                    });
-                    let request = build_request(request_def, &method, &target, found, &body);
-                    let more = keep_alive && upgrade.is_none() && served + 1 < limits.max_requests;
-                    answer(
-                        vm,
-                        handler,
-                        request,
-                        std::sync::Arc::clone(&conn.stream),
-                        more,
-                        upgrade,
-                    );
-                    served += 1;
-                    if !more {
-                        break;
-                    }
+                Parsed::Incomplete => {
+                    conn.since = Instant::now();
+                    conn.started = (!conn.buf.is_empty()).then_some(conn.since);
+                    hub.park(Entry::Http(conn));
+                    break;
                 }
             }
         }
-        ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 
-    fn http_worker(
-        packed: crate::task::Graph,
-        receiver: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Box<dyn Stream>>>>,
-        dir: std::path::PathBuf,
-        limits: Limits,
-    ) {
+    fn http_worker(packed: crate::task::Graph, jobs: Arc<Mutex<Receiver<Job>>>, hub: Arc<Hub>) {
         let handler = crate::task::unpack(packed).remove(0);
         let handler_globals = match &handler {
             Value::Function(closure) => Some(Rc::clone(&closure.globals)),
             _ => None,
         };
-        let mut vm = Vm::task(&dir);
+        let mut vm = Vm::task(&crate::task::program_dir());
         vm.preemptive = false;
         if let Some(globals) = &handler_globals {
             vm.globals = Rc::clone(globals);
@@ -1453,12 +1449,229 @@ mod server {
             .as_ref()
             .and_then(|g| struct_def(g, "Request"));
         loop {
-            let stream = receiver
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .recv();
-            let Ok(stream) = stream else { break };
-            serve_connection(stream, &mut vm, &handler, request_def.as_ref(), limits);
+            let job = lock(&jobs).recv();
+            let Ok(job) = job else { break };
+            hub.queued.fetch_sub(1, Ordering::SeqCst);
+            handle(job, &mut vm, &handler, request_def.as_ref(), &hub);
+        }
+    }
+
+    enum Entry {
+        Http(Conn),
+        Socket(Open),
+    }
+
+    impl Entry {
+        fn fd(&self) -> RawFd {
+            match self {
+                Entry::Http(conn) => conn.fd,
+                Entry::Socket(open) => open.socket.fd,
+            }
+        }
+
+        fn expired(&self, now: Instant, limits: &Limits) -> bool {
+            match self {
+                Entry::Http(conn) => match conn.started {
+                    None if conn.served == 0 => now > conn.since + limits.read_timeout,
+                    None => now > conn.since + limits.idle_timeout,
+                    Some(started) => {
+                        now > started + limits.request_timeout
+                            || now > conn.since + limits.read_timeout
+                    }
+                },
+                Entry::Socket(open) => now > open.reader.since + open.reader.timeout,
+            }
+        }
+    }
+
+    struct Hub {
+        poller: crate::poll::Poller,
+        entries: Mutex<HashMap<u64, Entry>>,
+        next: AtomicU64,
+        queued: std::sync::atomic::AtomicUsize,
+        limits: Limits,
+    }
+
+    const LISTENER: u64 = 0;
+    const TICK: Duration = Duration::from_millis(50);
+
+    impl Hub {
+        fn new(limits: Limits) -> Result<Hub, String> {
+            Ok(Hub {
+                poller: crate::poll::Poller::new()
+                    .map_err(|error| format!("cannot start the event loop: {error}"))?,
+                entries: Mutex::new(HashMap::new()),
+                next: AtomicU64::new(LISTENER + 1),
+                queued: std::sync::atomic::AtomicUsize::new(0),
+                limits,
+            })
+        }
+
+        fn park(&self, entry: Entry) {
+            let token = self.next.fetch_add(1, Ordering::Relaxed);
+            let fd = entry.fd();
+            lock(&self.entries).insert(token, entry);
+            if self.poller.arm(fd, token).is_err() {
+                lock(&self.entries).remove(&token);
+            }
+        }
+
+        fn readable(&self, entry: Entry, jobs: &SyncSender<Job>) {
+            let now = Instant::now();
+            match entry {
+                Entry::Http(mut conn) => {
+                    let cap = self.limits.max_request_head + self.limits.max_body + 4;
+                    let before = conn.buf.len();
+                    let open = read_into(&conn.stream, &mut conn.buf, cap);
+                    if conn.buf.len() > before {
+                        conn.since = now;
+                        conn.started.get_or_insert(now);
+                    }
+                    match parse_request(&conn.buf, &self.limits) {
+                        Parsed::Request(incoming, keep_alive, used) => {
+                            conn.buf.drain(..used);
+                            conn.started = None;
+                            self.queued.fetch_add(1, Ordering::SeqCst);
+                            let _ = jobs.send(Job {
+                                conn,
+                                incoming,
+                                keep_alive,
+                            });
+                        }
+                        Parsed::Bad => conn.reject(),
+                        Parsed::Incomplete if open => self.park(Entry::Http(conn)),
+                        Parsed::Incomplete if conn.buf.is_empty() => {}
+                        Parsed::Incomplete => conn.reject(),
+                    }
+                }
+                Entry::Socket(mut open) => {
+                    let before = open.reader.buf.len();
+                    let cap = open.reader.max + 14;
+                    let alive = read_into(&open.socket.stream, &mut open.reader.buf, cap);
+                    if open.reader.buf.len() > before {
+                        open.reader.since = now;
+                        open.reader.pinged = false;
+                    }
+                    open.heard(self, alive);
+                }
+            }
+        }
+
+        fn sweep(&self) {
+            let now = Instant::now();
+            let expired: Vec<Entry> = {
+                let mut entries = lock(&self.entries);
+                let tokens: Vec<u64> = entries
+                    .iter()
+                    .filter(|(_, entry)| entry.expired(now, &self.limits))
+                    .map(|(token, _)| *token)
+                    .collect();
+                tokens
+                    .iter()
+                    .filter_map(|token| entries.remove(token))
+                    .collect()
+            };
+            for entry in expired {
+                match entry {
+                    Entry::Http(conn) if conn.buf.is_empty() => {}
+                    Entry::Http(conn) => conn.reject(),
+                    Entry::Socket(open) if open.reader.pinged => {
+                        open.socket.shut(Some(&1001u16.to_be_bytes()), false)
+                    }
+                    Entry::Socket(mut open) => {
+                        if open.socket.write(0x9, b"", false).is_err() {
+                            open.socket.shut(None, false);
+                            continue;
+                        }
+                        open.reader.pinged = true;
+                        open.reader.since = now;
+                        self.park(Entry::Socket(open));
+                    }
+                }
+            }
+        }
+
+        fn accept(&self, listener: &TcpListener, tls: Option<&Arc<rustls::ServerConfig>>) {
+            loop {
+                let tcp = match listener.accept() {
+                    Ok((tcp, _)) => tcp,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                    Err(error) => {
+                        eprintln!("could not accept a connection: {error}");
+                        std::thread::sleep(Duration::from_millis(1));
+                        return;
+                    }
+                };
+                if is_shutdown() || tcp.set_nonblocking(true).is_err() {
+                    continue;
+                }
+                let fd = tcp.as_raw_fd();
+                let tcp = Patient {
+                    tcp,
+                    wait: Some(self.limits.request_timeout),
+                };
+                let stream: Box<dyn Stream> = match tls {
+                    Some(config) => match rustls::ServerConnection::new(Arc::clone(config)) {
+                        Ok(conn) => Box::new(rustls::StreamOwned::new(conn, tcp)),
+                        Err(error) => {
+                            eprintln!("TLS handshake setup failed: {error}");
+                            continue;
+                        }
+                    },
+                    None => Box::new(tcp),
+                };
+                self.park(Entry::Http(Conn {
+                    stream: Arc::new(Mutex::new(stream)),
+                    fd,
+                    buf: Vec::new(),
+                    served: 0,
+                    since: Instant::now(),
+                    started: None,
+                }));
+            }
+        }
+
+        fn run(
+            &self,
+            listener: &TcpListener,
+            jobs: &SyncSender<Job>,
+            tls: Option<&Arc<rustls::ServerConfig>>,
+            flag: &AtomicBool,
+        ) {
+            let listening = listener.as_raw_fd();
+            let _ = self.poller.arm(listening, LISTENER);
+            let mut tokens = Vec::new();
+            let mut swept = Instant::now();
+            while !flag.load(Ordering::SeqCst) {
+                tokens.clear();
+                if self.poller.wait(&mut tokens, TICK).is_err() {
+                    std::thread::sleep(TICK);
+                }
+                for &token in &tokens {
+                    if token == LISTENER {
+                        self.accept(listener, tls);
+                        let _ = self.poller.arm(listening, LISTENER);
+                        continue;
+                    }
+                    let entry = lock(&self.entries).remove(&token);
+                    if let Some(entry) = entry {
+                        self.readable(entry, jobs);
+                    }
+                }
+                if swept.elapsed() >= TICK {
+                    self.sweep();
+                    swept = Instant::now();
+                }
+            }
+            let left: Vec<Entry> = lock(&self.entries)
+                .drain()
+                .map(|(_, entry)| entry)
+                .collect();
+            for entry in left {
+                if let Entry::Socket(open) = entry {
+                    open.socket.shut(Some(&1001u16.to_be_bytes()), false);
+                }
+            }
         }
     }
 
@@ -1539,63 +1752,35 @@ mod server {
         listener: TcpListener,
         handler: Value,
         limits: Limits,
-        tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+        tls: Option<Arc<rustls::ServerConfig>>,
         port: u16,
         scheme: &str,
     ) -> Result<Value, String> {
-        let _ = listener.set_nonblocking(true);
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("cannot listen on port {port}: {error}"))?;
+        let hub = Arc::new(Hub::new(limits)?);
         let flag = shutdown_flag();
         let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, flag.clone());
         let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, flag.clone());
         println!("listening on {scheme}://localhost:{port}");
-        let dir = crate::task::program_dir();
         let workers = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .saturating_mul(WORKERS_PER_CORE)
             .clamp(MIN_WORKERS, MAX_WORKERS);
-        let bound = workers.saturating_mul(2).max(1);
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<dyn Stream>>(bound);
-        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Job>(workers.saturating_mul(2));
+        let receiver = Arc::new(Mutex::new(receiver));
         for _ in 0..workers {
             let packed = crate::task::pack(std::slice::from_ref(&handler));
-            let receiver = std::sync::Arc::clone(&receiver);
-            let dir = dir.clone();
+            let receiver = Arc::clone(&receiver);
+            let hub = Arc::clone(&hub);
             std::thread::Builder::new()
                 .name("khipu-http".to_string())
                 .stack_size(WORKER_STACK)
-                .spawn(move || http_worker(packed, receiver, dir, limits))
+                .spawn(move || http_worker(packed, receiver, hub))
                 .expect("could not start a request worker");
         }
-        loop {
-            if flag.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
-            }
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    let _ = stream.set_nonblocking(false);
-                    if flag.load(std::sync::atomic::Ordering::SeqCst) {
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
-                    } else if let Some(config) = &tls {
-                        match rustls::ServerConnection::new(std::sync::Arc::clone(config)) {
-                            Ok(conn) => {
-                                let _ =
-                                    sender.send(Box::new(rustls::StreamOwned::new(conn, stream)));
-                            }
-                            Err(error) => eprintln!("TLS handshake setup failed: {error}"),
-                        }
-                    } else {
-                        let _ = sender.send(Box::new(stream));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => {
-                    eprintln!("could not accept a connection: {error}");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
-        }
+        hub.run(&listener, &sender, tls.as_ref(), &flag);
         drop(sender);
         drain(DRAIN_TIMEOUT);
         Ok(Value::None)
@@ -1607,6 +1792,7 @@ mod server {
         use std::net::{Shutdown, TcpListener, TcpStream};
         use std::rc::Rc;
 
+        use std::os::fd::AsRawFd;
         use std::sync::atomic::AtomicBool;
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
@@ -1614,8 +1800,9 @@ mod server {
         use super::Incoming;
         use super::read_request;
         use super::{
-            CONNECTIONS, Frame, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS, MAX_REQUEST_HEAD, Socket,
-            Stream, accept_key, frame_bytes, parse_frame, respond, store, upgrade_key,
+            CONNECTIONS, Entry, Frame, Hub, Limits, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS,
+            MAX_REQUEST_HEAD, Open, Patient, Reader, Socket, Stream, accept_key, frame_bytes,
+            parse_frame, respond, store, upgrade_key,
         };
         use crate::task::Endpoint;
         use crate::value::Value;
@@ -1999,20 +2186,43 @@ mod server {
             assert_eq!(parse_frame(&text_frame(&[0; 11]), 10), Err(1009));
         }
 
-        fn socket(frames: &[u8], max: usize, timeout: Duration) -> (Arc<Socket>, TcpStream) {
-            let (mut client, server) = pair();
-            client.write_all(frames).unwrap();
+        fn socket(frames: &[u8], max: usize) -> (Open, TcpStream) {
+            let (client, server) = pair();
             client
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let socket = Arc::new(Socket {
-                stream: Arc::new(Mutex::new(Box::new(server) as Box<dyn Stream>)),
-                buf: Mutex::new(Vec::new()),
-                closed: AtomicBool::new(false),
-                max,
-                timeout,
+            server.set_nonblocking(true).unwrap();
+            let fd = server.as_raw_fd();
+            let limits = Limits {
+                max_body: max,
+                ..Limits::default()
+            };
+            let mut made = None;
+            let channel = crate::task::endpoint(|channel| {
+                let socket = Arc::new(Socket {
+                    stream: Arc::new(Mutex::new(Box::new(Patient {
+                        tcp: server,
+                        wait: None,
+                    }) as Box<dyn Stream>)),
+                    fd,
+                    writing: Mutex::new(()),
+                    closed: AtomicBool::new(false),
+                    channel,
+                    timeout: Duration::from_secs(5),
+                });
+                made = Some(Arc::clone(&socket));
+                socket
             });
-            (socket, client)
+            let open = Open {
+                socket: made.unwrap(),
+                channel,
+                reader: Reader::new(frames.to_vec(), &limits),
+            };
+            (open, client)
+        }
+
+        fn receive(open: &Open) -> Value {
+            crate::task::receive(&[Value::Channel(Arc::clone(&open.channel))]).unwrap()
         }
 
         fn server_frame(client: &mut TcpStream) -> (u8, Vec<u8>) {
@@ -2025,13 +2235,15 @@ mod server {
         }
 
         fn closes_with(frames: &[u8], max: usize, code: u16) {
-            let (socket, mut client) = socket(frames, max, Duration::from_secs(5));
-            assert!(matches!(socket.receive(), Value::None));
+            let (mut open, mut client) = socket(frames, max);
+            let farewell = open.reader.take(&open.socket, &open.channel).unwrap_err();
+            open.socket.shut(farewell.as_deref(), false);
+            assert!(matches!(receive(&open), Value::None));
             assert_eq!(
                 server_frame(&mut client),
                 (0x88, code.to_be_bytes().to_vec())
             );
-            assert!(matches!(socket.receive(), Value::None));
+            assert!(matches!(receive(&open), Value::None));
         }
 
         fn received(value: Value) -> String {
@@ -2049,11 +2261,12 @@ mod server {
             frames.extend(masked(0x00, b"lo, "));
             frames.extend(masked(0x80, b"world"));
             frames.extend(masked(0x82, b"binary text"));
-            let (socket, mut client) = socket(&frames, MAX_BODY, Duration::from_secs(5));
-            assert_eq!(received(socket.receive()), "Hello, world");
+            let (mut open, mut client) = socket(&frames, MAX_BODY);
+            open.reader.take(&open.socket, &open.channel).unwrap();
+            assert_eq!(received(receive(&open)), "Hello, world");
             assert_eq!(server_frame(&mut client), (0x8a, b"are you there".to_vec()));
-            assert_eq!(received(socket.receive()), "binary text");
-            socket.send(&Value::str("back")).unwrap();
+            assert_eq!(received(receive(&open)), "binary text");
+            open.socket.send(&Value::str("back")).unwrap();
             assert_eq!(server_frame(&mut client), (0x81, b"back".to_vec()));
         }
 
@@ -2083,53 +2296,71 @@ mod server {
         fn a_close_from_the_peer_is_echoed_and_receive_returns_none() {
             let mut frames = text_frame(b"last");
             frames.extend(masked(0x88, &[0x03, 0xe8, b'b', b'y', b'e']));
-            let (socket, mut client) = socket(&frames, MAX_BODY, Duration::from_secs(5));
-            assert_eq!(received(socket.receive()), "last");
-            assert!(matches!(socket.receive(), Value::None));
+            let (mut open, mut client) = socket(&frames, MAX_BODY);
+            let farewell = open.reader.take(&open.socket, &open.channel).unwrap_err();
+            assert_eq!(farewell, Some(vec![0x03, 0xe8]));
+            open.socket.shut(farewell.as_deref(), false);
+            assert_eq!(received(receive(&open)), "last");
+            assert!(matches!(receive(&open), Value::None));
             assert_eq!(server_frame(&mut client), (0x88, vec![0x03, 0xe8]));
             let mut rest = Vec::new();
             client.read_to_end(&mut rest).unwrap();
             assert!(rest.is_empty());
             assert_eq!(
-                socket.send(&Value::str("late")).unwrap_err(),
+                open.socket.send(&Value::str("late")).unwrap_err(),
                 "cannot send on a closed websocket"
             );
             assert_eq!(
-                socket.send(&Value::Number(1.0)).unwrap_err(),
+                open.socket.send(&Value::Number(1.0)).unwrap_err(),
                 "a websocket can only send a string, got number"
             );
         }
 
         #[test]
-        fn a_silent_peer_is_closed_with_1001_once_the_timeout_passes() {
-            let (socket, mut client) = socket(&[], MAX_BODY, Duration::from_millis(100));
-            let start = std::time::Instant::now();
-            assert!(matches!(socket.receive(), Value::None));
-            assert!(start.elapsed() >= Duration::from_millis(100));
+        fn a_silent_peer_is_pinged_then_closed_with_1001() {
+            let hub = Hub::new(Limits::default()).unwrap();
+            let (mut open, mut client) = socket(&[], MAX_BODY);
+            open.reader.timeout = Duration::from_millis(100);
+            let channel = Arc::clone(&open.channel);
+            hub.park(Entry::Socket(open));
+            std::thread::sleep(Duration::from_millis(150));
+            hub.sweep();
+            assert_eq!(server_frame(&mut client), (0x89, Vec::new()));
+            std::thread::sleep(Duration::from_millis(150));
+            hub.sweep();
             assert_eq!(
                 server_frame(&mut client),
                 (0x88, 1001u16.to_be_bytes().to_vec())
             );
+            assert!(matches!(
+                crate::task::receive(&[Value::Channel(channel)]).unwrap(),
+                Value::None
+            ));
         }
 
         #[test]
-        fn a_frame_trickling_in_still_times_out() {
-            let (socket, mut client) = socket(&[0x81, 0x85], MAX_BODY, Duration::from_millis(200));
-            let writer = {
-                let mut client = client.try_clone().unwrap();
-                std::thread::spawn(move || {
-                    for byte in [0x37, 0xfa, 0x21, 0x3d, 0x7f] {
-                        std::thread::sleep(Duration::from_millis(80));
-                        let _ = client.write_all(&[byte]);
-                    }
-                })
+        fn a_peer_that_answers_the_ping_stays_open() {
+            let hub = Hub::new(Limits::default()).unwrap();
+            let (sender, _jobs) = std::sync::mpsc::sync_channel(1);
+            let (mut open, mut client) = socket(&[], MAX_BODY);
+            open.reader.timeout = Duration::from_millis(100);
+            hub.park(Entry::Socket(open));
+            std::thread::sleep(Duration::from_millis(150));
+            hub.sweep();
+            assert_eq!(server_frame(&mut client), (0x89, Vec::new()));
+            client.write_all(&masked(0x8a, b"")).unwrap();
+            client.write_all(&text_frame(b"awake")).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            let entry = super::lock(&hub.entries).drain().next().unwrap().1;
+            hub.readable(entry, &sender);
+            std::thread::sleep(Duration::from_millis(60));
+            hub.sweep();
+            let Some(Entry::Socket(open)) = super::lock(&hub.entries).drain().next().map(|e| e.1)
+            else {
+                panic!("the socket was closed");
             };
-            assert!(matches!(socket.receive(), Value::None));
-            assert_eq!(
-                server_frame(&mut client),
-                (0x88, 1001u16.to_be_bytes().to_vec())
-            );
-            let _ = writer.join();
+            assert!(!open.reader.pinged);
+            assert_eq!(received(receive(&open)), "awake");
         }
     }
 }

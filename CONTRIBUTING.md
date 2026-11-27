@@ -29,7 +29,7 @@ Each commit then syncs the roadmap progress and runs `cargo fmt --check`, `cargo
 KHIPU_FUZZ=100000 cargo test --release --test fuzz -- --ignored
 ```
 
-Every user-facing error message has a test that checks its wording and the line it points at. `unsafe` appears in three places, each with a comment saying why it holds: turning the pointer to a function the JIT just compiled into a callable with the signature we declared (`src/jit.rs`), calling it (`src/native.rs`), and, in the browser build only, calling the two functions the page provides (`src/native.rs`). The `#[unsafe(no_mangle)]` attributes in `src/wasm.rs` name the exports the browser calls. The JIT and WebAssembly tests compare every compiled function with the interpreter, and the playground build exercises the exports.
+Every user-facing error message has a test that checks its wording and the line it points at. `unsafe` appears in four places, each with a comment saying why it holds: turning the pointer to a function the JIT just compiled into a callable with the signature we declared (`src/jit.rs`), calling it (`src/native.rs`), in the browser build only, calling the two functions the page provides (`src/native.rs`), and the system calls of the HTTP server's event loop, `kqueue` or `epoll` and `poll` (`src/poll.rs`). The `#[unsafe(no_mangle)]` attributes in `src/wasm.rs` name the exports the browser calls. The JIT and WebAssembly tests compare every compiled function with the interpreter, and the playground build exercises the exports.
 
 ## Code
 

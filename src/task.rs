@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use crate::compiler::{Capture, Code, PatternTest, Proto, StructInfo};
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,26 +21,57 @@ pub struct Channel {
 
 pub trait Endpoint: Send + Sync {
     fn send(&self, value: &Value) -> Result<(), String>;
-    fn receive(&self) -> Value;
 }
 
-pub fn endpoint(port: Arc<dyn Endpoint>) -> Value {
-    Value::Channel(Arc::new(Channel {
+pub fn endpoint(make: impl FnOnce(Weak<Channel>) -> Arc<dyn Endpoint>) -> Arc<Channel> {
+    Arc::new_cyclic(|channel| Channel {
         state: Mutex::default(),
-        port: Some(port),
-    }))
+        port: Some(make(channel.clone())),
+    })
+}
+
+pub fn deliver(channel: &Channel, text: String) {
+    push(
+        channel,
+        Graph {
+            nodes: Vec::new(),
+            roots: vec![Slot::Str(text)],
+        },
+    );
+}
+
+pub fn close(channel: &Channel) {
+    let mut world = world();
+    let woken: Vec<Waiter> = {
+        let mut state = lock(&channel.state);
+        state.closed = true;
+        state.waiters.drain(..).collect()
+    };
+    for waiter in woken {
+        if waiter.armed.swap(false, Ordering::AcqRel) {
+            if waiter.counted {
+                world.blocked -= 1;
+            }
+            match waiter.worker {
+                Some(worker) => wake(worker, waiter.task),
+                None => WAKE.notify_all(),
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct ChannelState {
     queue: VecDeque<Graph>,
     waiters: VecDeque<Waiter>,
+    closed: bool,
 }
 
 struct Waiter {
     armed: Arc<AtomicBool>,
     worker: Option<usize>,
     task: u64,
+    counted: bool,
 }
 
 pub enum Slot {
@@ -577,11 +608,21 @@ fn take_or_wait(
     armed: &Arc<AtomicBool>,
     worker: Option<usize>,
     task: u64,
+    counted: bool,
 ) -> Option<(usize, Graph)> {
     for (index, channel) in channels.iter().enumerate() {
         let mut state = lock(&channel.state);
         if let Some(value) = state.queue.pop_front() {
             return Some((index, value));
+        }
+        if state.closed {
+            return Some((
+                index,
+                Graph {
+                    nodes: Vec::new(),
+                    roots: vec![Slot::None],
+                },
+            ));
         }
         state
             .waiters
@@ -590,6 +631,7 @@ fn take_or_wait(
             armed: Arc::clone(armed),
             worker,
             task,
+            counted,
         });
     }
     None
@@ -600,18 +642,20 @@ fn received(index: usize, graph: Graph) -> (usize, Value) {
 }
 
 pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
+    let counted = channels.iter().all(|channel| channel.port.is_none());
+    let count = usize::from(counted);
     if let Some((worker, task)) = CURRENT.get() {
         let armed = Arc::new(AtomicBool::new(true));
         let mut world = world();
-        world.blocked += 1;
-        if let Some((index, value)) = take_or_wait(channels, &armed, Some(worker), task) {
+        world.blocked += count;
+        if let Some((index, value)) = take_or_wait(channels, &armed, Some(worker), task, counted) {
             if armed.swap(false, Ordering::AcqRel) {
-                world.blocked -= 1;
+                world.blocked -= count;
             }
             drop(world);
             return Ok(received(index, value));
         }
-        if world.blocked >= world.live {
+        if counted && world.blocked >= world.live {
             WAKE.notify_all();
         }
         return Err(BLOCKED.to_string());
@@ -621,15 +665,15 @@ pub fn wait_for(channels: &[Arc<Channel>]) -> Result<(usize, Value), String> {
         world.next += 1;
         let me = world.next;
         let armed = Arc::new(AtomicBool::new(true));
-        world.blocked += 1;
-        if let Some((index, value)) = take_or_wait(channels, &armed, None, me) {
+        world.blocked += count;
+        if let Some((index, value)) = take_or_wait(channels, &armed, None, me, counted) {
             if armed.swap(false, Ordering::AcqRel) {
-                world.blocked -= 1;
+                world.blocked -= count;
             }
             drop(world);
             return Ok(received(index, value));
         }
-        while armed.load(Ordering::Acquire) && world.blocked < world.live {
+        while armed.load(Ordering::Acquire) && (!counted || world.blocked < world.live) {
             world = WAKE
                 .wait(world)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -666,7 +710,11 @@ pub fn send(args: &[Value]) -> Result<Value, String> {
             _ => Err(format!("send expects 2 arguments, got {}", args.len())),
         };
     };
-    let packed = pack(std::slice::from_ref(value));
+    push(channel, pack(std::slice::from_ref(value)));
+    Ok(Value::None)
+}
+
+fn push(channel: &Channel, packed: Graph) {
     let mut world = world();
     let woken = {
         let mut state = lock(&channel.state);
@@ -680,14 +728,15 @@ pub fn send(args: &[Value]) -> Result<Value, String> {
         }
     };
     if let Some(waiter) = woken {
-        world.blocked -= 1;
+        if waiter.counted {
+            world.blocked -= 1;
+        }
         drop(world);
         match waiter.worker {
             Some(worker) => wake(worker, waiter.task),
             None => WAKE.notify_all(),
         }
     }
-    Ok(Value::None)
 }
 
 pub fn select(args: &[Value]) -> Result<Value, String> {
@@ -713,11 +762,6 @@ pub fn select(args: &[Value]) -> Result<Value, String> {
 }
 
 pub fn receive(args: &[Value]) -> Result<Value, String> {
-    if let [Value::Channel(channel)] = args
-        && let Some(port) = &channel.port
-    {
-        return Ok(port.receive());
-    }
     match args {
         [Value::Channel(channel)] => wait_for(std::slice::from_ref(channel)).map(|(_, v)| v),
         [other] => Err(format!(
@@ -729,10 +773,14 @@ pub fn receive(args: &[Value]) -> Result<Value, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub type Done = Box<dyn FnOnce(bool) + Send>;
+
+#[cfg(not(target_arch = "wasm32"))]
 struct Job {
     task: u64,
     values: Graph,
     dir: PathBuf,
+    done: Option<Done>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -801,13 +849,18 @@ pub fn spawn(args: &[Value]) -> Result<Value, String> {
             function.type_name()
         ));
     }
-    let values = pack(args);
-    let dir = match PROGRAM.get() {
-        Some((path, _)) => std::path::Path::new(path)
-            .parent()
-            .map_or_else(|| PathBuf::from("."), PathBuf::from),
-        None => PathBuf::from("."),
-    };
+    enqueue(pack(args), None);
+    Ok(Value::None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn spawn_with(values: &[Value], done: Done) {
+    enqueue(pack(values), Some(done));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn enqueue(values: Graph, done: Option<Done>) {
+    let dir = program_dir();
     let task = {
         let mut world = world();
         world.live += 1;
@@ -817,26 +870,49 @@ pub fn spawn(args: &[Value]) -> Result<Value, String> {
     let workers = workers();
     let idle = {
         let mut pool = lock(&POOL);
-        pool.jobs.push_back(Job { task, values, dir });
+        pool.jobs.push_back(Job {
+            task,
+            values,
+            dir,
+            done,
+        });
         pool.idle.pop()
     };
     if let Some(index) = idle {
         lock(&workers[index].inbox).poked = true;
         workers[index].signal.notify_one();
     }
-    Ok(Value::None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn start(job: Job, tasks: &mut HashMap<u64, crate::vm::Vm>, ready: &mut VecDeque<u64>) {
+type Running = HashMap<u64, (crate::vm::Vm, Option<Done>)>;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn start(job: Job, tasks: &mut Running, ready: &mut VecDeque<u64>) {
     let mut values = unpack(job.values);
     let function = values.remove(0);
     let mut vm = crate::vm::Vm::task(&job.dir);
     if let Err(error) = vm.prepare(function, values) {
-        report(error);
+        finish(Err(error), job.done);
+        return;
     }
-    tasks.insert(job.task, vm);
+    tasks.insert(job.task, (vm, job.done));
     ready.push_back(job.task);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn finish(result: Result<(), Error>, done: Option<Done>) {
+    match (result, done) {
+        (Err(error), None) => report(error),
+        (Err(error), Some(done)) => {
+            eprintln!("{}", render(&error));
+            done(false);
+        }
+        (Ok(()), Some(done)) => done(true),
+        (Ok(()), None) => {}
+    }
+    world().live -= 1;
+    WAKE.notify_all();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -844,7 +920,7 @@ fn run_worker(index: usize) {
     use std::collections::HashSet;
 
     let me = &workers()[index];
-    let mut tasks: HashMap<u64, crate::vm::Vm> = HashMap::new();
+    let mut tasks: Running = HashMap::new();
     let mut parked: HashSet<u64> = HashSet::new();
     let mut ready: VecDeque<u64> = VecDeque::new();
     loop {
@@ -879,23 +955,22 @@ fn run_worker(index: usize) {
         let Some(task) = ready.pop_front() else {
             continue;
         };
-        let Some(vm) = tasks.get_mut(&task) else {
+        let Some((vm, _)) = tasks.get_mut(&task) else {
             continue;
         };
         CURRENT.set(Some((index, task)));
         let result = vm.resume();
         CURRENT.set(None);
         match result {
-            Ok(_) => {
-                tasks.remove(&task);
-                world().live -= 1;
-                WAKE.notify_all();
-            }
             Err(error) if error.message == BLOCKED => {
                 parked.insert(task);
             }
             Err(error) if error.message == YIELDED => ready.push_back(task),
-            Err(error) => report(error),
+            result => {
+                if let Some((_, done)) = tasks.remove(&task) {
+                    finish(result.map(drop), done);
+                }
+            }
         }
     }
 }

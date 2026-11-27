@@ -1,8 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
+	"os"
 )
 
 func main() {
@@ -19,5 +21,5 @@ func main() {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write([]byte("hello khipu\n"))
 	})
-	http.ListenAndServe("127.0.0.1:8080", mux)
+	http.ListenAndServe("127.0.0.1:"+cmp.Or(os.Getenv("PORT"), "8080"), mux)
 }

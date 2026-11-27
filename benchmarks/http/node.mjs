@@ -17,4 +17,4 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(8080, "127.0.0.1");
+server.listen(Number(process.env.PORT ?? 8080), "127.0.0.1");

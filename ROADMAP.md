@@ -13,7 +13,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 6. Concurrency | `██████████` 5 / 5 |
 | 7. Ecosystem | `██████████` 6 / 6 |
 | 8. Performance and final audit | `█████████░` 17 / 18 |
-| 9. HTTP without limits | `██████░░░░` 13 / 21 |
+| 9. HTTP without limits | `███████░░░` 14 / 21 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
@@ -154,12 +154,12 @@ Throughput
 Robustness
 - [x] Limits on by default: header size, body size, request count per connection, and a slow-client timeout, each changeable from the program
 - [x] Backpressure: when every worker is busy, new connections wait in the kernel's queue instead of in memory, and the server never grows without bound
-  (the pool is threads that block on reads, 8 per core between 16 and 128; that many idle connections hold every worker until the idle timeout, 5 s by default; non-blocking IO is the real fix, see AUDIT.md)
+  (connections and sockets wait in the event loop; when every handler worker is busy and the queue of parsed requests, twice the workers, is full, the loop stops reading and accepting until one frees, and new connections wait in the kernel's backlog)
 - [x] A handler that throws answers 500 and the server keeps running; the error is printed with its line like any other
 - [x] Graceful shutdown: in-flight requests finish, new ones are refused, `Process.exit` waits for both
 - [x] HTTPS serving with a certificate and key from files, using the TLS the client already has
 - [x] Fuzzed: malformed requests, truncated bodies, invalid UTF-8 in headers and a client that sends one byte a second never crash or hang the server
-- [ ] Non-blocking IO: connections and open sockets wait in one event loop (`kqueue` on macOS, `epoll` on Linux) and only a request that is being handled holds a worker, so ten thousand idle connections cost memory, not workers, and the starvation limit above goes away
+- [x] Non-blocking IO: connections and open sockets wait in one event loop (`kqueue` on macOS, `epoll` on Linux) and only a request that is being handled holds a worker, so ten thousand idle connections cost memory, not workers, and the starvation limit above goes away
 - [ ] A native kernel that fails after writing to a list raises the error from the recorded site instead of rerunning the function in the interpreter, so a handler that survives the error never sees the write applied twice
 
 Interface
