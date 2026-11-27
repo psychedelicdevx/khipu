@@ -204,6 +204,23 @@ Http.serve(8080, handle)
 
 A socket waiting for a message costs memory, not a thread, so a server can hold thousands of them.
 
+A client may ask for one of several subprotocols, and the program says which it speaks: `request.protocol(["chat.v2", "chat.v1"])` gives the first of the program's list that the client offered, or `none`, and `Response.websocket_with(chat, { protocol: chosen })` answers with it. When the client offers `permessage-deflate`, as browsers do, the server accepts it and compresses messages of 64 bytes or more; nothing in the program changes:
+
+```js
+fn chat(socket: channel, protocol: string) {
+    send(socket, "speaking ${protocol}")
+}
+
+fn handle(request: Request) -> Response {
+    let protocol = request.protocol(["chat.v2", "chat.v1"]) ?? "chat.v1"
+    return Response.websocket_with(fn(socket: channel) {
+        chat(socket, protocol)
+    }, { protocol: protocol })
+}
+
+Http.serve(8080, handle)
+```
+
 ## Exercises
 
 1. Print a random whole number from 1 to 100.

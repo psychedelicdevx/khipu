@@ -1189,6 +1189,155 @@ ws.onclose = (event) => {
         assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 200 OK"));
     }
 
+    const PROTOCOL_SERVER: &str = "fn echo(socket: channel) {\n    let message = receive(socket)\n    while message != none {\n        send(socket, \"echo: \" + message)\n        message = receive(socket)\n    }\n}\nfn handle(request: Request) -> Response {\n    if request.path == \"/wrong\" {\n        return Response.websocket_with(echo, { protocol: \"never.offered\" })\n    }\n    let protocol = request.protocol([\"chat.v2\", \"chat.v1\"])\n    return Response.websocket_with(echo, { protocol: protocol })\n}";
+
+    fn upgrade_with(port: u32, path: &str, extra: &str) -> (std::net::TcpStream, String) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(format!("localhost:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{extra}\r\n"
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+            head.push(byte[0]);
+        }
+        (stream, String::from_utf8_lossy(&head).into_owned())
+    }
+
+    fn raw_deflate(data: &[u8]) -> Vec<u8> {
+        let mut compress = flate2::Compress::new(flate2::Compression::default(), false);
+        let mut out = Vec::with_capacity(data.len() + 64);
+        compress
+            .compress_vec(data, &mut out, flate2::FlushCompress::Sync)
+            .unwrap();
+        out.truncate(out.len() - 4);
+        out
+    }
+
+    fn raw_inflate(data: &[u8]) -> Vec<u8> {
+        let mut input = data.to_vec();
+        input.extend_from_slice(&[0, 0, 0xff, 0xff]);
+        let mut out = Vec::with_capacity(100_000);
+        flate2::Decompress::new(false)
+            .decompress_vec(&input, &mut out, flate2::FlushDecompress::Sync)
+            .unwrap();
+        out
+    }
+
+    fn masked_frame(first: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![first];
+        match payload.len() {
+            len @ 0..=125 => out.push(0x80 | len as u8),
+            len => {
+                out.push(0x80 | 126);
+                out.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn subprotocols_are_chosen_from_the_program_list_and_messages_are_compressed() {
+        use std::io::{Read, Write};
+        let port = 20000 + std::process::id() % 20000 + 27;
+        start_server(port, PROTOCOL_SERVER);
+        let (mut socket, head) = upgrade_with(
+            port,
+            "/",
+            "Sec-WebSocket-Protocol: chat.v1, chat.v2\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n",
+        );
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        assert!(
+            head.contains("sec-websocket-protocol: chat.v2\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains("sec-websocket-extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n"),
+            "{head}"
+        );
+        socket
+            .write_all(&masked_frame(
+                0xc1,
+                &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00],
+            ))
+            .unwrap();
+        let mut short = [0u8; 13];
+        socket.read_exact(&mut short).unwrap();
+        assert_eq!(&short, b"\x81\x0becho: Hello");
+        let long = "a".repeat(5000);
+        socket
+            .write_all(&masked_frame(0xc1, &raw_deflate(long.as_bytes())))
+            .unwrap();
+        let mut top = [0u8; 2];
+        socket.read_exact(&mut top).unwrap();
+        assert_eq!(top[0], 0xc1, "a long reply is compressed");
+        let len = usize::from(top[1] & 0x7f);
+        assert!(len < 126, "{len}");
+        let mut body = vec![0u8; len];
+        socket.read_exact(&mut body).unwrap();
+        assert_eq!(raw_inflate(&body), format!("echo: {long}").into_bytes());
+
+        let (_, plain) = upgrade_with(port, "/", "");
+        assert!(plain.starts_with("HTTP/1.1 101"), "{plain}");
+        assert!(!plain.contains("sec-websocket-protocol"), "{plain}");
+        assert!(!plain.contains("sec-websocket-extensions"), "{plain}");
+
+        let (_, wrong) = upgrade_with(port, "/wrong", "Sec-WebSocket-Protocol: chat.v1\r\n");
+        assert!(wrong.starts_with("HTTP/1.1 500"), "{wrong}");
+    }
+
+    const PROTOCOL_CLIENT: &str = r#"
+const port = process.argv[1];
+const ws = new WebSocket(`ws://127.0.0.1:${port}/`, ["chat.v1", "chat.v2"]);
+const long = "b".repeat(70000);
+const fail = (why) => { console.log(why); process.exit(1); };
+setTimeout(() => fail("TIMEOUT"), 10000);
+ws.onerror = () => fail("ERROR");
+ws.onopen = () => {
+  if (ws.protocol !== "chat.v2") fail("PROTOCOL " + ws.protocol);
+  ws.send(long);
+};
+ws.onmessage = (event) => {
+  if (event.data !== "echo: " + long) fail("WRONG");
+  console.log("OK " + ws.extensions);
+  process.exit(0);
+};
+"#;
+
+    #[test]
+    fn node_gets_the_chosen_protocol_and_long_messages_back() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("node is not installed, skipping the WebSocket check");
+            return;
+        }
+        let port = 20000 + std::process::id() % 20000 + 28;
+        start_server(port, PROTOCOL_SERVER);
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(PROTOCOL_CLIENT)
+            .arg(port.to_string())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.starts_with("OK"),
+            "{stdout} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("permessage-deflate"), "{stdout}");
+    }
+
     #[test]
     fn https_serving_with_a_checked_in_self_signed_cert() {
         let port = 20000 + std::process::id() % 20000 + 17;

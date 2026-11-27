@@ -444,6 +444,10 @@ struct Response {
         return { khipu_websocket: handler }
     }
 
+    fn websocket_with(handler: any, options: record) -> any {
+        return { khipu_websocket: handler, khipu_options: options }
+    }
+
     fn error(status: number, message: string) -> Response {
         return Response { status: status, body: message, headers: { "content-type": "text/plain; charset=utf-8" } }
     }
@@ -464,6 +468,16 @@ struct Request {
 
     fn is_websocket(self) -> bool {
         return websocket_request#(self.method, self.headers)
+    }
+
+    fn protocol(self, supported: list<string>) -> string? {
+        let offered = websocket_protocols#(self.headers)
+        for name in supported {
+            if offered.contains(name) {
+                return name
+            }
+        }
+        return none
     }
 }
 

@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 
 use crate::value::{Fields, Native, Value};
 
-pub static NATIVES: [Native; 10] = [
+pub static NATIVES: [Native; 11] = [
     Native {
         name: "serve#",
         function: serve,
@@ -36,6 +36,10 @@ pub static NATIVES: [Native; 10] = [
     Native {
         name: "websocket_request#",
         function: websocket_request,
+    },
+    Native {
+        name: "websocket_protocols#",
+        function: websocket_protocols,
     },
     Native {
         name: "json_parse#",
@@ -164,11 +168,13 @@ use unavailable as emit_chunk;
 use unavailable as serve_tls;
 #[cfg(target_arch = "wasm32")]
 use unavailable as websocket_request;
+#[cfg(target_arch = "wasm32")]
+use unavailable as websocket_protocols;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::{
     accept, active_count, begin_shutdown, drain, emit_chunk, fetch, is_shutdown, listen,
-    reset_shutdown, respond, serve, serve_tls, websocket_request,
+    reset_shutdown, respond, serve, serve_tls, websocket_protocols, websocket_request,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -891,6 +897,23 @@ mod server {
         upgrade.then(|| key.to_string())
     }
 
+    fn offered(found: &[(String, String)], name: &str) -> Vec<String> {
+        found
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+            .flat_map(|(_, value)| value.split(','))
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .collect()
+    }
+
+    pub fn websocket_protocols(args: &[Value]) -> Result<Value, String> {
+        let names = offered(&headers(&args[0]), "sec-websocket-protocol");
+        Ok(Value::list(
+            names.iter().map(|name| Value::str(name)).collect(),
+        ))
+    }
+
     pub fn websocket_request(args: &[Value]) -> Result<Value, String> {
         let method = text(&args[0], "Request.is_websocket")?;
         Ok(Value::Bool(
@@ -910,16 +933,21 @@ mod server {
     struct Frame {
         fin: bool,
         opcode: u8,
+        compressed: bool,
         payload: Vec<u8>,
     }
 
-    fn parse_frame(buf: &[u8], max: usize) -> Result<Option<(Frame, usize)>, u16> {
+    fn parse_frame(buf: &[u8], max: usize, deflate: bool) -> Result<Option<(Frame, usize)>, u16> {
         let [first, second, ..] = *buf else {
             return Ok(None);
         };
         let fin = first & 0x80 != 0;
         let opcode = first & 0x0f;
-        if first & 0x70 != 0 || !matches!(opcode, 0x0..=0x2 | 0x8..=0xa) || second & 0x80 == 0 {
+        let compressed = deflate && first & 0x70 == 0x40 && matches!(opcode, 0x1 | 0x2);
+        if (first & 0x70 != 0 && !compressed)
+            || !matches!(opcode, 0x0..=0x2 | 0x8..=0xa)
+            || second & 0x80 == 0
+        {
             return Err(1002);
         }
         let (len, start) = match second & 0x7f {
@@ -959,6 +987,7 @@ mod server {
             Frame {
                 fin,
                 opcode,
+                compressed,
                 payload,
             },
             start + 4 + len,
@@ -980,6 +1009,71 @@ mod server {
         }
         out.extend_from_slice(payload);
         out
+    }
+
+    const DEFLATE_TAIL: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
+    const COMPRESS_FROM: usize = 64;
+    const DEFLATE_ANSWER: &str =
+        "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+
+    fn offers_deflate(extensions: &str) -> bool {
+        extensions.split(',').any(|offer| {
+            let mut params = offer.split(';').map(str::trim);
+            params.next() == Some("permessage-deflate")
+                && params.all(|param| {
+                    let name = param.split('=').next().unwrap_or("").trim();
+                    matches!(
+                        name,
+                        "client_max_window_bits"
+                            | "server_no_context_takeover"
+                            | "client_no_context_takeover"
+                    )
+                })
+        })
+    }
+
+    fn deflate(data: &[u8]) -> Vec<u8> {
+        let mut compress = flate2::Compress::new(flate2::Compression::fast(), false);
+        let mut out = Vec::with_capacity(data.len() / 2 + 64);
+        loop {
+            let read = compress.total_in() as usize;
+            let _ = compress.compress_vec(&data[read..], &mut out, flate2::FlushCompress::Sync);
+            if compress.total_in() as usize == data.len() && out.len() < out.capacity() {
+                break;
+            }
+            out.reserve(out.capacity().max(64));
+        }
+        if out.ends_with(&DEFLATE_TAIL) {
+            out.truncate(out.len() - DEFLATE_TAIL.len());
+        }
+        out
+    }
+
+    fn inflate(data: &[u8], max: usize) -> Result<Vec<u8>, u16> {
+        let mut input = data.to_vec();
+        input.extend_from_slice(&DEFLATE_TAIL);
+        let mut decompress = flate2::Decompress::new(false);
+        let mut out = Vec::with_capacity((data.len() * 4).clamp(64, max + 1));
+        loop {
+            let read = decompress.total_in() as usize;
+            let wrote = decompress.total_out();
+            let status = decompress
+                .decompress_vec(&input[read..], &mut out, flate2::FlushDecompress::Sync)
+                .map_err(|_| 1007u16)?;
+            if out.len() > max {
+                return Err(1009);
+            }
+            let done = decompress.total_in() as usize == input.len();
+            if status == flate2::Status::StreamEnd || (done && out.len() < out.capacity()) {
+                return Ok(out);
+            }
+            if out.len() < out.capacity() && decompress.total_out() == wrote && !done {
+                return Err(1007);
+            }
+            if out.len() == out.capacity() {
+                out.reserve(out.capacity().min(max + 1 - out.len()).max(1));
+            }
+        }
     }
 
     fn close_reply(payload: &[u8]) -> Result<Vec<u8>, u16> {
@@ -1013,6 +1107,7 @@ mod server {
         closed: AtomicBool,
         channel: Weak<Channel>,
         timeout: Duration,
+        deflate: bool,
     }
 
     impl Socket {
@@ -1053,7 +1148,12 @@ mod server {
                     ));
                 }
             };
-            if self.closed.load(Ordering::SeqCst) || self.write(opcode, message, true).is_err() {
+            let sent = if self.deflate && message.len() >= COMPRESS_FROM {
+                self.write(opcode | 0x40, &deflate(message), true)
+            } else {
+                self.write(opcode, message, true)
+            };
+            if self.closed.load(Ordering::SeqCst) || sent.is_err() {
                 return Err("cannot send on a closed websocket".to_string());
             }
             Ok(())
@@ -1068,7 +1168,8 @@ mod server {
 
     struct Reader {
         buf: Vec<u8>,
-        partial: Option<(u8, Vec<u8>)>,
+        partial: Option<(u8, Vec<u8>, bool)>,
+        deflate: bool,
         max: usize,
         timeout: Duration,
         since: Instant,
@@ -1080,6 +1181,7 @@ mod server {
             Reader {
                 buf,
                 partial: None,
+                deflate: false,
                 max: limits.max_body,
                 timeout: limits.idle_timeout.saturating_mul(12),
                 since: Instant::now(),
@@ -1089,7 +1191,7 @@ mod server {
 
         fn take(&mut self, socket: &Socket, channel: &Channel) -> Result<(), Option<Vec<u8>>> {
             loop {
-                let (frame, used) = match parse_frame(&self.buf, self.max) {
+                let (frame, used) = match parse_frame(&self.buf, self.max, self.deflate) {
                     Err(error) => return Err(code(error)),
                     Ok(None) => return Ok(()),
                     Ok(Some(found)) => found,
@@ -1100,9 +1202,9 @@ mod server {
                     0x9 => socket.write(0xa, &frame.payload, false).map_err(|_| None)?,
                     0xa => {}
                     opcode => {
-                        let (kind, mut data) = match (opcode, self.partial.take()) {
-                            (0x0, Some(started)) => started,
-                            (0x1 | 0x2, None) => (opcode, Vec::new()),
+                        let (kind, mut data, compressed) = match (opcode, self.partial.take()) {
+                            (0x0, Some(started)) if !frame.compressed => started,
+                            (0x1 | 0x2, None) => (opcode, Vec::new(), frame.compressed),
                             _ => return Err(code(1002)),
                         };
                         if data.len() + frame.payload.len() > self.max {
@@ -1110,8 +1212,11 @@ mod server {
                         }
                         data.extend_from_slice(&frame.payload);
                         if !frame.fin {
-                            self.partial = Some((kind, data));
+                            self.partial = Some((kind, data, compressed));
                             continue;
+                        }
+                        if compressed {
+                            data = inflate(&data, self.max).map_err(code)?;
                         }
                         let message = if kind == 0x2 {
                             crate::task::Slot::Bytes(data)
@@ -1149,11 +1254,25 @@ mod server {
         }
     }
 
-    fn websocket(stream: SharedStream, fd: RawFd, handler: Value, upgrade: Upgrade, hub: &Hub) {
-        let head = format!(
-            "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+    fn websocket(
+        stream: SharedStream,
+        fd: RawFd,
+        handler: Value,
+        protocol: Option<String>,
+        upgrade: Upgrade,
+        hub: &Hub,
+    ) {
+        let mut head = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n",
             accept_key(&upgrade.key)
         );
+        if let Some(protocol) = &protocol {
+            head.push_str(&format!("sec-websocket-protocol: {protocol}\r\n"));
+        }
+        if upgrade.deflate {
+            head.push_str(&format!("sec-websocket-extensions: {DEFLATE_ANSWER}\r\n"));
+        }
+        head.push_str("\r\n");
         {
             let mut out = lock(&stream);
             if out
@@ -1175,18 +1294,20 @@ mod server {
                 closed: AtomicBool::new(false),
                 channel,
                 timeout: hub.limits.request_timeout,
+                deflate: upgrade.deflate,
             });
             made = Some(Arc::clone(&socket));
             socket
         });
         let Some(socket) = made else { return };
         ACTIVE.fetch_add(1, Ordering::SeqCst);
-        let open = Open {
+        let mut open = Open {
             socket: Arc::clone(&socket),
             channel: Arc::clone(&channel),
             reader: Reader::new(upgrade.leftover, &hub.limits),
             held: false,
         };
+        open.reader.deflate = upgrade.deflate;
         open.heard(hub, true);
         crate::task::spawn_with(
             &[handler, Value::Channel(channel)],
@@ -1344,6 +1465,8 @@ mod server {
     struct Upgrade {
         key: String,
         leftover: Vec<u8>,
+        protocols: Vec<String>,
+        deflate: bool,
     }
 
     fn answer(
@@ -1372,8 +1495,32 @@ mod server {
             }
         };
         if let Some(socket_handler) = marker(&returned, "khipu_websocket") {
+            let protocol = match marker(&returned, "khipu_options")
+                .as_ref()
+                .and_then(|o| marker(o, "protocol"))
+            {
+                Some(Value::Str(name)) => Some(name.to_string()),
+                _ => None,
+            };
             match upgrade {
-                Some(upgrade) => websocket(stream, conn.fd, socket_handler, upgrade, hub),
+                Some(upgrade)
+                    if protocol
+                        .as_ref()
+                        .is_some_and(|name| !upgrade.protocols.contains(name)) =>
+                {
+                    eprintln!(
+                        "in a request handler: the client did not offer the websocket protocol '{}'",
+                        protocol.unwrap_or_default()
+                    );
+                    let _ = write_response(
+                        lock(&stream).as_mut(),
+                        500,
+                        INTERNAL_ERROR.as_bytes(),
+                        &Value::record(Vec::new()),
+                        keep_alive,
+                    );
+                }
+                Some(upgrade) => websocket(stream, conn.fd, socket_handler, protocol, upgrade, hub),
                 None => {
                     let _ = write_response(
                         lock(&stream).as_mut(),
@@ -1448,6 +1595,8 @@ mod server {
             let upgrade = upgrade_key(&method, &found).map(|key| Upgrade {
                 key,
                 leftover: std::mem::take(&mut conn.buf),
+                protocols: offered(&found, "sec-websocket-protocol"),
+                deflate: offers_deflate(&offered(&found, "sec-websocket-extensions").join(",")),
             });
             let request = build_request(request_def, &method, &target, found, body);
             let more = keep_alive
@@ -1534,7 +1683,8 @@ mod server {
                     }
                 },
                 Entry::Socket(open) if open.held => {
-                    crate::task::pending(&open.channel) < SOCKET_QUEUE / 2
+                    open.socket.closed.load(Ordering::SeqCst)
+                        || crate::task::pending(&open.channel) < SOCKET_QUEUE / 2
                 }
                 Entry::Socket(open) => now > open.reader.since + open.reader.timeout,
             }
@@ -1639,6 +1789,7 @@ mod server {
                 match entry {
                     Entry::Http(conn) if conn.buf.is_empty() => {}
                     Entry::Http(conn) => conn.reject(),
+                    Entry::Socket(open) if open.socket.closed.load(Ordering::SeqCst) => {}
                     Entry::Socket(mut open) if open.held => {
                         open.held = false;
                         open.reader.since = now;
@@ -1880,8 +2031,8 @@ mod server {
         use super::read_request;
         use super::{
             CONNECTIONS, Entry, Frame, Hub, Limits, MAX_BODY, MAX_HEADER_LINE, MAX_HEADERS,
-            MAX_REQUEST_HEAD, Open, Patient, Reader, Socket, Stream, accept_key, frame_bytes,
-            parse_frame, respond, store, upgrade_key,
+            MAX_REQUEST_HEAD, Open, Patient, Reader, Socket, Stream, accept_key, deflate,
+            frame_bytes, inflate, offers_deflate, parse_frame, respond, store, upgrade_key,
         };
         use crate::task::Endpoint;
         use crate::value::Value;
@@ -2150,7 +2301,7 @@ mod server {
         }
 
         fn parsed(bytes: &[u8]) -> Frame {
-            let (frame, used) = parse_frame(bytes, MAX_BODY).unwrap().unwrap();
+            let (frame, used) = parse_frame(bytes, MAX_BODY, false).unwrap().unwrap();
             assert_eq!(used, bytes.len());
             frame
         }
@@ -2208,11 +2359,12 @@ mod server {
                 Frame {
                     fin: true,
                     opcode: 0x1,
+                    compressed: false,
                     payload: b"Hello".to_vec()
                 }
             );
             assert_eq!(
-                parse_frame(&[0x81, 0x05, b'H', b'e', b'l', b'l', b'o'], MAX_BODY),
+                parse_frame(&[0x81, 0x05, b'H', b'e', b'l', b'l', b'o'], MAX_BODY, false),
                 Err(1002)
             );
         }
@@ -2232,7 +2384,7 @@ mod server {
                 for cut in [0, 1, 2, 3, header - 1, header, bytes.len() - 1] {
                     if cut < bytes.len() {
                         assert_eq!(
-                            parse_frame(&bytes[..cut], MAX_BODY),
+                            parse_frame(&bytes[..cut], MAX_BODY, false),
                             Ok(None),
                             "{len} {cut}"
                         );
@@ -2253,16 +2405,19 @@ mod server {
 
         #[test]
         fn frames_the_parser_does_not_understand_are_refused_with_the_right_code() {
-            assert_eq!(parse_frame(&masked(0xc1, b"x"), MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&masked(0x91, b"x"), MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&masked(0x83, b"x"), MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&masked(0x8b, b"x"), MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&masked(0x09, b"x"), MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&masked(0x89, &[0; 126]), MAX_BODY), Err(1002));
+            assert_eq!(parse_frame(&masked(0xc1, b"x"), MAX_BODY, false), Err(1002));
+            assert_eq!(parse_frame(&masked(0x91, b"x"), MAX_BODY, false), Err(1002));
+            assert_eq!(parse_frame(&masked(0x83, b"x"), MAX_BODY, false), Err(1002));
+            assert_eq!(parse_frame(&masked(0x8b, b"x"), MAX_BODY, false), Err(1002));
+            assert_eq!(parse_frame(&masked(0x09, b"x"), MAX_BODY, false), Err(1002));
+            assert_eq!(
+                parse_frame(&masked(0x89, &[0; 126]), MAX_BODY, false),
+                Err(1002)
+            );
             let mut huge = vec![0x81, 0x80 | 127];
             huge.extend_from_slice(&(1u64 << 63).to_be_bytes());
-            assert_eq!(parse_frame(&huge, MAX_BODY), Err(1002));
-            assert_eq!(parse_frame(&text_frame(&[0; 11]), 10), Err(1009));
+            assert_eq!(parse_frame(&huge, MAX_BODY, false), Err(1002));
+            assert_eq!(parse_frame(&text_frame(&[0; 11]), 10, false), Err(1009));
         }
 
         fn socket(frames: &[u8], max: usize) -> (Open, TcpStream) {
@@ -2289,6 +2444,7 @@ mod server {
                     closed: AtomicBool::new(false),
                     channel,
                     timeout: Duration::from_secs(5),
+                    deflate: false,
                 });
                 made = Some(Arc::clone(&socket));
                 socket
@@ -2415,6 +2571,47 @@ mod server {
             hub.sweep();
             assert!(!held(&hub));
             assert_eq!(super::lock(&hub.entries).len(), 1);
+            let frames: Vec<u8> = (0..70).flat_map(|_| text_frame(b"m")).collect();
+            let (open, _other) = socket(&frames, MAX_BODY);
+            let socket = Arc::clone(&open.socket);
+            open.heard(&hub, true);
+            assert!(held(&hub));
+            socket.shut(None, false);
+            hub.sweep();
+            assert!(
+                !held(&hub),
+                "a held socket whose handler finished is let go"
+            );
+        }
+
+        #[test]
+        fn permessage_deflate_is_offered_read_and_bounded() {
+            assert!(offers_deflate("permessage-deflate; client_max_window_bits"));
+            assert!(offers_deflate(
+                "permessage-deflate; server_max_window_bits=10, permessage-deflate"
+            ));
+            assert!(!offers_deflate(
+                "permessage-deflate; server_max_window_bits=10"
+            ));
+            assert!(!offers_deflate("x-webkit-deflate-frame"));
+            let rfc = masked(0xc1, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]);
+            let (mut open, _client) = socket(&rfc, MAX_BODY);
+            open.reader.deflate = true;
+            open.reader.take(&open.socket, &open.channel).unwrap();
+            assert_eq!(received(receive(&open)), "Hello");
+            let long: Vec<u8> = (0..20_000u32).map(|n| (n % 251) as u8).collect();
+            assert_eq!(inflate(&deflate(&long), MAX_BODY), Ok(long));
+            assert_eq!(inflate(&deflate(&vec![0; 1_000_000]), 1000), Err(1009));
+            assert_eq!(inflate(&[0xff, 0xff, 0xff], MAX_BODY), Err(1007));
+            assert_eq!(parse_frame(&rfc, MAX_BODY, false), Err(1002));
+            let mut continued = masked(0x41, b"x");
+            continued.extend(masked(0xc0, b"y"));
+            let (mut open, _client) = socket(&continued, MAX_BODY);
+            open.reader.deflate = true;
+            assert_eq!(
+                open.reader.take(&open.socket, &open.channel),
+                Err(Some(1002u16.to_be_bytes().to_vec()))
+            );
         }
 
         #[test]
