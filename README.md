@@ -98,13 +98,13 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 | 9. HTTP without limits | `██████░░░░` 13 / 21 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
 
 ## Performance
 
-On sustained runs Khipu beats Python on 17 of 17 benchmarks and Node on 6 of 17, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 4.8 ms · Python 16 ms · Node 28 ms · C 2.7 ms · Rust 3.1 ms. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
+On sustained runs Khipu beats Python on 18 of 18 benchmarks and Node on 7 of 18, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.3 ms · Python 13 ms · Node 21 ms · C 2.1 ms · Rust 2.3 ms. The tables, spreads, memory use and the method are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Contributing, security, privacy
 

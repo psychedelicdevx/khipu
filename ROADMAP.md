@@ -16,7 +16,7 @@ The smart adapt to the world. The fool tries to change it. This is the fool's no
 | 9. HTTP without limits | `██████░░░░` 13 / 21 |
 | 10. Documentation | `██░░░░░░░░` 1 / 5 |
 
-**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
+**Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
 
 The bets that may never land are in the [Experimental](#experimental) section at the end. They are not counted above.
 
@@ -123,7 +123,7 @@ Speed
 - [x] Beat Python on every sustained benchmark
 - [x] Native compilation (Cranelift)
 - [x] Compile Khipu straight to WebAssembly instructions, not only bundle the interpreter
-- [ ] Competitive with Node on the benchmark suite (as of 2026-11-26: faster on 5 of 17, within 1.6× on 2 more, 3–8× slower on records, structs, strings and closures; see AUDIT.md)
+- [ ] Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see AUDIT.md)
 - [x] Start-up stays under 5 ms
 - [x] Work stealing, so a busy core hands tasks to idle ones
 - [x] Tasks also take turns inside deep recursion, not only in loops
