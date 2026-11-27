@@ -3153,16 +3153,19 @@ mod server {
             let (sender, _jobs) = std::sync::mpsc::sync_channel(1);
             let (mut open, mut client) = socket(&[], MAX_BODY);
             open.reader.timeout = Duration::from_millis(100);
+            let fd = open.socket.fd;
+            let channel = Arc::clone(&open.channel);
             hub.park(Entry::Socket(open));
             std::thread::sleep(Duration::from_millis(150));
             hub.sweep();
             assert_eq!(server_frame(&mut client), (0x89, Vec::new()));
             client.write_all(&masked(0x8a, b"")).unwrap();
             client.write_all(&text_frame(b"awake")).unwrap();
-            std::thread::sleep(Duration::from_millis(20));
-            let entry = super::lock(&hub.entries).drain().next().unwrap().1;
-            hub.readable(entry, &sender);
-            std::thread::sleep(Duration::from_millis(60));
+            while crate::task::pending(&channel) == 0 {
+                assert!(crate::poll::readable(fd, Duration::from_secs(5)));
+                let entry = super::lock(&hub.entries).drain().next().unwrap().1;
+                hub.readable(entry, &sender);
+            }
             hub.sweep();
             let Some(Entry::Socket(open)) = super::lock(&hub.entries).drain().next().map(|e| e.1)
             else {
