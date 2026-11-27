@@ -49,6 +49,12 @@
       "sustained": 3000000
     },
     {
+      "name": "list_index",
+      "path": "collections/list_index",
+      "cold": 300000,
+      "sustained": 3000000
+    },
+    {
       "name": "records",
       "path": "collections/records",
       "cold": 200000,

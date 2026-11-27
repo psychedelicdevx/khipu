@@ -7,11 +7,15 @@ class Point {
     }
 }
 
-const point = new Point(3, 4)
-let total = 0
-let i = 0
-while (i < N) {
-    total = total + point.x * point.y
-    i = i + 1
+function work(n) {
+    const point = new Point(3, 4)
+    let total = 0
+    let i = 0
+    while (i < n) {
+        total = total + point.x * point.y
+        i = i + 1
+    }
+    return total
 }
-console.log(total)
+
+console.log(work(N))

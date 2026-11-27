@@ -458,6 +458,23 @@ mod tests {
     }
 
     #[test]
+    fn hot_list_kernels_keep_the_interpreter_rules() {
+        let program = "fn bump(values: list<number>) -> number {\n    values[0] = values[0] + 1\n    return len(values)\n}\nlet xs = [1, 2, 3]\nlet total = 0\nfor n in range(100) {\n    total = total + bump(xs)\n}\n\"${total} ${xs}\"";
+        assert_eq!(string(program), "300 [101, 2, 3]");
+
+        let out_of_range = error(
+            "fn at(values: list<number>, index: number) -> number {\n    return values[index]\n}\nlet xs = [1, 2]\nlet seen = 0\nfor n in range(70) {\n    seen = seen + at(xs, n % 2)\n}\nat(xs, 5)",
+        );
+        assert_eq!(
+            (out_of_range.line, out_of_range.message.as_str()),
+            (2, "index 5 is out of range, the length is 2")
+        );
+
+        let shadowed = "fn len(values: list<number>) -> number {\n    return 7\n}\nfn count(values: list<number>) -> number {\n    return len(values)\n}\nlet xs = [1, 2, 3]\nlet total = 0\nfor n in range(70) {\n    total = total + count(xs)\n}\ntotal";
+        assert_eq!(number(shadowed), 490.0);
+    }
+
+    #[test]
     fn a_budget_stops_a_program_that_never_ends() {
         let program = Parser::new(lex("let i = 0\nwhile true {\n    i = i + 1\n}").unwrap())
             .parse_program()

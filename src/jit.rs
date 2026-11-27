@@ -1,5 +1,7 @@
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Value, types};
+use cranelift_codegen::ir::{
+    AbiParam, Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, Value, types,
+};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -16,7 +18,7 @@ pub struct Context {
     pub error: u32,
 }
 
-pub type Entry = unsafe extern "C" fn(*mut Context, *mut f64) -> f64;
+pub type Entry = unsafe extern "C" fn(*mut Context, *mut f64, *mut f64) -> f64;
 
 pub struct Compiled {
     pub entry: Entry,
@@ -27,10 +29,16 @@ extern "C" fn remainder(x: f64, y: f64) -> f64 {
     x % y
 }
 
+fn block_args(values: &[Value]) -> Vec<BlockArg> {
+    values.iter().copied().map(BlockArg::from).collect()
+}
+
 fn ty(kind: Kind) -> types::Type {
     match kind {
         Kind::Num => types::F64,
         Kind::Bool => types::I8,
+        Kind::Struct(_) => unreachable!("struct values are passed as their fields"),
+        Kind::List => types::I64,
     }
 }
 
@@ -40,12 +48,12 @@ fn signature(module: &JITModule, kernel: &Kernel) -> cranelift_codegen::ir::Sign
     if kernel.loop_vars > 0 {
         signature.params.push(AbiParam::new(types::I64));
     }
-    for kind in &kernel.signature.params {
-        signature.params.push(AbiParam::new(ty(*kind)));
+    for kind in kernel.flat_params() {
+        signature.params.push(AbiParam::new(ty(kind)));
     }
-    signature
-        .returns
-        .push(AbiParam::new(ty(kernel.signature.returns)));
+    for kind in kernel.flat_returns() {
+        signature.returns.push(AbiParam::new(ty(kind)));
+    }
     signature
 }
 
@@ -116,7 +124,7 @@ pub fn compile(kernels: &[Kernel]) -> Result<Vec<Compiled>, String> {
             let pointer = module.get_finalized_function(*id);
             // SAFETY: `e{index}` was declared and defined above with exactly the
             // signature `Entry` describes: (i64 context pointer, i64 argument
-            // pointer) -> f64. The module is leaked below, so the code stays
+            // pointer, i64 result pointer) -> f64. The module is leaked below, so the code stays
             // mapped for the rest of the program.
             let entry: Entry = unsafe { std::mem::transmute::<*const u8, Entry>(pointer) };
             Compiled {
@@ -150,6 +158,11 @@ fn define_entry(
     context
         .func
         .signature
+        .params
+        .push(AbiParam::new(types::I64));
+    context
+        .func
+        .signature
         .returns
         .push(AbiParam::new(types::F64));
     let callee = module.declare_func_in_func(target, &mut context.func);
@@ -158,13 +171,15 @@ fn define_entry(
     b.append_block_params_for_function_params(block);
     b.switch_to_block(block);
     b.seal_block(block);
-    let state = b.block_params(block)[0];
-    let pointer = b.block_params(block)[1];
+    let params = b.block_params(block).to_vec();
+    let state = params[0];
+    let pointer = params[1];
+    let out = params[2];
     let mut args = vec![state];
     if kernel.loop_vars > 0 {
         args.push(pointer);
     }
-    for (at, kind) in kernel.signature.params.iter().enumerate() {
+    for (at, kind) in kernel.flat_params().into_iter().enumerate() {
         let raw = b
             .ins()
             .load(types::F64, MemFlagsData::trusted(), pointer, 8 * at as i32);
@@ -174,18 +189,34 @@ fn define_entry(
                 let zero = b.ins().f64const(0.0);
                 b.ins().fcmp(FloatCC::NotEqual, raw, zero)
             }
+            Kind::Struct(_) => unreachable!("struct params are flattened"),
+            Kind::List => {
+                let mut flags = MemFlagsData::new();
+                flags.set_endianness(cranelift_codegen::ir::Endianness::Little);
+                b.ins().bitcast(types::I64, flags, raw)
+            }
         });
     }
     let call = b.ins().call(callee, &args);
-    let result = b.inst_results(call)[0];
-    let result = match kernel.signature.returns {
-        Kind::Num => result,
-        Kind::Bool => {
-            let wide = b.ins().uextend(types::I32, result);
-            b.ins().fcvt_from_uint(types::F64, wide)
+    let results = b.inst_results(call).to_vec();
+    let mut first = b.ins().f64const(0.0);
+    for (at, value) in results.iter().enumerate() {
+        let raw = match kernel.flat_returns()[at] {
+            Kind::Num => *value,
+            Kind::Bool => {
+                let wide = b.ins().uextend(types::I32, *value);
+                b.ins().fcvt_from_uint(types::F64, wide)
+            }
+            Kind::Struct(_) => unreachable!("struct returns are flattened"),
+            Kind::List => unreachable!("a list cannot be returned from a kernel"),
+        };
+        if at == 0 {
+            first = raw;
         }
-    };
-    b.ins().return_(&[result]);
+        b.ins()
+            .store(MemFlagsData::trusted(), raw, out, 8 * at as i32);
+    }
+    b.ins().return_(&[first]);
     b.finalize(module.target_config());
     module
         .define_function(id, &mut context)
@@ -230,7 +261,11 @@ fn define_kernel(
     let propagate = b.create_block();
     let exit = b.create_block();
     b.append_block_params_for_function_params(entry);
-    b.append_block_param(exit, ty(kernel.signature.returns));
+    let returns = kernel.flat_returns();
+    for kind in &returns {
+        b.append_block_param(propagate, ty(*kind));
+        b.append_block_param(exit, ty(*kind));
+    }
 
     b.switch_to_block(entry);
     b.seal_block(entry);
@@ -240,25 +275,48 @@ fn define_kernel(
     let mut locals = Vec::with_capacity(kernel.locals.len());
     for (at, kind) in kernel.locals.iter().enumerate() {
         let variable = b.declare_var(ty(*kind));
-        let initial = match (pointer, params.get(at + 1), kind) {
-            (Some(pointer), _, kind) if at < kernel.loop_vars => {
-                let raw = b
-                    .ins()
-                    .load(types::F64, MemFlagsData::trusted(), pointer, 8 * at as i32);
-                match kind {
-                    Kind::Num => raw,
-                    Kind::Bool => {
-                        let zero = b.ins().f64const(0.0);
-                        b.ins().fcmp(FloatCC::NotEqual, raw, zero)
-                    }
+        let initial = if let Some(pointer) = pointer
+            && at < kernel.loop_vars
+        {
+            let raw = b
+                .ins()
+                .load(types::F64, MemFlagsData::trusted(), pointer, 8 * at as i32);
+            match kind {
+                Kind::Num => raw,
+                Kind::Bool => {
+                    let zero = b.ins().f64const(0.0);
+                    b.ins().fcmp(FloatCC::NotEqual, raw, zero)
                 }
+                Kind::Struct(_) | Kind::List => unreachable!("loop variables are scalars"),
             }
-            (None, Some(value), _) => *value,
-            (_, _, Kind::Num) => b.ins().f64const(0.0),
-            (_, _, Kind::Bool) => b.ins().iconst(types::I8, 0),
+        } else {
+            match kind {
+                Kind::Num => b.ins().f64const(0.0),
+                Kind::Bool => b.ins().iconst(types::I8, 0),
+                Kind::Struct(_) => unreachable!("struct locals are split into fields"),
+                Kind::List => b.ins().iconst(types::I64, 0),
+            }
         };
         b.def_var(variable, initial);
         locals.push(variable);
+    }
+    let shift = 1 + usize::from(pointer.is_some());
+    let offsets = kernel.param_offsets();
+    for (logical, base) in kernel.param_bases.iter().enumerate() {
+        match kernel.signature.params[logical] {
+            Kind::Struct(index) => {
+                for (field, _) in kernel.layouts[index as usize].1.iter().enumerate() {
+                    let value = params[shift + offsets[logical] + field];
+                    b.def_var(locals[*base as usize + field], value);
+                }
+            }
+            Kind::List => {
+                let at = shift + offsets[logical];
+                b.def_var(locals[*base as usize], params[at]);
+                b.def_var(locals[*base as usize + 1], params[at + 1]);
+            }
+            _ => b.def_var(locals[*base as usize], params[shift + offsets[logical]]),
+        }
     }
     let depth = b.ins().load(types::I32, MemFlagsData::trusted(), state, 0);
     let deeper = b.ins().iadd_imm_s(depth, 1);
@@ -272,8 +330,8 @@ fn define_kernel(
     b.seal_block(overflow);
     let one = b.ins().iconst(types::I32, 1);
     b.ins().store(MemFlagsData::trusted(), one, state, 4);
-    let failed = failure_value(&mut b, kernel.signature.returns);
-    b.ins().jump(propagate, &[failed.into()]);
+    let failed = failure_values(&mut b, &returns);
+    b.ins().jump(propagate, &block_args(&failed));
 
     b.switch_to_block(body);
     b.seal_block(body);
@@ -290,23 +348,20 @@ fn define_kernel(
         remainder,
         terminated: false,
     };
-    lowering
-        .b
-        .append_block_param(propagate, ty(kernel.signature.returns));
     lowering.block(&kernel.body);
     if !lowering.terminated {
-        let failed = failure_value(&mut lowering.b, kernel.signature.returns);
-        lowering.b.ins().jump(exit, &[failed.into()]);
+        let failed = failure_values(&mut lowering.b, &returns);
+        lowering.b.ins().jump(exit, &block_args(&failed));
     }
 
     lowering.b.switch_to_block(propagate);
     lowering.b.seal_block(propagate);
-    let carried = lowering.b.block_params(propagate)[0];
-    lowering.b.ins().jump(exit, &[carried.into()]);
+    let carried = lowering.b.block_params(propagate).to_vec();
+    lowering.b.ins().jump(exit, &block_args(&carried));
 
     lowering.b.switch_to_block(exit);
     lowering.b.seal_block(exit);
-    let result = lowering.b.block_params(exit)[0];
+    let result = lowering.b.block_params(exit).to_vec();
     if let Some(pointer) = pointer {
         for at in 0..kernel.loop_vars {
             let value = lowering.b.use_var(lowering.locals[at]);
@@ -316,6 +371,7 @@ fn define_kernel(
                     let wide = lowering.b.ins().uextend(types::I32, value);
                     lowering.b.ins().fcvt_from_uint(types::F64, wide)
                 }
+                Kind::Struct(_) | Kind::List => unreachable!("loop variables are scalars"),
             };
             lowering
                 .b
@@ -332,7 +388,7 @@ fn define_kernel(
         .b
         .ins()
         .store(MemFlagsData::trusted(), shallower, state, 0);
-    lowering.b.ins().return_(&[result]);
+    lowering.b.ins().return_(&result);
     lowering.b.finalize(module.target_config());
 
     module
@@ -342,11 +398,16 @@ fn define_kernel(
     Ok(())
 }
 
-fn failure_value(b: &mut FunctionBuilder, kind: Kind) -> Value {
-    match kind {
-        Kind::Num => b.ins().f64const(f64::NAN),
-        Kind::Bool => b.ins().iconst(types::I8, 0),
-    }
+fn failure_values(b: &mut FunctionBuilder, kinds: &[Kind]) -> Vec<Value> {
+    kinds
+        .iter()
+        .map(|kind| match *kind {
+            Kind::Num => b.ins().f64const(f64::NAN),
+            Kind::Bool => b.ins().iconst(types::I8, 0),
+            Kind::Struct(_) => unreachable!("struct returns are flattened"),
+            Kind::List => unreachable!("a list cannot be returned from a kernel"),
+        })
+        .collect()
 }
 
 impl Lowering<'_, '_> {
@@ -359,33 +420,59 @@ impl Lowering<'_, '_> {
         }
     }
 
+    fn scalar(&mut self, expr: &Expr) -> Value {
+        self.expression(expr)
+            .into_iter()
+            .next()
+            .expect("a scalar expression")
+    }
+
+    fn assign(&mut self, slot: u32, expr: &Expr) {
+        let values = self.expression(expr);
+        if self.kernel.locals.get(slot as usize) == Some(&Kind::List) {
+            self.b.def_var(self.locals[slot as usize], values[0]);
+            self.b.def_var(self.locals[slot as usize + 1], values[1]);
+        } else if self.kernel.struct_fields(slot).is_some() {
+            for (at, value) in values.into_iter().enumerate() {
+                self.b.def_var(self.locals[slot as usize + at], value);
+            }
+        } else {
+            self.b.def_var(self.locals[slot as usize], values[0]);
+        }
+    }
+
     fn statement(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Set(slot, value) => {
-                let value = self.expression(value);
-                self.b.def_var(self.locals[*slot as usize], value);
-            }
+            Stmt::Set(slot, value) => self.assign(*slot, value),
             Stmt::MakeStruct(base, fields) => {
                 for (at, field) in fields.iter().enumerate() {
-                    let value = self.expression(field);
+                    let value = self.scalar(field);
                     self.b.def_var(self.locals[*base as usize + at], value);
                 }
             }
             Stmt::SetField(base, offset, value) => {
-                let value = self.expression(value);
+                let value = self.scalar(value);
                 self.b
                     .def_var(self.locals[*base as usize + *offset as usize], value);
+            }
+            Stmt::SetIndexList(base, index, value) => {
+                let index = self.scalar(index);
+                let value = self.scalar(value);
+                let address = self.list_address(*base, index);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), value, address, 0);
             }
             Stmt::Discard(value) => {
                 self.expression(value);
             }
             Stmt::Return(value) => {
-                let value = self.expression(value);
-                self.b.ins().jump(self.exit, &[value.into()]);
+                let values = self.expression(value);
+                self.b.ins().jump(self.exit, &block_args(&values));
                 self.terminated = true;
             }
             Stmt::If(condition, then, otherwise) => {
-                let condition = self.expression(condition);
+                let condition = self.scalar(condition);
                 let then_block = self.b.create_block();
                 let else_block = self.b.create_block();
                 let merge = self.b.create_block();
@@ -407,8 +494,8 @@ impl Lowering<'_, '_> {
                 self.b.seal_block(merge);
                 self.terminated = !merged;
                 if !merged {
-                    let failed = failure_value(&mut self.b, self.kernel.signature.returns);
-                    self.b.ins().jump(self.exit, &[failed.into()]);
+                    let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
+                    self.b.ins().jump(self.exit, &block_args(&failed));
                 }
             }
             Stmt::While(condition, body) => {
@@ -417,7 +504,7 @@ impl Lowering<'_, '_> {
                 let after = self.b.create_block();
                 self.b.ins().jump(header, &[]);
                 self.b.switch_to_block(header);
-                let condition = self.expression(condition);
+                let condition = self.scalar(condition);
                 self.b.ins().brif(condition, inner, &[], after, &[]);
                 self.b.switch_to_block(inner);
                 self.b.seal_block(inner);
@@ -454,8 +541,8 @@ impl Lowering<'_, '_> {
                 self.b
                     .ins()
                     .store(MemFlagsData::trusted(), one, self.state, 4);
-                let failed = failure_value(&mut self.b, self.kernel.signature.returns);
-                self.b.ins().jump(self.propagate, &[failed.into()]);
+                let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
+                self.b.ins().jump(self.propagate, &block_args(&failed));
                 self.b.switch_to_block(good);
                 self.b.seal_block(good);
             }
@@ -511,6 +598,34 @@ impl Lowering<'_, '_> {
         }
     }
 
+    fn list_address(&mut self, base: u32, index: Value) -> Value {
+        let len = self.b.use_var(self.locals[base as usize + 1]);
+        let zero = self.b.ins().f64const(0.0);
+        let truncated = self.b.ins().trunc(index);
+        let whole = self.b.ins().fcmp(FloatCC::Equal, index, truncated);
+        let nonnegative = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, index, zero);
+        let in_range = self.b.ins().fcmp(FloatCC::LessThan, index, len);
+        let both = self.b.ins().band(whole, nonnegative);
+        let fine = self.b.ins().band(both, in_range);
+        let bad = self.b.create_block();
+        let good = self.b.create_block();
+        self.b.ins().brif(fine, good, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        self.b.seal_block(bad);
+        let one = self.b.ins().iconst(types::I32, 1);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), one, self.state, 4);
+        let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
+        self.b.ins().jump(self.propagate, &block_args(&failed));
+        self.b.switch_to_block(good);
+        self.b.seal_block(good);
+        let whole = self.b.ins().fcvt_to_sint_sat(types::I64, index);
+        let bytes = self.b.ins().imul_imm_s(whole, 8);
+        let pointer = self.b.use_var(self.locals[base as usize]);
+        self.b.ins().iadd(pointer, bytes)
+    }
+
     fn remainder(&mut self, left: Value, right: Value) -> Value {
         let whole_left = self.b.ins().trunc(left);
         let whole_right = self.b.ins().trunc(right);
@@ -550,25 +665,49 @@ impl Lowering<'_, '_> {
         self.b.block_params(merge)[0]
     }
 
-    fn expression(&mut self, expr: &Expr) -> Value {
-        match expr {
+    fn expression(&mut self, expr: &Expr) -> Vec<Value> {
+        let value = match expr {
             Expr::Num(n) => self.b.ins().f64const(*n),
             Expr::Bool(flag) => self.b.ins().iconst(types::I8, i64::from(*flag)),
-            Expr::Local(slot) => self.b.use_var(self.locals[*slot as usize]),
+            Expr::Local(slot) => {
+                let pointer = self.b.use_var(self.locals[*slot as usize]);
+                if self.kernel.locals.get(*slot as usize) == Some(&Kind::List) {
+                    return vec![pointer, self.b.use_var(self.locals[*slot as usize + 1])];
+                }
+                pointer
+            }
+            Expr::Struct(base, _) => {
+                let fields = self
+                    .kernel
+                    .struct_fields(*base)
+                    .expect("struct base was validated above")
+                    .len();
+                return (0..fields)
+                    .map(|at| self.b.use_var(self.locals[*base as usize + at]))
+                    .collect();
+            }
             Expr::GetField(base, offset) => self
                 .b
                 .use_var(self.locals[*base as usize + *offset as usize]),
+            Expr::ListLen(base) => self.b.use_var(self.locals[*base as usize + 1]),
+            Expr::IndexList(base, index) => {
+                let index = self.scalar(index);
+                let address = self.list_address(*base, index);
+                self.b
+                    .ins()
+                    .load(types::F64, MemFlagsData::trusted(), address, 0)
+            }
             Expr::Neg(inner) => {
-                let inner = self.expression(inner);
+                let inner = self.scalar(inner);
                 self.b.ins().fneg(inner)
             }
             Expr::Not(inner) => {
-                let inner = self.expression(inner);
+                let inner = self.scalar(inner);
                 self.b.ins().bxor_imm_u(inner, 1)
             }
             Expr::Arith(op, left, right) => {
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let left = self.scalar(left);
+                let right = self.scalar(right);
                 match op {
                     Arith::Add => self.b.ins().fadd(left, right),
                     Arith::Sub => self.b.ins().fsub(left, right),
@@ -578,8 +717,8 @@ impl Lowering<'_, '_> {
                 }
             }
             Expr::Compare(cmp, Kind::Num, left, right) => {
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let left = self.scalar(left);
+                let right = self.scalar(right);
                 let cc = match cmp {
                     Cmp::Eq => FloatCC::Equal,
                     Cmp::Ne => FloatCC::NotEqual,
@@ -591,8 +730,8 @@ impl Lowering<'_, '_> {
                 self.b.ins().fcmp(cc, left, right)
             }
             Expr::Compare(cmp, Kind::Bool, left, right) => {
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let left = self.scalar(left);
+                let right = self.scalar(right);
                 let cc = match cmp {
                     Cmp::Eq => IntCC::Equal,
                     Cmp::Ne => IntCC::NotEqual,
@@ -603,9 +742,12 @@ impl Lowering<'_, '_> {
                 };
                 self.b.ins().icmp(cc, left, right)
             }
+            Expr::Compare(_, Kind::Struct(_) | Kind::List, _, _) => {
+                unreachable!("struct and list comparison is not lowered")
+            }
             Expr::And(left, right) | Expr::Or(left, right) => {
                 let is_and = matches!(expr, Expr::And(..));
-                let left = self.expression(left);
+                let left = self.scalar(left);
                 let rest = self.b.create_block();
                 let merge = self.b.create_block();
                 self.b.append_block_param(merge, types::I8);
@@ -616,7 +758,7 @@ impl Lowering<'_, '_> {
                 }
                 self.b.switch_to_block(rest);
                 self.b.seal_block(rest);
-                let right = self.expression(right);
+                let right = self.scalar(right);
                 self.b.ins().jump(merge, &[right.into()]);
                 self.b.switch_to_block(merge);
                 self.b.seal_block(merge);
@@ -625,24 +767,25 @@ impl Lowering<'_, '_> {
             Expr::Call(index, args) => {
                 let mut values = vec![self.state];
                 for arg in args {
-                    values.push(self.expression(arg));
+                    values.extend(self.expression(arg));
                 }
                 let call = self.b.ins().call(self.callees[*index as usize], &values);
-                let result = self.b.inst_results(call)[0];
+                let results = self.b.inst_results(call).to_vec();
                 let error = self
                     .b
                     .ins()
                     .load(types::I32, MemFlagsData::trusted(), self.state, 4);
                 let fine = self.b.create_block();
-                let failed = failure_value(&mut self.b, self.kernel.signature.returns);
+                let failed = failure_values(&mut self.b, &self.kernel.flat_returns());
                 self.b
                     .ins()
-                    .brif(error, self.propagate, &[failed.into()], fine, &[]);
+                    .brif(error, self.propagate, &block_args(&failed), fine, &[]);
                 self.b.switch_to_block(fine);
                 self.b.seal_block(fine);
-                result
+                return results;
             }
-        }
+        };
+        vec![value]
     }
 }
 
@@ -693,15 +836,47 @@ mod tests {
             &|name| sources.iter().find(|s| s.name == name).cloned(),
             &structs,
             true,
+            true,
         )
         .unwrap();
         let compiled = compile(&kernels).unwrap();
         let mut context = Context::default();
         let mut args = args.to_vec();
-        // SAFETY: the entry was produced by `compile` for `kernels[0]`, and
-        // `args` holds one f64 per parameter of that kernel.
-        let result = unsafe { (compiled[0].entry)(&mut context, args.as_mut_ptr()) };
+        let mut out = [0.0; 16];
+        // SAFETY: the entry was produced by `compile` for `kernels[0]`, `args`
+        // holds one f64 per flat parameter, and `out` holds 16 f64 slots.
+        let result =
+            unsafe { (compiled[0].entry)(&mut context, args.as_mut_ptr(), out.as_mut_ptr()) };
         (result, context)
+    }
+
+    fn native_value(program: &str, root: &str, args: Vec<Value>) -> Option<f64> {
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let kernels = group(
+            root,
+            &|name| sources.iter().find(|s| s.name == name).cloned(),
+            &structs,
+            true,
+            true,
+        )
+        .unwrap();
+        let compiled = compile(&kernels).unwrap();
+        let native = crate::native::Native {
+            target: compiled[0].entry,
+            kernel: Box::leak(Box::new(kernels[0].clone())),
+            arity: kernels[0].arity() as u8,
+            bool_params: 0,
+            plain: false,
+            returns: kernels[0].signature.returns,
+            generation: 0,
+        };
+        let globals = crate::value::Globals::default().store();
+        crate::native::call(&native, &args, &globals, 0).map(|value| match value {
+            Value::Number(n) => n,
+            other => panic!("unexpected {other:?}"),
+        })
     }
 
     fn interpreted(program: &str, call: &str) -> f64 {
@@ -736,6 +911,58 @@ mod tests {
             got == want || (got.is_nan() && want.is_nan()),
             "{call}: native {got}, interpreter {want}"
         );
+    }
+
+    fn native_struct(program: &str, root: &str, args: &[f64], count: usize) -> Vec<f64> {
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let kernels = group(
+            root,
+            &|name| sources.iter().find(|s| s.name == name).cloned(),
+            &structs,
+            true,
+            true,
+        )
+        .unwrap();
+        let compiled = compile(&kernels).unwrap();
+        let mut context = Context::default();
+        let mut args = args.to_vec();
+        let mut out = [0.0; 16];
+        // SAFETY: the entry was produced by `compile` for `kernels[0]`, `args`
+        // holds one f64 per flat parameter, and `out` holds 16 f64 slots.
+        unsafe {
+            (compiled[0].entry)(&mut context, args.as_mut_ptr(), out.as_mut_ptr());
+        }
+        assert_eq!(context.error, 0);
+        assert_eq!(context.depth, 0);
+        out[..count].to_vec()
+    }
+
+    fn interpreted_values(program: &str, call: &str) -> Vec<f64> {
+        let source = format!("{program}\n{call}");
+        let block = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
+        match Interpreter::new().run_main(&block).unwrap() {
+            Some(Value::Instance(instance)) => instance
+                .fields
+                .borrow()
+                .iter()
+                .map(|field| match field {
+                    Value::Number(n) => *n,
+                    Value::Bool(b) => f64::from(*b),
+                    other => panic!("unexpected field {other:?}"),
+                })
+                .collect(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn agree_struct(program: &str, root: &str, flat_args: &[f64], call: &str) {
+        let (got, context) = native(program, root, flat_args);
+        assert_eq!(context.error, 0, "{call} failed natively");
+        assert_eq!(context.depth, 0, "{call} left the depth counter unbalanced");
+        let want = interpreted(program, call);
+        assert!(got == want, "{call}: native {got}, interpreter {want}");
     }
 
     const FIB: &str = "fn fib(n) {\n    if n < 2 {\n        return n\n    }\n    return fib(n - 1) + fib(n - 2)\n}";
@@ -820,17 +1047,126 @@ mod tests {
     }
 
     #[test]
-    fn flat_struct_kernels_reject_structs_that_escape() {
-        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn escape(n: number) -> Point {\n    return Point { x: n, y: 1 }\n}\nfn in_list(n: number) -> number {\n    let xs = [Point { x: n, y: 1 }]\n    return xs[0].x\n}\nfn wrong_field(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    return p.nope\n}";
+    fn lists_of_numbers_match_the_interpreter() {
+        let program = "fn total(items: list<number>) -> number {\n    let sum = 0\n    let i = 0\n    let n = len(items)\n    while i < n {\n        sum = sum + items[i]\n        i = i + 1\n    }\n    items[0] = items[0] + 1\n    return sum + items[len(items) - 1]\n}\nfn at(items: list<number>, i: number) -> number {\n    return items[i]\n}";
+        for values in [vec![10.0, 20.0, 30.0], vec![0.0], vec![-1.5, 2.5]] {
+            let shown = values
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let got = native_value(
+                program,
+                "total",
+                vec![Value::list(values.into_iter().map(Value::Number).collect())],
+            )
+            .unwrap();
+            let want = interpreted(program, &format!("total([{shown}])"));
+            assert_eq!(got, want, "total([{shown}])");
+        }
+        let values = vec![Value::Number(1.0), Value::Number(2.0)];
+        assert_eq!(
+            native_value(program, "at", vec![Value::list(values), Value::Number(1.0)]),
+            Some(2.0)
+        );
+        assert_eq!(
+            native_value(
+                program,
+                "at",
+                vec![Value::list(vec![Value::Number(1.0)]), Value::Number(1.0)]
+            ),
+            None,
+            "an out-of-range index must fail the native call"
+        );
+        assert_eq!(
+            native_value(
+                program,
+                "at",
+                vec![Value::list(vec![Value::Number(1.0)]), Value::Number(0.5)]
+            ),
+            None,
+            "a fractional index must fail the native call"
+        );
+        let source = format!("{program}\nat([10, 20, 30], 4)");
+        let block = Parser::new(lex(&source).unwrap()).parse_program().unwrap();
+        let error = Interpreter::new().run_main(&block).unwrap_err();
+        assert_eq!(error.message, "index 4 is out of range, the length is 3");
+    }
+
+    #[test]
+    fn list_kernels_reject_everything_but_indexing_assignment_and_length() {
+        let program = "fn created(n: number) -> number {\n    let xs = [n, n + 1]\n    return xs[0]\n}\nfn appended(n: number) -> number {\n    let xs = [n]\n    push(xs, n + 1)\n    return xs[0]\n}\nfn strings(xs: list<string>) -> number {\n    return len(xs)\n}\nfn returned(n: number) -> list<number> {\n    return [n]\n}\nfn looped(xs: list<number>) -> number {\n    let total = 0\n    for x in xs {\n        total = total + x\n    }\n    return total\n}\nfn written(xs: list<number>) -> number {\n    xs[0] = \"a\"\n    return len(xs)\n}";
         let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
         let structs = crate::kernel::struct_layouts(&block);
         let sources = sources(program);
         let find = |name: &str| sources.iter().find(|s| s.name == name).cloned();
-        for root in ["take", "escape", "in_list", "wrong_field"] {
+        for root in [
+            "created", "appended", "strings", "returned", "looped", "written",
+        ] {
             assert!(
-                group(root, &find, &structs, true).is_err(),
+                group(root, &find, &structs, true, true).is_err(),
                 "{root} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn returned_structs_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn escape(n: number) -> Point {\n    return Point { y: n, x: n + 1 }\n}\nfn swapped(n: number) -> Point {\n    return Point { x: n, y: -n }\n}";
+        for (root, argument) in [("escape", 3.0), ("escape", -7.5), ("swapped", 4.0)] {
+            let got = native_struct(program, root, &[argument], 2);
+            let want = interpreted_values(program, &format!("{root}({argument})"));
+            assert_eq!(got, want, "{root}({argument})");
+        }
+    }
+
+    #[test]
+    fn structs_cross_call_boundaries_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn make(x: number, y: number) -> Point {\n    return Point { x: x, y: y }\n}\nfn area(p: Point) -> number {\n    return p.x * p.y\n}\nfn work(n: number) -> number {\n    let point = make(3, 4)\n    let total = 0\n    let i = 0\n    while i < n {\n        total = total + area(point)\n        i = i + 1\n    }\n    return total\n}\nfn via(p: Point) -> number {\n    let q = make(p.x + 1, p.y - 1)\n    return area(q)\n}";
+        agree(program, "work", &[1.0]);
+        agree(program, "work", &[100.0]);
+        agree_struct(program, "via", &[3.0, 5.0], "via(Point { x: 3, y: 5 })");
+        agree_struct(program, "via", &[-2.5, 0.0], "via(Point { x: -2.5, y: 0 })");
+    }
+
+    #[test]
+    fn struct_calls_with_out_of_order_literals_match_the_interpreter() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn swapped(n: number) -> Point {\n    return Point { y: 100, x: n }\n}\nfn read(p: Point) -> number {\n    return p.x - p.y\n}\nfn both(n: number) -> number {\n    let p = swapped(n)\n    return read(p)\n}";
+        agree(program, "both", &[1.0]);
+        agree(program, "both", &[250.0]);
+    }
+
+    #[test]
+    fn flat_struct_kernels_reject_structs_that_escape() {
+        let program = "struct Point {\n    x: number,\n    y: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn escape(n: number) -> Point {\n    return Point { x: n, y: 1 }\n}\nfn in_list(n: number) -> number {\n    let xs = [Point { x: n, y: 1 }]\n    return xs[0].x\n}\nfn wrong_field(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    return p.nope\n}\nfn captured(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    let f = fn() -> number { return p.x }\n    return f()\n}\nfn non_kernel(n: number) -> number {\n    let p = Point { x: n, y: 1 }\n    let sink = fn(q: Point) -> number { return q.x }\n    return sink(p)\n}\nfn wrong_struct(n: number) -> number {\n    let p = Pair { a: n, b: n + 1 }\n    return take(p)\n}\nstruct Pair {\n    a: number,\n    b: number,\n}";
+        let block = Parser::new(lex(program).unwrap()).parse_program().unwrap();
+        let structs = crate::kernel::struct_layouts(&block);
+        let sources = sources(program);
+        let find = |name: &str| sources.iter().find(|s| s.name == name).cloned();
+        for root in [
+            "in_list",
+            "wrong_field",
+            "captured",
+            "non_kernel",
+            "wrong_struct",
+        ] {
+            assert!(
+                group(root, &find, &structs, true, true).is_err(),
+                "{root} must be rejected"
+            );
+        }
+        for root in ["take", "escape"] {
+            assert!(
+                group(root, &find, &structs, true, true).is_ok(),
+                "{root} must compile"
+            );
+        }
+        let wrong = "struct Point {\n    x: number,\n    y: number,\n}\nstruct Pair {\n    a: number,\n    b: number,\n}\nfn take(p: Point) -> number {\n    return p.x\n}\nfn wrong(n: number) -> number {\n    let p = Pair { a: n, b: n + 1 }\n    return take(p)\n}\nwrong(1)";
+        let block = Parser::new(lex(wrong).unwrap()).parse_program().unwrap();
+        let error = Interpreter::new().run_main(&block).unwrap_err();
+        assert_eq!(
+            error.message,
+            "argument 1 of 'take' should be Point, got Pair"
+        );
     }
 }

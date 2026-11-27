@@ -9,10 +9,14 @@ class Point:
         self.y = y
 
 
-point = Point(3, 4)
-total = 0
-i = 0
-while i < N:
-    total = total + point.x * point.y
-    i = i + 1
-print(total)
+def work(n):
+    point = Point(3, 4)
+    total = 0
+    i = 0
+    while i < n:
+        total = total + point.x * point.y
+        i = i + 1
+    return total
+
+
+print(work(N))
