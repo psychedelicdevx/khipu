@@ -70,6 +70,7 @@ measure rust-std benchmarks/http/server_rs >> "$RESULTS.measure"
     while read -r name hello json file; do
         echo "| $name | $hello | $json | $file |"
     done < "$RESULTS.measure"
+rm -f "$RESULTS.measure"
 } > "$RESULTS"
 
 python3 - "$RESULTS" <<'PY'
