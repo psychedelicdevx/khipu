@@ -26,6 +26,10 @@ In daily use, Khipu keeps the feel of JavaScript and drops the parts people comp
 
 The name comes from the **khipu**, the knotted cords the Inca used to record numbers and data: many strings working side by side, which is the idea behind Khipu's concurrency.
 
+## Performance
+
+On sustained runs Khipu beats Python on 18 of 18 benchmarks and Node on 7 of 18, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.2 ms · Python 12 ms · Node 20 ms · C 2.0 ms · Rust 2.1 ms. The tables, spreads, memory use and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+
 ## A taste
 
 Types that are checked before anything runs, a contract on the function, and work spread over every core with nothing shared:
@@ -102,10 +106,6 @@ New to the language? [The Khipu Book](book/README.md) teaches it chapter by chap
 **Next up:** Competitive with Node on the benchmark suite (as of 2026-11-27: faster on 7 of 18, within 1.2× on lists, 2–9× slower on records, strings, closures, globals and calls; see docs/audit.md)
 
 The full list is in [ROADMAP.md](ROADMAP.md). The progress bars update themselves on every commit.
-
-## Performance
-
-On sustained runs Khipu beats Python on 18 of 18 benchmarks and Node on 7 of 18, and uses less memory than both on every one. Start-up, an empty program (median of 21 runs): Khipu 3.2 ms · Python 12 ms · Node 20 ms · C 2.0 ms · Rust 2.1 ms. The tables, spreads, memory use and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Contributing, security, privacy
 
